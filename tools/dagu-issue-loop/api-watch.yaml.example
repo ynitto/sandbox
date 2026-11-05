@@ -1,14 +1,18 @@
 # dagu-issue-loop の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
-# 1 つの Dagu のワークフロー（api-watch-issue-agent）の中で、取得 → 変化の判定 → エージェント CLI の実行まで行う。
-# エージェント CLI は api-watch の work が issue_loop.py handle を 1 件ずつ呼んで動かす（受け渡し先の DAG やキューは使わない）。
+# Dagu のワークフロー 2 本で動く（どちらも api-watch の dags で作る）:
+#   api-watch-issue-agent       毎分起動。取得 → 変化の判定 → 実行を待つ issue を子のワークフローへ 1 件ずつ（同時に 1 つ）
+#   api-watch-issue-agent-run   1 件を処理する。begin（取り直し・飛ばす判定）→ render（プロンプト）→ handle（エージェント CLI。
+#                               Dagu の harness.run）→ finish（処理し終えた状態の記録。失敗ならあとでやり直す）
+# GitLab の issue に固有の部分（プロンプトの差分・実行中の他人の動き）は gitlab_issue.py（api-watch のプラグイン）が受け持つ。
+# api-watch を呼ぶときは毎回 --plugin <gitlab_issue.py のパス> を付ける（dags も付けた引数を DAG に書く）。
 #
-# Dagu のワークフローは毎分起動し、GitLab にいつ問い合わせるかは、下の取得元の schedule を見て api-watch が決める。
-# ワークフローの雛形は api-watch の dags で作れる（作ったあとは自由に直してよい。dags は既にあるファイルを上書きしない）:
+#   api-watch --plugin dagu --plugin ~/.local/share/dagu-issue-loop/gitlab_issue.py \
+#     --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
+#     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/issue-loop.env \
+#     --handle-step issue-agent.run=~/.config/dagu/issue-loop.handle.yaml
 #
-#   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
-#     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/issue-loop.env
-#
+# GitLab にいつ問い合わせるかは、下の取得元の schedule を見て api-watch が決める（Dagu のワークフローは毎分起動するだけ）。
 # 問い合わせの予定も Dagu に任せたいなら、取得元の schedule を消し、dags --schedule "0 * * * *" のように Dagu の起動間隔で決める
 # （そのときは min_interval_sec を書いておくと、手で叩いたときや別のワークフローとの重複を防げる）。
 #
@@ -55,17 +59,25 @@ rules:
     filter: { path: state, value: opened }
     # filter: { all: [{ path: state, value: opened }, { path: labels, op: contains, value: agent }] }
     targets:
-      - name: agent
-        # その場で実行する。環境変数は Dagu が issue-loop.env から渡す
-        command: ["{{ env.ISSUE_LOOP_PYTHON }}", "{{ env.ISSUE_LOOP_HOME }}/issue_loop.py", "handle"]
+      - name: run
+        # api-watch は実行しない。Dagu の子のワークフロー（api-watch-issue-agent-run）が begin → 処理 → finish を呼ぶ
+        external: true
+        # 処理に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。子のワークフローの render が展開する
+        input_template: ~/.config/dagu/issue-loop.prompt.md
         # 実行の前後に issue を 1 件取り直す（ヘッダーは取得元のものを使う）:
         #   - 前: 最新の内容で流す。filter から外れた・前回処理し終えた状態と同じ（自分の書き込みだけ・まとめて処理済み）なら流さない
         #   - 後: その状態を「処理し終えた状態」にする（エージェント自身のコメントでもう一度起きない）
         refresh:
           url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ event.record_id }}"
-        timeout_sec: 4200      # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長く
-        max_attempts: 3        # ISSUE_LOOP_MAX_ATTEMPTS の代わり。尽きたら次の変化で拾い直す
-        retry_backoff_sec: 300 # ISSUE_LOOP_RETRY_BACKOFF の代わり（毎分の起動のうち、この秒数を過ぎたもので再試行）
+        # 実行中に自分以外の人がコメント・操作していたら、処理し終えたのは実行前の状態までにする（次の取得でもう一度流す）
+        handled_before_if:
+          - check: gitlab.others_acted
+            # options: { self_username: bot-user }     # 既定はトークンの持ち主
+        # エージェント CLI は、プロジェクトをまたいで同時に 1 つだけ（同じ lock の名前を持つ受け渡し先どうし）
+        lock: agent-session
+        timeout_sec: 4200      # 1 件の上限。子のワークフローの handle の timeout_sec にもなる
+        max_attempts: 3        # 尽きたら打ち切り、次の変化で拾い直す
+        retry_backoff_sec: 300 # 失敗したら、毎分の起動のうちこの秒数（1 回ごとに倍）を過ぎたもので再試行
         order: none            # 打ち切った変化があっても、同じ issue の新しい変化は流す
 
   # 同じ取得元を別のワークフローでも使う例。dags が api-watch-issue-notify を書き足す。
@@ -77,5 +89,5 @@ rules:
   #   on: [changed]
   #   targets:
   #     - name: notify
-  #       command: ["{{ env.ISSUE_LOOP_PYTHON }}", "/home/you/bin/notify.py"]
+  #       command: [python3, /home/you/bin/notify.py]
   #       timeout_sec: 120

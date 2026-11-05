@@ -78,8 +78,8 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
-          # dagu-issue-loop。GitLab は手元の HTTP サーバ、エージェント CLI は小さなスクリプトで偽装し、
-          # 本物の api-watch から handle を呼んで、重複制御・1 セッションの排他（並行 handle・取り残された CLI・SIGTERM）を見る。
+          # dagu-issue-loop。GitLab は手元の HTTP サーバで偽装し、api-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
+          # 本物の api-watch を Dagu の子のワークフローと同じ順（due → begin → render → finish）で呼んだときの重複制御・排他を見る。
           - package: dagu-issue-loop
             suites: tools/dagu-issue-loop/test
           # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
@@ -129,8 +129,8 @@ jobs:
             echo "::endgroup::"
           done
 
-  # dagu-issue-loop は Windows でもそのまま動かす（ファイルロック・プロセスの生存確認・
-  # 子孫ごとの停止を OS ごとに切り替えている）。その切り替えを Windows の実機で確かめる。
+  # dagu-issue-loop は Windows でもそのまま動かす（api-watch のプラグインと、api-watch を子のワークフローの順で呼ぶ流れ）。
+  # Windows の実機で確かめる。
   dagu-issue-loop-windows:
     name: python (dagu-issue-loop, windows)
     runs-on: windows-latest

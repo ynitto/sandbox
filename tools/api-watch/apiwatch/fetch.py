@@ -356,36 +356,44 @@ class Fetcher:
                       last_request_at=pace["last_request_at"], on_request=on_request, sleep=self.sleep,
                       recent=[x for x in recent if x > now() - 60])
 
-    def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
-        """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。
+    def get_json(self, src: SourceSpec, url: str, headers: dict | None, query: dict | None, ctx_extra: dict,
+                 timeout: float | None = None, method: str = "GET") -> Any:
+        """取得元の接続で 1 回だけ要求して JSON を返す（404 なら None）。受け渡し先の refresh とチェックが使う。
 
-        取得元の接続・要求の間隔・1 分あたりの上限・失敗の待ちを共有する（排他は取らない。1 件だけなので取得と並んでよい）。
-        失敗したら取得元を失敗の待ちにして TransientError / PermanentError、待ちの中なら Deferred。"""
+        url・headers・query はテンプレートとして展開する（{{ conn.* }}・{{ env.* }} と ctx_extra の名前）。headers が
+        None なら取得元のヘッダー（認証）を使う。要求の間隔・1 分あたりの上限・失敗の待ちは取得元（と rate_limit.group）と
+        分け合い、失敗したら取得元を失敗の待ちに入れて TransientError / PermanentError、待ちの中なら Deferred。
+        排他は取らない（1 件だけで、取得の途中に挟まっても取得の結果を壊さないため）。"""
         conn = self.cfg.resolve_connection(src.connection)
         fp = src.fingerprint(conn)
         cooling = self._cooling(src, fp)
         if cooling:
             raise Deferred(cooling.message)
         ctx = self._context(src, conn, None)
-        ctx["event"] = event
-        headers = {str(k): str(v) for k, v in template.render(spec.headers if spec.headers is not None else src.headers,
-                                                               ctx).items() if v is not None}
-        for k, v in headers.items():
+        ctx.update(ctx_extra)
+        hdrs = {str(k): str(v) for k, v in template.render(headers if headers is not None else src.headers,
+                                                            ctx).items() if v is not None}
+        for k, v in hdrs.items():
             if is_secret_name(k) or k.lower() in ("authorization", "cookie"):
                 REDACT.add(v)
                 if " " in v:
                     REDACT.add(v.split(" ", 1)[1])
-        url = build_url(str(template.render(spec.url, ctx)), dict(template.render(spec.query, ctx)))
-        req = Request(method=spec.method, url=url, headers=headers, body=None,
-                      timeout=spec.timeout_sec or src.timeout_sec)
+        full = build_url(str(template.render(url, ctx)), dict(template.render(query or {}, ctx)))
+        req = Request(method=method, url=full, headers=hdrs, body=None, timeout=timeout or src.timeout_sec)
         try:
             resp = self._client(src).send(req, ok_status=(200, 203, 404))
             if resp.status == 404:
                 return None
-            body = resp.json()
+            return resp.json()
         except (TransientError, PermanentError) as e:
             self._cool_down(src, REDACT(str(e)), getattr(e, "retry_after", None))
             raise
+
+    def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
+        """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。"""
+        body = self.get_json(src, spec.url, spec.headers, spec.query, {"event": event}, spec.timeout_sec, spec.method)
+        if body is None:
+            return None
         rec = jpath.get(body, spec.records)
         if isinstance(rec, list):
             rec = rec[0] if rec else None

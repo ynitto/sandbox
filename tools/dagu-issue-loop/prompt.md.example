@@ -1,11 +1,11 @@
-GitLab の issue #{iid}「{title}」に変化がありました（{change_kind}、{attempt} 回目）。
+GitLab の issue #{{ event.record.iid }}「{{ event.record.title }}」に変化がありました（{{ event | gitlab_issue_kind }}、{{ delivery.attempt }} 回目）。
 
-{changes}
+{{ event | gitlab_issue_changes }}
 
 gitlab-idd スキルのワーカーロールでこの issue を確認し、必要なら実装して結果を issue にコメントしてください。
-URL: {web_url}
+URL: {{ event.record.web_url }}
 
 issue の内容:
 ```json
-{issue_json}
+{{ event.record | json: 2 }}
 ```

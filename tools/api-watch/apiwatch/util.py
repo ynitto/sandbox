@@ -168,7 +168,9 @@ REDACT = Redactor()
 
 
 def log(msg: str) -> None:
-    print(REDACT(msg), flush=True)
+    """進み具合のログ。標準エラーに出す（標準出力は結果だけ: due の一覧・begin の判断・render の文章・--json など。
+    Dagu のステップの output で受け取るため）。"""
+    print(REDACT(msg), file=sys.stderr, flush=True)
 
 
 def warn(msg: str) -> None:

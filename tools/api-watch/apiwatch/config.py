@@ -144,6 +144,13 @@ class RefreshSpec:
 
 
 @dataclass
+class CheckRef:
+    """受け渡し先の skip_if / handled_before_if に書くチェック（apiwatch.hooks。プラグインが足す）。"""
+    name: str
+    options: dict
+
+
+@dataclass
 class TargetSpec:
     name: str
     workflow: str | None            # 受け渡し先のワークフロー（アダプタで渡す）
@@ -157,11 +164,16 @@ class TargetSpec:
     command: list | None = None     # その場で実行するコマンド（work が実行する。アダプタを使わない）
     timeout_sec: float = 3600
     refresh: RefreshSpec | None = None   # 実行の前後に 1 件取り直す（流し終えた状態の記録・自分の書き込みの吸収）
+    external: bool = False          # api-watch は実行せず、外のワークフローが begin → 処理 → finish を呼ぶ
+    lock: str | None = None         # この名前の排他を持つ受け渡し先は、ルール・取得元をまたいで同時に 1 件だけ実行する
+    input_template: str | None = None   # external: 処理に渡す文章のテンプレート（render の既定。dags が render のステップを足す）
+    skip_if: list = None            # 実行の前に呼ぶチェック。どれかが真なら実行しない（list[CheckRef]）
+    handled_before_if: list = None  # 実行のあとに呼ぶチェック。どれかが真なら、処理し終えたのは実行前の状態まで
 
     @property
     def runs_here(self) -> bool:
-        """受け渡し先へ渡さず、api-watch の work がその場でコマンドを実行する受け渡し先か。"""
-        return self.command is not None
+        """受け渡し先のワークフローへ渡さず、api-watch が実行の前後を受け持つ受け渡し先か（command か external）。"""
+        return self.command is not None or self.external
 
 
 @dataclass
@@ -391,20 +403,31 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
     if isinstance(d, str):
         d = {"workflow": d}
     _expect(isinstance(d, dict), f"{where}: 辞書か、ワークフローの名前を書いてください")
-    _known(d, {"name", "workflow", "command", "timeout_sec", "refresh", "params", "queue", "order", "max_attempts",
-               "retry_backoff_sec", "retry_max_backoff_sec", "inline_payload"}, where)
+    _known(d, {"name", "workflow", "command", "external", "input_template", "timeout_sec", "refresh", "lock", "skip_if",
+               "handled_before_if", "params", "queue", "order", "max_attempts", "retry_backoff_sec",
+               "retry_max_backoff_sec", "inline_payload"}, where)
     command = d.get("command")
-    if command is None:
+    external = d.get("external", False)
+    _expect(isinstance(external, bool), f"{where}.external: true か false を書いてください")
+    _expect(not (command is not None and external), f"{where}: command（api-watch が実行）と external（外のワークフローが実行）はどちらか一方にしてください")
+    if command is None and not external:
         _expect(isinstance(d.get("workflow"), str),
-                f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）か、その場で実行する command を書いてください")
-        _expect("timeout_sec" not in d, f"{where}.timeout_sec: command を書いたときだけ使えます")
-        _expect("refresh" not in d, f"{where}.refresh: command を書いたときだけ使えます")
+                f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）か、その場で実行する command か、external: true を書いてください")
+        for k in ("timeout_sec", "refresh", "lock", "skip_if", "handled_before_if"):
+            _expect(k not in d, f"{where}.{k}: command か external: true の受け渡し先だけに書けます")
     else:
         _expect("workflow" not in d and "queue" not in d,
-                f"{where}: command（その場で実行）と workflow / queue（受け渡し先へ渡す）はどちらか一方にしてください")
-        _expect(isinstance(command, list) and command and all(isinstance(x, (str, int, float)) for x in command),
-                f"{where}.command: argv の配列を書いてください")
-        _expect(isinstance(d.get("name"), str), f"{where}.name: command の受け渡し先には name を書いてください")
+                f"{where}: command / external（api-watch が実行の前後を受け持つ）と workflow / queue（受け渡し先へ渡す）はどちらか一方にしてください")
+        if command is not None:
+            _expect(isinstance(command, list) and command and all(isinstance(x, (str, int, float)) for x in command),
+                    f"{where}.command: argv の配列を書いてください")
+        _expect(isinstance(d.get("name"), str), f"{where}.name: command / external の受け渡し先には name を書いてください")
+    tpl = d.get("input_template")
+    _expect(tpl is None or (external and isinstance(tpl, str) and tpl.strip()),
+            f"{where}.input_template: external: true の受け渡し先に、テンプレートのファイルのパスを書いてください")
+    lock = d.get("lock")
+    _expect(lock is None or (isinstance(lock, str) and NAME_RE.match(lock) is not None),
+            f"{where}.lock: 英数字・- _ . で 64 文字以内の名前を書いてください")
     name = str(d.get("name") or d["workflow"])
     _expect(NAME_RE.match(name) is not None, f"{where}.name: 英数字・- _ . で 64 文字以内にしてください")
     params = d.get("params") or {}
@@ -422,7 +445,29 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
         command=list(command) if command is not None else None,
         timeout_sec=_num(d, "timeout_sec", 3600, where, 1),
         refresh=_refresh(d.get("refresh"), f"{where}.refresh"),
+        external=external, lock=lock, input_template=tpl,
+        skip_if=_checks(d.get("skip_if"), f"{where}.skip_if"),
+        handled_before_if=_checks(d.get("handled_before_if"), f"{where}.handled_before_if"),
     )
+
+
+def _checks(v: Any, where: str) -> list:
+    if v is None:
+        return []
+    if isinstance(v, (str, dict)):
+        v = [v]
+    _expect(isinstance(v, list), f"{where}: チェックの名前か {{check: 名前, options: {{...}}}} の配列を書いてください")
+    out = []
+    for i, c in enumerate(v):
+        if isinstance(c, str):
+            c = {"check": c}
+        _expect(isinstance(c, dict) and isinstance(c.get("check"), str),
+                f"{where}[{i}]: チェックの名前か {{check: 名前, options: {{...}}}} を書いてください")
+        _known(c, {"check", "options"}, f"{where}[{i}]")
+        opts = c.get("options") or {}
+        _expect(isinstance(opts, dict), f"{where}[{i}].options: 辞書で書いてください")
+        out.append(CheckRef(c["check"], opts))
+    return out
 
 
 def _refresh(d: Any, where: str) -> RefreshSpec | None:

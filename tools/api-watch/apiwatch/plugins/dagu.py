@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import sys
 import urllib.error
@@ -259,6 +260,57 @@ def _header(cfg: Config, desc: str, schedule: str, opts) -> list[str]:
     return lines
 
 
+def _exec(argv: list[str], indent: str) -> list[str]:
+    return [f"{indent}action: exec", f"{indent}with:", f"{indent}  command: {_q(argv[0])}", f"{indent}  args:"] + \
+        [f"{indent}    - {_q(a)}" for a in argv[1:]]
+
+
+def _child(cfg: Config, base: list[str], rname: str, t, opts) -> list[str]:
+    """external の受け渡し先の子のワークフロー（親の dag.run が受け渡しの ID を DELIVERY で渡す）。
+
+    begin が run と言ったときだけ handle を実行し、終わったら handler_on で finish する。handle は雛形なので、
+    処理（エージェントの harness.run など）に置き換えて使う。"""
+    d = "${params.DELIVERY}"
+    lines = [f"# api-watch {VERSION} の dags が作った雛形。handle を処理に置き換えて使う（dags は既にあるファイルを上書きしない）。",
+             f"# 設定: {cfg.path}",
+             f"# ルール {rname} の受け渡し先 {t.name} の受け渡しを 1 件処理する。親のワークフローが DELIVERY（受け渡しの ID）を渡す。",
+             "#   begin   取り直して、実行してよいか（run / skip / busy / wait / failed / gone）を DECISION に出す",
+             "#   handle  DECISION が run のときだけ動く。イベントは render で文章にできる:",
+             f"#           {' '.join(base[1:2])} ... render {d} --template <テンプレート>",
+             "#   finish  handler_on から呼ぶ。成功なら処理し終えた状態を記録し、失敗ならあとでやり直す",
+             f"description: {_q(f'ルール {rname} の受け渡し先 {t.name} を 1 件処理する')}",
+             "type: graph",
+             f"hist_retention_days: {opts.hist_retention_days}",
+             "params:",
+             '  - DELIVERY: ""']
+    if opts.dotenv:
+        lines.append("dotenv:")
+        lines += [f"  - {_q(x)}" for x in opts.dotenv]
+    lines.append("steps:")
+    lines += _step("begin", base + ["begin", d], depends=None, timeout=600, retry=None)
+    lines.append("    output: DECISION")
+    run_only = ["    preconditions:", '      - condition: "${DECISION}"', '        expected: "run"']
+    last = "begin"
+    if t.input_template:
+        # 受け渡し先の input_template を展開した文章を INPUT に入れる（handle で ${INPUT} として使う）
+        lines += _step("render", base + ["render", d], depends="begin", timeout=300, retry=None)
+        lines += run_only + ["    output: INPUT"]
+        last = "render"
+    lines += ["  - name: handle", f"    depends: [{last}]"] + run_only + [f"    timeout_sec: {int(t.timeout_sec)}"]
+    snippet = (getattr(opts, "handle_steps", None) or {}).get(f"{rname}.{t.name}")
+    if snippet is not None:
+        # dags --handle-step で渡されたステップの中身（name・depends・preconditions は上で付けた）
+        lines += ["    " + ln if ln.strip() else "" for ln in snippet.rstrip("\n").splitlines()]
+    else:
+        lines += ["    # ここを処理に置き換える（例: action: harness.run でエージェント CLI を動かす。dags --handle-step で差し込める）",
+                  f'    run: echo "子のワークフロー {rname}-{t.name} の handle を処理に置き換えてください" >&2; exit 1']
+    lines.append("handler_on:")
+    for when, extra in (("success", []), ("failure", ["--failed"]), ("abort", ["--failed", "--message", "中止された"])):
+        lines.append(f"  {when}:")
+        lines += _exec(base + ["finish", d] + extra, "    ")
+    return lines
+
+
 def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     base = [python, str(script), "--config", str(cfg.path)] + plugin_args(getattr(opts, "plugin", None) or ["dagu"])
@@ -328,8 +380,27 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
             lines += _step("dispatch", base + ["dispatch", "--rule", rname], depends="evaluate", timeout=600,
                            retry=None)
             last = "dispatch"
-        # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない
-        lines += _step("work", base + ["work", "--rule", rname], depends=last, timeout=None, retry=None)
+        if any(t.command is not None for t in rule.targets):
+            # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない
+            lines += _step("work", base + ["work", "--rule", rname], depends=last, timeout=None, retry=None)
+            last = "work"
+        for t in rule.targets:
+            if not t.external:
+                continue
+            # external の受け渡し先: 実行を待っている受け渡しを、子のワークフローで 1 件ずつ（同時に 1 つ）処理する
+            child = f"{prefix}-{rname}-{t.name}"
+            if f"{rname}-{t.name}" in reserved or f"{rname}-{t.name}" in cfg.rules:
+                raise ConfigError(f"子のワークフロー名 {child} が、ほかのワークフローと重なります。受け渡し先の name を変えてください")
+            var = "DUE_" + re.sub(r"[^A-Za-z0-9]", "_", t.name).upper()
+            lines += _step(f"due-{t.name}", base + ["due", "--rule", rname, "--target", t.name], depends=last,
+                           timeout=300, retry=None)
+            lines.append(f"    output: {var}")
+            lines += [f"  - name: run-{t.name}", f"    depends: [due-{t.name}]", "    action: dag.run", "    with:",
+                      f"      dag: {_q(child)}", "      params:", '        DELIVERY: "${ITEM}"',
+                      "    parallel:", f'      items: "${{{var}}}"', "      max_concurrent: 1",
+                      "    preconditions:              # 実行を待っているものが無ければ呼ばない（空の配列は Dagu が誤りにする）",
+                      f'      - condition: "${{{var}}}"', '        expected: "[]"', "        negate: true"]
+            write(f"{rname}-{t.name}", _child(cfg, base, rname, t, opts))
         write(rname, lines)
     if any(not t.runs_here for r in cfg.rules.values() for t in r.targets):
         lines = _header(cfg, "未判定の取得結果の判定と、渡せていない変更の再送・後続処理の完了の確認",
@@ -361,6 +432,19 @@ def plugin_args(specs: list[str]) -> list[str]:
 
 
 def cmd_dags(cfg: Config, store, a) -> int:
+    a.handle_steps = {}
+    for spec in a.handle_step or []:
+        key, sep, path = spec.partition("=")
+        if not sep or "." not in key:
+            raise ConfigError(f"--handle-step は <ルール>.<受け渡し先>=<ファイル> の形で書いてください: {spec}")
+        r, _, tn = key.partition(".")
+        rule = cfg.rules.get(r)
+        if rule is None or not any(t.name == tn and t.external for t in rule.targets):
+            raise ConfigError(f"--handle-step: ルール {r} に external の受け渡し先 {tn} がありません")
+        try:
+            a.handle_steps[key] = Path(path).expanduser().read_text(encoding="utf-8")
+        except OSError as e:
+            raise ConfigError(f"--handle-step のファイルが読めません: {path}（{e}）")
     script = Path(a.script).resolve() if a.script else entry_path()
     for p in generate(cfg, Path(a.out).expanduser().resolve(), a.python or sys.executable, script, a):
         log(f"書きました: {p}")
@@ -379,6 +463,8 @@ def register(api) -> None:
     sp.add_argument("--schedule", help="取得するワークフローを Dagu が起動する間隔（既定: 毎分。取得するかは api-watch が"
                                        "取得元の schedule / min_interval_sec で決める）")
     sp.add_argument("--force", action="store_true", help="既にある DAG を上書きする")
+    sp.add_argument("--handle-step", action="append", default=[],
+                    help="external の受け渡し先の子のワークフローの handle に差し込むステップの中身（<ルール>.<受け渡し先>=<YAML のファイル>）")
     sp.add_argument("--dispatch-schedule", default="* * * * *", help="再送の DAG の起動間隔（既定: 毎分）")
     sp.add_argument("--maintenance-schedule", default="17 3 * * *", help="整理の DAG の起動間隔（既定: 毎日 3:17）")
     sp.add_argument("--hist-retention-days", type=int, default=14, help="Dagu の実行履歴を残す日数")

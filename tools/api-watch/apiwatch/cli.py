@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import VERSION, adapters, config as configmod, plugins
+from . import VERSION, adapters, config as configmod, hooks, plugins
 from .deliver import Dispatcher
 from .detect import Evaluator, log_outcomes
 from .fetch import Fetcher, load_records
@@ -127,6 +127,61 @@ def cmd_work(cfg, store, a) -> int:
     if o.stopped:
         return EXIT_ERROR
     return EXIT_PARTIAL if (o.failed or o.dead) else EXIT_OK
+
+
+def cmd_due(cfg, store, a) -> int:
+    """external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す（Dagu の parallel に渡す）。"""
+    ids = Dispatcher(cfg, store).due(_rules_of_sources(cfg, a), a.target or None, external=True, limit=a.limit)
+    print(json.dumps(ids))
+    return EXIT_OK
+
+
+def cmd_begin(cfg, store, a) -> int:
+    """受け渡しを 1 件取り、実行してよいかを標準出力に 1 語で出す（run / skip / busy / wait / failed / gone）。"""
+    decision, msg = Dispatcher(cfg, store).begin(a.delivery)
+    log(msg)
+    print(decision)
+    return EXIT_OK
+
+
+def cmd_render(cfg, store, a) -> int:
+    """begin した受け渡しのイベントでテンプレートを展開して出す（プロンプトなど）。"""
+    from pathlib import Path
+    try:
+        payload, path = Dispatcher(cfg, store).run_payload(a.delivery)
+    except KeyError:
+        log(f"受け渡し {a.delivery} が見つかりません")
+        return EXIT_ERROR
+    tpl = a.template
+    if tpl is None:
+        d = store.one("SELECT rule, target FROM deliveries WHERE id=?", (a.delivery,))
+        t = Dispatcher(cfg, store).target(d["rule"], d["target"]) if d else None
+        tpl = t.input_template if t else None
+        if tpl is None:
+            raise ConfigError("--template か、受け渡し先の input_template を書いてください")
+        p = Path(tpl).expanduser()
+        tpl = str(p if p.is_absolute() else cfg.path.parent / p)     # 設定の相対パスは設定ファイルから
+    try:
+        text = Path(tpl).expanduser().read_text(encoding="utf-8")
+    except OSError as e:
+        raise ConfigError(f"テンプレートが読めません: {tpl}（{e}）")
+    from . import template
+    ctx = {"event": payload, "delivery": payload.get("delivery") or {"id": a.delivery}, "env": dict(__import__("os").environ),
+           "event_file": str(path)}
+    out = template.render(text, ctx)
+    out = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+    if a.out:
+        Path(a.out).expanduser().write_text(out, encoding="utf-8")
+    else:
+        print(out)
+    return EXIT_OK
+
+
+def cmd_finish(cfg, store, a) -> int:
+    """begin した受け渡しの終わり（--failed なら失敗）を記録する。外のワークフローの最後か handler_on から呼ぶ。"""
+    st = Dispatcher(cfg, store).finish(a.delivery, not a.failed, a.message, a.handled)
+    log(f"{a.delivery}: {st}")
+    return EXIT_OK
 
 
 def cmd_run(cfg, store, a) -> int:
@@ -390,6 +445,23 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--rule", action="append")
     sp.add_argument("--target", action="append")
     sp.add_argument("--limit", type=int)
+    sp = add("due", cmd_due, "external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
+    sp.add_argument("--limit", type=int)
+    sp = add("begin", cmd_begin, "受け渡しを 1 件取り、実行してよいか（run / skip / busy / wait / failed / gone）を出す")
+    sp.add_argument("delivery")
+    sp = add("render", cmd_render, "begin した受け渡しのイベントでテンプレートを展開する（{{ event.* }}・プラグインのフィルタ）")
+    sp.add_argument("delivery")
+    sp.add_argument("--template", help="テンプレートのファイル（省略すると受け渡し先の input_template）")
+    sp.add_argument("--out", help="書き出すファイル（省略すると標準出力）")
+    sp = add("finish", cmd_finish, "begin した受け渡しの終わりを記録する（--failed なら失敗。あとでやり直す）")
+    sp.add_argument("delivery")
+    sp.add_argument("--failed", action="store_true")
+    sp.add_argument("--message")
+    sp.add_argument("--handled", choices=["before", "after"],
+                    help="処理し終えた状態にするのを、実行前（before）か実行のあと（after。既定）か")
     sp = add("run", cmd_run, "fetch → evaluate → dispatch → work をまとめて行う（--rule でそのルールだけ）")
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
@@ -454,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     _common(pre)
     known, _ = pre.parse_known_args(argv)
     adapters.reset_plugins()
+    hooks.reset_plugins()
     try:
         parser = build_parser(known.plugin)
     except ConfigError as e:

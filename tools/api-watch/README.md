@@ -30,6 +30,7 @@ API にいつ問い合わせるかは、起動されたときに api-watch が�
 | `apiwatch/`（下の `plugins/dagu.py` を除く） | 本体: 取得・判定・状態・受け渡しの順序と再送・運用のコマンド。受け渡しは `delivery.adapter` で選ぶアダプタに任せる | なし |
 | `apiwatch/adapters/command.py` | 任意のコマンドで受け渡すアダプタ（`adapter: command`） | なし |
 | `apiwatch/plugins/__init__.py` | `--plugin` で指定されたプラグインの読み込み。同梱のプラグインを自分では import しない | なし |
+| `apiwatch/hooks.py` | プラグインが足すフィルタ（テンプレート）とチェック（実行の前後の判定）の登録先 | なし |
 | `apiwatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド。**Dagu に依存するものはこの 1 ファイルだけ** | あり |
 
 プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
@@ -38,9 +39,28 @@ API にいつ問い合わせるかは、起動されたときに api-watch が�
 
 1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
 
+### プラグインの口
+
+プラグインは `register(api)` を持つ 1 つの `.py` ファイルで、次の口だけを使って機能を足す（本体の DB や取得の仕組みには直接触らない）。
+
+| 口 | 足すもの | 使うところ |
+|---|---|---|
+| `api.add_adapter(name, parse, create)` | 受け渡しのアダプタ | 設定の `delivery.adapter` |
+| `api.add_command(name, fn, help)` | サブコマンド。`fn(cfg, store, args)` が終了コードを返す | コマンド行 |
+| `api.add_filter(name, fn)` | テンプレートのフィルタ。`fn(値, 引数)` が値を返す | どのテンプレートでも `{{ 値 \| name: 引数 }}`。`render` で文章（プロンプトなど）を組むときにも |
+| `api.add_check(name, fn)` | 実行の前後の判定。`fn(ctx)` が真偽を返す | 受け渡し先の `skip_if`（真なら実行しない）・`handled_before_if`（真なら処理し終えたのは実行前の状態まで） |
+
+チェックに渡る `ctx` は、`ctx.event`（イベント。`refresh` があれば取り直したレコード入り）・`ctx.delivery`（`id`・`rule`・`target`・`attempt`・
+`started_at`）・`ctx.options`（設定に書いた `options`）・`ctx.conn`（取得元の接続設定）を持つ。API に問い合わせるときは
+`ctx.get_json(url, headers=None, query=None)` を使う。取得元の接続（認証）で送り、要求の間隔・1 分あたりの上限・失敗の待ちを取得元と分け合う。
+`ctx.render(テンプレート)` で `{{ event.* }}` などを展開でき、`ctx.log(文)` でログを出せる。
+
+チェックが例外を投げたら、`skip_if` では偽（実行する）、`handled_before_if` では真（実行前の状態までにとどめる）とみなす。
+どちらも取りこぼさない側に倒すため。名前は使う時点で探すので、`--plugin` を付け忘れるとその時点で案内して止まる。
+
 Dagu を使わないときは、起動を cron・タスク スケジューラなどから `run`（または `fetch` / `evaluate` / `dispatch`）で行い、
 受け渡しは `adapter: command` で任意のコマンドに渡す。別の基盤へのプラグインも、同じ形の `.py` を `--plugin <パス>` で読み込める
-（`register(api)` で `api.add_adapter(...)`・`api.add_command(...)` を呼ぶ。`apiwatch/plugins/__init__.py` を参照）。
+（`register(api)` で口を呼ぶ。下の「プラグインの口」）。
 
 ## 入れ方
 
@@ -489,6 +509,49 @@ Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `sche
 取得元に `schedule` が無く、2 本以上のワークフローがその取得元を取得するときは（取得元の DAG とルールのワークフローの組み合わせも数える）、
 `min_interval_sec` と `busy_wait_sec` が必須で、`jitter_sec` は `min_interval_sec` より短くする。満たさなければ設定の誤りとして止める。
 
+### 外のワークフローで処理する（`external`）
+
+処理を api-watch のプロセスの中ではなく、ワークフロー基盤（Dagu など）のステップとして動かしたいときは、受け渡し先に `external: true` を書く。
+api-watch は実行の前後だけを受け持ち、処理そのもの（エージェントの CLI など）は基盤のステップが動かす。止める・時間切れ・ログ・実行履歴は基盤のものになる。
+
+| コマンド | すること | 標準出力 |
+|---|---|---|
+| `due --rule R [--target T]` | 実行を待っている受け渡しの ID（古い順。同じレコードの前のものが済んでいないものは除く） | JSON の配列 |
+| `begin ID` | 受け渡しを取り、`lock` を取り、`refresh` で取り直して、実行してよいかを決める。飛ばすときは完了として記録する | `run` / `skip` / `busy` / `wait` / `failed` / `gone` の 1 語 |
+| `render ID [--template F]` | `begin` が取り直したイベントでテンプレート（既定は受け渡し先の `input_template`）を展開する。`{{ event.* }}`・`{{ delivery.attempt }}`・プラグインのフィルタが使える | 展開した文章 |
+| `finish ID [--failed [--message M]] [--handled before]` | 終わりを記録する。成功なら `handled_before_if` を呼び、取り直して処理し終えた状態にし、`lock` を返す。失敗ならあとでやり直す | — |
+
+- `begin` が `run` 以外を出したら、処理を動かさずに `finish` だけ呼べばよい（何もしない）。`busy`（lock が空いていない）と `wait`（取得元が失敗の待ち）は
+  試行に数えずに少しあとへ回す
+- 進み具合のログは標準エラーに出す。標準出力は結果だけなので、基盤のステップの出力（Dagu の `output:`）でそのまま受け取れる
+- `finish` が呼ばれないまま止まった（基盤ごと落ちたなど）受け渡しは、`timeout_sec` + 120 秒たつと次の `begin` が取り直す
+
+`dags` は、`external` の受け渡し先ごとに親と子の 2 本のワークフローを書く（Dagu v2 の `dag.run` と `parallel` を使う）:
+
+```
+ Dagu: api-watch-<ルール>（毎分）
+   fetch → evaluate → due-<受け渡し先>（実行を待つ ID の配列を出す）
+   run-<受け渡し先>   子のワークフローを ID ごとに呼ぶ（action: dag.run・parallel の max_concurrent: 1。配列が空なら呼ばない）
+ Dagu: api-watch-<ルール>-<受け渡し先>（子。DELIVERY に ID を受け取る）
+   begin（DECISION）→ render（INPUT。input_template があるとき）→ handle（DECISION が run のときだけ）
+   handler_on: success → finish / failure・abort → finish --failed
+```
+
+`handle` は雛形のままでは失敗するので、処理に置き換える。`dags --handle-step <ルール>.<受け渡し先>=<ファイル>` を付けると、ファイルに書いた
+ステップの中身（`action`・`with` など。`name`・`depends`・`preconditions`・`timeout_sec` は `dags` が付ける）を `handle` に差し込む。
+例えば Claude Code を動かすなら:
+
+```yaml
+# handle.yaml
+action: harness.run
+working_dir: /home/you/work/project
+with:
+  provider: claude
+  prompt: 標準入力の指示に従ってください
+  stdin: "${INPUT}"
+  dangerously_skip_permissions: true
+```
+
 ### 別の取得元とも API への負荷を分け合う（`rate_limit.group`）
 
 同じ API を、条件の違う複数の取得元（issue と MR など）で見るときは、`rate_limit.group` に同じ名前を書く。同じ group の取得元は:
@@ -592,9 +655,14 @@ Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `sche
 | 項目 | 既定 | 意味 |
 |---|---|---|
 | `workflow` | （`command` が無ければ必須） | 受け渡し先のワークフロー。Dagu なら DAG の名前（`mode: cli` ならファイルのパスでもよい） |
-| `command` | — | 別のワークフローへ渡さず、`work` がその場で実行する argv（下の「1 つのワークフローで取得から処理まで」）。書くときは `name` も書く。`workflow`・`queue` とはどちらか一方 |
-| `timeout_sec` | 3600 | `command` の 1 回の実行の上限。過ぎたら止めて失敗として数える |
-| `refresh` | — | `command` の実行の前後にレコードを 1 件取り直す要求（`url`・`method`・`headers`・`query`・`records`・`timeout_sec`。`headers` を書かなければ取得元のもの）。下の「実行の前後に取り直す」 |
+| `command` | — | 別のワークフローへ渡さず、`work` がその場で実行する argv（下の「1 つのワークフローで取得から処理まで」）。書くときは `name` も書く。`workflow`・`queue`・`external` とはどれか 1 つ |
+| `timeout_sec` | 3600 | `command` / `external` の 1 回の実行の上限。`command` は過ぎたら止めて失敗として数える。`external` は受け渡しを取っておく期限（`timeout_sec` + 120 秒。過ぎたら次の `begin` が取り直す）と、`dags` が書く処理のステップの上限になる |
+| `external` | false | true なら api-watch は実行せず、外のワークフローが `begin` → 処理 → `finish` を呼ぶ（下の「外のワークフローで処理する」）。`name` も書く |
+| `input_template` | — | `external` の受け渡し先で、処理に渡す文章のテンプレートのファイル（`render` の既定。`dags` が `render` のステップを足す） |
+| `lock` | — | この名前の受け渡し先どうしは、ルール・取得元をまたいで同時に 1 件だけ実行する（`begin` で取り、`finish` で返す。期限は `timeout_sec` + 120 秒） |
+| `skip_if` | — | 実行の前に呼ぶチェック（プラグインが足す）の名前か `{check: 名前, options: {...}}` の配列。どれかが真なら実行しない |
+| `handled_before_if` | — | 実行のあとに呼ぶチェック。どれかが真なら、処理し終えたのは実行前の状態までにする（その間の変化を次の取得でもう一度処理する） |
+| `refresh` | — | `command` / `external` の実行の前後にレコードを 1 件取り直す要求（`url`・`method`・`headers`・`query`・`records`・`timeout_sec`。`headers` を書かなければ取得元のもの）。下の「実行の前後に取り直す」 |
 | `name` | `workflow` と同じ | 受け渡し先の名前（同じワークフローに 2 回渡すときに区別する） |
 | `params` | — | 追加の引数。`{{ event.after.title }}`・`{{ event.record_id }}`・`{{ delivery.id }}`・`{{ env.X }}` を埋められる |
 | `queue` | — | 受け渡し先のキューを上書きする（Dagu のキュー） |
@@ -705,6 +773,7 @@ Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `sche
 | `rebaseline --rule R` / `--source S` | 最新の取得結果を基準値にし直す（その間の変化では発火しない）。`--refetch` で次の取得を全件に、`--now` でいま取り直す |
 | `replay --rule R [--from-fetch N] [--dry-run]` | 保存済みの取得結果で判定をやり直す。API には問い合わせない。既にあるイベントは同じ ID なので積み直さない |
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
+| `due` / `begin` / `render` / `finish` | `external` の受け渡し先を外のワークフローから処理する（上の「外のワークフローで処理する」） |
 | `forget-handled --rule R [--target T] レコード...` | `refresh` のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる） |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |

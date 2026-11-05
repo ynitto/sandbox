@@ -285,6 +285,7 @@ class Env:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             plug = [x for p in self.plugins for x in ("--plugin", p)]
             code = cli.main([*plug, "--config", str(self.config_path), "--connections", str(self.conn_file), *args])
+        self.stdout = out.getvalue()        # 結果だけ（ログは標準エラー）
         return code, out.getvalue() + err.getvalue()
 
     def ok(self, test, *args: str) -> str:

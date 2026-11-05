@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS handled_records (   -- refresh のある受け渡し�
     updated_at REAL NOT NULL,
     PRIMARY KEY (rule, target, rkey)
 );
+CREATE TABLE IF NOT EXISTS delivery_runs (   -- begin から finish までの、実行中の受け渡し（別のプロセスがつなぐ）
+    delivery TEXT PRIMARY KEY,
+    started_at REAL NOT NULL,
+    before_hash TEXT,           -- refresh で取り直した、実行前の監視する値のハッシュ
+    before_value BLOB,
+    lock TEXT                   -- 持っている受け渡し先の lock の名前
+);
 CREATE TABLE IF NOT EXISTS rate_groups (   -- rate_limit.group ごとに共有する要求の記録と失敗の待ち
     name TEXT PRIMARY KEY,
     last_request_at REAL,
@@ -258,6 +265,24 @@ class Store:
     def release(self, name: str) -> None:
         with self.tx() as db:
             db.execute("DELETE FROM leases WHERE name=? AND owner=?", (name, self.owner))
+
+    def hold(self, name: str, owner: str, ttl: float) -> bool:
+        """プロセスをまたいで持つ排他（受け渡し先の lock）。持ち主は受け渡しの ID で、期限が切れるまで誰にも渡さない
+        （begin のプロセスが終わっても、finish まで持ち続けるため。pid では判定しない）。"""
+        with self.tx() as db:
+            row = db.execute("SELECT * FROM leases WHERE name=?", (name,)).fetchone()
+            t = now()
+            if row is not None and row["owner"] != owner and row["expires_at"] > t:
+                return False
+            db.execute("INSERT INTO leases(name, owner, host, pid, expires_at) VALUES(?,?,?,?,?) "
+                       "ON CONFLICT(name) DO UPDATE SET owner=excluded.owner, host=excluded.host, "
+                       "pid=excluded.pid, expires_at=excluded.expires_at",
+                       (name, owner, hostname(), -1, t + ttl))
+            return True
+
+    def unhold(self, name: str, owner: str) -> None:
+        with self.tx() as db:
+            db.execute("DELETE FROM leases WHERE name=? AND owner=?", (name, owner))
 
     def lease_holder(self, name: str) -> sqlite3.Row | None:
         row = self.one("SELECT * FROM leases WHERE name=?", (name,))

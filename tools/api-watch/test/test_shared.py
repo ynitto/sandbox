@@ -146,7 +146,7 @@ class RunHereTest(Base):
         cases = [
             ({"command": ["x"]}, "name"),
             ({"name": "a", "command": ["x"], "workflow": "w"}, "どちらか一方"),
-            ({"workflow": "w", "timeout_sec": 5}, "command を書いたときだけ"),
+            ({"workflow": "w", "timeout_sec": 5}, "command か external: true の受け渡し先だけ"),
         ]
         for t, msg in cases:
             self.write({"r": self.rule(t)})
@@ -427,7 +427,7 @@ class RefreshTest(Base):
         self.assertEqual(len(self.handled()), 2)
 
     def test_config_checks(self):
-        for t, msg in (({"workflow": "w", "refresh": {"url": "x"}}, "command を書いたときだけ"),
+        for t, msg in (({"workflow": "w", "refresh": {"url": "x"}}, "command か external: true の受け渡し先だけ"),
                        ({"name": "a", "command": ["x"], "refresh": {}}, "refresh.url"),
                        ({"name": "a", "command": ["x"], "refresh": {"url": "{{ delivery.id }}"}}, "event.*")):
             self.write({"r": self.rule(t)})
@@ -552,6 +552,170 @@ class RateGroupTest(Base):
         self.assertIn("同じ値", str(cm.exception))
 
 
+TEST_PLUGIN = """\
+from pathlib import Path
+
+def shout(value, arg):
+    return str(value).upper() + (arg or "")
+
+def flag(ctx):
+    # options.file があれば真
+    return Path(ctx.options["file"]).exists()
+
+def remote_is(ctx):
+    # 取得元の接続で 1 件取り、status が options.value なら真
+    rec = ctx.get_json(ctx.render("{{ conn.url }}/item/{{ event.record.id }}"))
+    ctx.log("remote_is: " + str(rec and rec.get("status")))
+    return bool(rec) and rec.get("status") == ctx.options["value"]
+
+def boom(ctx):
+    raise RuntimeError("boom")
+
+def register(api):
+    api.add_filter("shout", shout)
+    api.add_check("t.flag", flag)
+    api.add_check("t.remote_is", remote_is)
+    api.add_check("t.boom", boom)
+"""
+
+
+class ExternalTest(Base):
+    """external の受け渡し先（外のワークフローが begin → 処理 → finish を呼ぶ）と、プラグインのフィルタ・チェック。"""
+
+    def setUp(self):
+        super().setUp()
+        self.plugin = self.env.tmp / "testplugin.py"
+        self.plugin.write_text(TEST_PLUGIN, encoding="utf-8")
+        self.env.plugins = [str(self.plugin)]
+        self.flagfile = self.env.tmp / "flag"
+
+    def setup_rule(self, **target):
+        t = {"name": "job", "external": True, "timeout_sec": 60, "retry_backoff_sec": 0,
+             "refresh": {"url": "{{ conn.url }}/item/{{ event.record_id }}"}, **target}
+        self.write({"r": {**self.rule(t), "watch": ["status", "note"]}})
+        self.env.api.put(1, status="a")
+        self.env.ok(self, "run", "--rule", "r")
+
+    def due(self) -> list:
+        self.env.ok(self, "due", "--rule", "r")
+        return json.loads(self.env.stdout)
+
+    def begin(self, d: str) -> str:
+        self.env.ok(self, "begin", d)
+        return self.env.stdout.strip()                              # 標準出力は判断の 1 語だけ
+
+    def test_begin_render_finish(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")                     # external は work では実行しない
+        ids = self.due()
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(self.begin(ids[0]), "run")
+        self.assertEqual(self.due(), [])                            # 実行中は出さない
+        tpl = self.env.tmp / "prompt.txt"
+        tpl.write_text("#{{ event.record.id }} {{ event.record.status | shout: '!' }} 前回 {{ event.refreshed.last_handled | json }}"
+                       " {{ delivery.attempt }} 回目", encoding="utf-8")
+        self.env.ok(self, "render", ids[0], "--template", str(tpl))
+        self.assertEqual(self.env.stdout.strip(), "#1 B! 前回 null 1 回目")   # プラグインのフィルタ。標準出力は文章だけ
+        self.env.api.put(1, status="b", note="by-me")              # 処理の中で自分が書き込んだ
+        self.env.ok(self, "finish", ids[0])
+        self.assertEqual(self.env.deliveries()[-1]["status"], "done")
+        self.env.ok(self, "run", "--rule", "r")                     # 自分の書き込みのイベントは begin が飛ばす
+        ids = self.due()
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(self.begin(ids[0]), "skip")
+        self.assertEqual(self.env.ok(self, "finish", ids[0]).strip().splitlines()[-1].split(": ")[-1], "gone")
+
+    def test_render_uses_input_template_of_target(self):
+        tpl = self.env.tmp / "in.txt"
+        tpl.write_text("{{ event.record | json: 2 }}", encoding="utf-8")
+        self.setup_rule(input_template=str(tpl))
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        self.begin(d)
+        out = self.env.ok(self, "render", d)
+        self.assertIn('\n  "status": "b"', out)                    # json: 2 で整形
+
+    def test_finish_failed_is_retried_and_gives_up(self):
+        self.setup_rule(max_attempts=2)
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        self.assertEqual(self.begin(d), "run")
+        self.env.ok(self, "finish", d, "--failed", "--message", "agent が失敗")
+        row = self.env.deliveries()[-1]
+        self.assertEqual((row["status"], row["last_error"]), ("send_failed", "agent が失敗"))
+        self.assertEqual(self.begin(d), "run")
+        self.env.ok(self, "finish", d, "--failed")
+        self.assertEqual(self.env.deliveries()[-1]["status"], "dead")
+
+    def test_lock_allows_one_at_a_time_across_rules(self):
+        t = {"name": "job", "external": True, "timeout_sec": 60, "retry_backoff_sec": 0, "lock": "agent"}
+        self.write({"r1": self.rule(t), "r2": self.rule(dict(t))}, min_interval_sec=600, busy_wait_sec=10)
+        self.env.api.put(1, status="a")
+        self.env.ok(self, "run")
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--force")
+        self.env.ok(self, "due", "--rule", "r1")
+        a = json.loads(self.env.stdout)[0]
+        self.env.ok(self, "due", "--rule", "r2")
+        b = json.loads(self.env.stdout)[0]
+        self.assertEqual(self.begin(a), "run")
+        self.assertEqual(self.begin(b), "busy")                     # 別のルールでも同じ lock は同時に 1 つ
+        self.env.ok(self, "finish", a)
+        s = self.env.store()
+        try:
+            with s.tx() as db:                                      # busy は試行に数えずに少しあとへ回している
+                db.execute("UPDATE deliveries SET next_attempt_at=0 WHERE id=?", (b,))
+        finally:
+            s.close()
+        self.assertEqual(self.begin(b), "run")
+        self.env.ok(self, "finish", b)
+        self.assertEqual([d["attempts"] for d in self.env.deliveries() if d["id"] in (a, b)], [1, 1])
+
+    def test_handled_before_if_check(self):
+        self.setup_rule(handled_before_if=[{"check": "t.flag", "options": {"file": str(self.flagfile)}}])
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        self.begin(d)
+        self.env.api.put(1, status="b", note="by-alice")           # 処理の間にほかの人が書き込んだ
+        self.flagfile.write_text("x")                               # …とチェックが判定する
+        out = self.env.ok(self, "finish", d)
+        self.assertIn("handled_before_if の t.flag", out)
+        self.env.ok(self, "run", "--rule", "r")                     # ほかの人の書き込みはもう一度処理する
+        d2 = self.due()[0]
+        self.assertEqual(self.begin(d2), "run")
+
+    def test_skip_if_check_uses_source_connection(self):
+        self.setup_rule(skip_if=[{"check": "t.remote_is", "options": {"value": "wip"}}])
+        self.env.api.put(1, status="wip")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        self.assertEqual(self.begin(d), "skip")                     # チェックが取得元の接続で API を見て真
+        self.assertEqual(self.env.deliveries()[-1]["last_error"], "skip_if の t.remote_is が真だった")
+
+    def test_failing_check_falls_to_the_safe_side(self):
+        self.setup_rule(skip_if=["t.boom"], handled_before_if=["t.boom"])
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        self.assertEqual(self.begin(d), "run")                      # skip_if の失敗は「実行する」
+        out = self.env.ok(self, "finish", d)
+        self.assertIn("handled_before_if の t.boom", out)           # handled_before_if の失敗は「実行前まで」
+
+    def test_unknown_check_needs_plugin(self):
+        self.setup_rule(skip_if=["t.flag"])
+        self.env.plugins = []
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        d = self.due()[0]
+        code, out = self.env.run("begin", d)
+        self.assertNotEqual(code, 0)
+        self.assertIn("--plugin", out)
+
+
 class DagsTest(Base):
     def _yaml(self):
         try:
@@ -595,6 +759,56 @@ class DagsTest(Base):
         self.assertIn("45 9 * * 1-5", path.read_text(encoding="utf-8"))
         self.env.ok(self, "dags", "--out", str(out), "--schedule", "0 * * * *", "--force")
         self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["schedule"], "0 * * * *")
+
+    def test_external_target_parent_and_child(self):
+        yaml = self._yaml()
+        self.env.plugins = ["dagu"]
+        self.write({"issue": self.rule({"name": "run", "external": True, "timeout_sec": 4200})},
+                   schedule="0 * * * *")
+        out = self.env.tmp / "dags"
+        self.env.ok(self, "dags", "--out", str(out), "--dotenv", "/x/issue-loop.env")
+        names = sorted(p.name for p in out.iterdir())
+        self.assertEqual(names, ["api-watch-issue-run.yaml", "api-watch-issue.yaml", "api-watch-maintenance.yaml"])
+        parent = yaml.safe_load((out / "api-watch-issue.yaml").read_text(encoding="utf-8"))
+        self.assertEqual([s["name"] for s in parent["steps"]], ["fetch", "evaluate", "due-run", "run-run"])
+        due, run = parent["steps"][2], parent["steps"][3]
+        self.assertEqual(due["with"]["args"][-5:], ["due", "--rule", "issue", "--target", "run"])
+        self.assertEqual(due["output"], "DUE_RUN")
+        self.assertEqual(run["action"], "dag.run")
+        self.assertEqual(run["with"], {"dag": "api-watch-issue-run", "params": {"DELIVERY": "${ITEM}"}})
+        self.assertEqual(run["parallel"], {"items": "${DUE_RUN}", "max_concurrent": 1})
+        self.assertEqual(run["preconditions"], [{"condition": "${DUE_RUN}", "expected": "[]", "negate": True}])
+        child = yaml.safe_load((out / "api-watch-issue-run.yaml").read_text(encoding="utf-8"))
+        self.assertNotIn("schedule", child)
+        self.assertEqual(child["params"], [{"DELIVERY": ""}])
+        self.assertEqual(child["dotenv"], ["/x/issue-loop.env"])
+        self.assertEqual(child["steps"][0]["with"]["args"][-2:], ["begin", "${params.DELIVERY}"])
+        self.assertEqual(child["steps"][0]["output"], "DECISION")
+        self.assertEqual(child["steps"][1]["preconditions"], [{"condition": "${DECISION}", "expected": "run"}])
+        self.assertEqual(child["handler_on"]["success"]["with"]["args"][-2:], ["finish", "${params.DELIVERY}"])
+        self.assertEqual(child["handler_on"]["failure"]["with"]["args"][-3:], ["finish", "${params.DELIVERY}", "--failed"])
+
+    def test_external_child_with_input_and_handle_step(self):
+        yaml = self._yaml()
+        self.env.plugins = ["dagu"]
+        self.write({"issue": self.rule({"name": "run", "external": True, "timeout_sec": 4200,
+                                        "input_template": "prompt.md"})}, schedule="0 * * * *")
+        snippet = self.env.tmp / "handle.yaml"
+        snippet.write_text("action: harness.run\nwith:\n  provider: claude\n  prompt: 指示は標準入力\n"
+                           "  stdin: \"${INPUT}\"\n", encoding="utf-8")
+        out = self.env.tmp / "dags"
+        self.env.ok(self, "dags", "--out", str(out), "--handle-step", f"issue.run={snippet}")
+        child = yaml.safe_load((out / "api-watch-issue-run.yaml").read_text(encoding="utf-8"))
+        self.assertEqual([s["name"] for s in child["steps"]], ["begin", "render", "handle"])
+        self.assertEqual(child["steps"][1]["with"]["args"][-2:], ["render", "${params.DELIVERY}"])
+        self.assertEqual(child["steps"][1]["output"], "INPUT")
+        h = child["steps"][2]
+        self.assertEqual((h["action"], h["with"]["provider"], h["with"]["stdin"]), ("harness.run", "claude", "${INPUT}"))
+        self.assertEqual(h["timeout_sec"], 4200)
+        self.assertEqual(h["preconditions"], [{"condition": "${DECISION}", "expected": "run"}])
+        code, msg = self.env.run("dags", "--out", str(out), "--handle-step", f"issue.nope={snippet}")
+        self.assertNotEqual(code, 0)
+        self.assertIn("external の受け渡し先 nope", msg)
 
     def test_rule_name_must_not_clash(self):
         self.env.plugins = ["dagu"]

@@ -8,7 +8,8 @@
 [dagu-issue-loop](./dagu-issue-loop-design.md) の初版は GitLab の issue 専用で、変化の判定・待ち行列・エージェント CLI の
 1 セッション実行までを 1 つのスクリプトが持っていた。本設計はそこから「API の取得」「変更の検知」「受け渡し」を
 切り出して汎用にし、**実行（後続処理）は Dagu のワークフローかその場のコマンドに渡す**。dagu-issue-loop は今は
-取得・検知・実行待ちを本設計に任せ、エージェント CLI を動かす部分（`issue_loop.py handle`）だけを持つ。
+取得・検知・実行待ち・1 セッションの排他を本設計に、エージェント CLI の実行を Dagu の `harness.run` に任せ、GitLab 固有の部分を
+本設計のプラグイン（`gitlab_issue.py`）として持つ。
 
 | 方針 | 決め方 |
 |---|---|
@@ -310,6 +311,36 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 取得元（と `rate_limit.group`）と分け合い、取り直しの失敗も取得元を失敗の待ちに入れる。待ちの中なら、試行に数えずにあとへ回す。
 処理し終えた状態は、ルールの観測値が消えたレコードのものを `gc` で消し、`forget-rule` でルールごと消す。`forget-handled` で個別に忘れさせる。
 
+### 5.7 外のワークフローで処理する（`external`）と、プラグインの口
+
+処理（エージェントの CLI など）を api-watch のプロセスの中で動かすと、止める・時間切れ・ログ・実行履歴を api-watch が持つことになり、
+ワークフロー基盤の画面から見えない。`external: true` の受け渡し先は api-watch が実行せず、§5.5 の `work` の 1 件を、基盤のステップから呼べる
+コマンドに分ける。
+
+| コマンド | `work` の中のどこか | 状態 |
+|---|---|---|
+| `due` | 実行を待っている受け渡しを探す（`_blocked` で同じレコードの前を待つ） | 何も変えない |
+| `begin` | 受け渡しを取る（`sending`・期限 `timeout_sec` + 120 秒）→ 処理し終えた状態との比較 → `lock` → `refresh` → `filter` → `skip_if` | 実行するなら `delivery_runs` に開始の時刻・実行前の監視する値・`lock` を書く |
+| `render` | `begin` が書いたイベントの JSON（`<イベント ID>--<受け渡し先>.json`）でテンプレートを展開する | 何も変えない |
+| `finish` | `handled_before_if` → 実行のあとの `refresh` → 処理し終えた状態の記録 → 完了 / 失敗 → `lock` を返す | `delivery_runs` を消す |
+
+`begin` と `finish` は別のプロセスなので、`deliveries.owner`（プロセスごと）ではなく `delivery_runs` の行と `sending` の状態でつなぐ。
+`lock` も同じ理由で、pid で死活を見る取得の排他（§3.5）とは別に、持ち主を受け渡しの ID にした期限つきの排他（`Store.hold`）にした。
+`finish` が呼ばれないまま基盤ごと落ちても、受け渡しの期限と `lock` の期限が切れれば次の `begin` が取り直す（少なくとも 1 回）。
+`work`（`command` の受け渡し先）も同じ `begin` / `finish` を 1 つのプロセスで呼ぶだけにして、振る舞いを 1 つにした。
+
+ログは標準エラーに出す。標準出力を結果だけ（`due` の配列・`begin` の 1 語・`render` の文章）にして、Dagu のステップの `output:` で受けるため。
+
+`dags` は `external` の受け渡し先に、親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` →
+`render` → `handle`、`handler_on` で `finish`）を書く。確かめたのは Dagu v2.25.2 のスキーマと実装（`parallel` は空の配列を誤りにするので
+`preconditions` の `negate` で呼ばない、子には項目が `ITEM` として渡るので `with.params` で `DELIVERY` に入れる、`harness.run` の `with.stdin` は
+文字列で、組み込みの claude などは標準入力に流す）。`handle` は処理ごとに違うので雛形にし、`--handle-step` で中身を差し込めるようにした。
+
+**プラグインの口**（`apiwatch/plugins/__init__.py`・`apiwatch/hooks.py`）: アダプタ・コマンドに加えて、フィルタ（テンプレートの関数）と
+チェック（実行の前後の真偽）を名前で登録できる。プラグインは本体の内部に触らず、チェックの HTTP も `CheckContext.get_json` を通す。
+取得元の接続・要求の間隔・1 分あたりの上限・失敗の待ちを分け合わせ、プラグインが API への負荷の約束を破れないようにするため。
+チェックの例外は取りこぼさない側に倒す（`skip_if` は偽、`handled_before_if` は真）。
+
 ## 6. 運用
 
 - 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
@@ -349,7 +380,8 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   時間切れ・設定の検査）、取得の共有（2 本のワークフローで問い合わせ 1 回・共有の設定が無ければ誤り・ずらし・取得中のプロセスを待ってその結果を使う・
   失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、`dags` が書くルールごとのワークフロー・`--schedule`・既にある DAG を上書きしないこと、cron の解釈、予定の時刻での取得、`rate_limit.group`、
   `refresh`（自分の書き込みで再実行しない・実行中のほかの人の変化で再実行する・たまったイベントを最新で 1 回・filter から外れた／消えたら飛ばす・
-  取り直しの失敗・`forget-handled`）
+  取り直しの失敗・`forget-handled`）、`external`（`due` → `begin` → `render` → `finish`・失敗の再試行と打ち切り・ルールをまたいだ `lock`・
+  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`dags` が書く親と子のワークフローと `--handle-step`
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査

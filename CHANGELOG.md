@@ -34,21 +34,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `{"handled": "before"}` を書くと、実行前の状態までを処理済みにできる（実行中にほかの人が動いたとき）
 - `work` はコマンドに `APIWATCH_ATTEMPT`（何回目か）と `APIWATCH_RESULT_FILE` を渡す
 - `forget-handled --rule R <レコード>`: 処理し終えた状態を忘れさせ、次の変化で必ず実行させる
+- 受け渡し先の `external: true`: api-watch は実行せず、外のワークフローが `due`（実行を待つ ID の配列）→ `begin`（取る・`lock`・取り直し・
+  飛ばす判定。`run` / `skip` / `busy` / `wait` / `failed` / `gone` を出す）→ 処理 → `finish`（処理し終えた状態の記録・失敗ならあとでやり直す）を呼ぶ。
+  `render` は `begin` が取り直したイベントでテンプレート（受け渡し先の `input_template`）を展開する
+- 受け渡し先の `lock`: 同じ名前の受け渡し先どうしは、ルール・取得元をまたいで同時に 1 件だけ実行する
+- 受け渡し先の `skip_if` / `handled_before_if`: プラグインが足すチェックを、実行の前（真なら実行しない）と実行のあと（真なら実行前の状態までを処理済み）に呼ぶ
+- **プラグインの口を広げる**: `api.add_filter`（テンプレートのフィルタ）と `api.add_check`（実行の前後の判定。`ctx.get_json` で取得元の接続・
+  要求の間隔・失敗の待ちを分け合って API に問い合わせる）を足す
+- `dags`: `external` の受け渡し先に、親（`due` → `action: dag.run` + `parallel`、同時に 1 つ）と子（`begin` → `render` → `handle`、
+  `handler_on` で `finish`）のワークフローを書く。`--handle-step <ルール>.<受け渡し先>=<ファイル>` で `handle` の中身を差し込む
+- テンプレートの `{{ x | json: 2 }}`（整形）。フィルタの引数の `'...'`（単引用符）を外す（`| default: ''` が `''` になっていたのを直す）
+- ログを標準エラーに出す（標準出力は結果だけ。`due`・`begin`・`render`・`status --json` などを Dagu の `output:` で受け取れるように）
 
-### dagu-issue-loop: issue の取得と変化の検知を api-watch に任せ、`poll` / `run` をやめる
+### dagu-issue-loop: api-watch と Dagu の上に載せ替え、`issue_loop.py` をやめる
 
-- **`issue_loop.py poll` / `run`・待ち行列・`gitlab-issue-poll.yaml` / `gitlab-issue-agent.yaml` をやめる**。issue の取得・変化の検知・
-  実行待ち・再試行・打ち切り・実行の前後の取り直し（処理し終えた状態の記録）は api-watch が受け持つ。`issue_loop.py` は `handle` / `status` だけになり、
-  状態ファイルも持たない（約 1250 行 → 約 820 行）
-- `issue_loop.py handle`: api-watch が取り直した issue を 1 件受け取り、前回処理し終えたときからの差分でエージェント CLI を実行する。
-  実行中に他人が動いたときは api-watch に「実行前の状態まで処理済み」と返し、次の変化でもう一度流す。
-  別のセッションが実行中なら終了コード 4（api-watch があとで流し直す）
-- `api-watch.yaml.example`: api-watch の設定例（これまでと同じ監視項目・`filter`・`refresh`・毎時 0 分の予定・0〜15 分のずらし・失敗の共有・
-  `rate_limit.group`）。Dagu のワークフロー（取得から実行までの 1 本、毎分起動）は api-watch の `dags` で雛形を作る
-- `ISSUE_LOOP_POLL_JITTER`・`ISSUE_LOOP_MAX_ATTEMPTS`・`ISSUE_LOOP_RETRY_BACKOFF`・`ISSUE_LOOP_DRAIN`・`ISSUE_LOOP_MAX_PAGES`・
-  `ISSUE_LOOP_ISSUE_STATE` / `LABELS` / `ASSIGNEE` は使わない（api-watch の設定の `jitter_sec`・`max_attempts`・`retry_backoff_sec`・`filter` などに書く）。
-  `issue_loop.py forget` は `api-watch forget-handled` に代わる
-- 移るとき: README の「入れ方」で api-watch を入れ、Dagu の DAG フォルダから `gitlab-issue-poll.yaml` / `gitlab-issue-agent.yaml` を消す
+- **`issue_loop.py` と `gitlab-issue-poll.yaml` / `gitlab-issue-agent.yaml` をやめる**。issue の取得・変化の検知・実行待ち・再試行・打ち切り・
+  実行の前後の取り直し（処理し終えた状態の記録）・1 セッションの排他は api-watch が、起動とエージェント CLI の実行（`harness.run`）は Dagu が受け持つ
+- `gitlab_issue.py`（api-watch のプラグイン）: フィルタ `gitlab_issue_changes`（前回処理し終えたときからの変化の箇条書き）・`gitlab_issue_kind`（新規 / 更新）と、
+  チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。約 170 行
+- 設定の例: `api-watch.yaml.example`（`external` の受け渡し先・`refresh`・`lock`・`handled_before_if`・毎時 0 分の予定・0〜15 分のずらし）、
+  `prompt.md.example`（api-watch のテンプレートで書いたプロンプト）、`handle-step.yaml.example`（`harness.run` でエージェント CLI を動かすステップ）。
+  Dagu のワークフロー（親と子）は api-watch の `dags` で雛形を作る
+- `ISSUE_LOOP_*` の環境変数は使わない（取得・再試行・絞り込みは api-watch の設定、エージェント CLI の種類とフラグは handle のステップ、
+  プロンプトはテンプレートに書く）。`issue_loop.py forget` は `api-watch forget-handled` に代わる
+- 移るとき: README の「入れ方」で入れ直し、Dagu の DAG フォルダから以前の DAG を消す
 
 ### dagu-issue-loop: stdin でプロンプトを渡す CLI が読まないとき、打ち切りが効かなくなるのを直す
 

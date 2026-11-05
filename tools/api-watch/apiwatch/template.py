@@ -6,8 +6,9 @@
     {{ now }} / {{ now_iso }}        いまの時刻（UNIX 秒 / ISO 8601 UTC）
     {{ event.after.title }}          受け渡しのとき（イベントの中身）
     {{ x | default: "" }}            無ければ既定値
-    {{ x | json }}                   JSON にする
+    {{ x | json }}                   JSON にする（{{ x | json: 2 }} なら 2 字下げで整形する）
     {{ x | urlencode }}              URL 用にエスケープする
+    {{ x | プラグインのフィルタ: 引数 }}  --plugin で読み込んだプラグインが足したフィルタ（apiwatch.hooks）
 
 文字列全体が 1 つの {{ ... }} なら、値の型（数・null など）をそのまま返す。
 """
@@ -39,7 +40,10 @@ def _lookup(ctx: dict, expr: str) -> Any:
 
 
 def _parse_literal(text: str) -> Any:
+    """フィルタの引数。JSON として読み、読めなければ文字列。'...' の単引用符は外す（| default: '' と書けるように）。"""
     text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] == "'":
+        return text[1:-1]
     try:
         return json.loads(text)
     except ValueError:
@@ -58,11 +62,18 @@ def evaluate(expr: str, ctx: dict) -> Any:
         elif name == "json":
             if value is jpath.MISSING:
                 raise TemplateError(f"{{{{ {expr} }}}}: 値がありません")
-            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            indent = _parse_literal(arg) if arg.strip() else None
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                               indent=indent if isinstance(indent, int) and not isinstance(indent, bool) else None)
         elif name == "urlencode":
             value = urllib.parse.quote("" if value is jpath.MISSING or value is None else str(value), safe="")
         else:
-            raise TemplateError(f"{{{{ {expr} }}}}: 知らないフィルタです: {name}")
+            from . import hooks
+            fn = hooks.get_filter(name)
+            if fn is None:
+                raise TemplateError(f"{{{{ {expr} }}}}: 知らないフィルタです: {name}"
+                                    "（プラグインのフィルタなら --plugin を付けて実行してください）")
+            value = fn(None if value is jpath.MISSING else value, _parse_literal(arg) if arg.strip() else None)
     if value is jpath.MISSING:
         raise TemplateError(f"{{{{ {expr} }}}}: 値がありません（| default: ... で既定値を書けます）")
     return value
