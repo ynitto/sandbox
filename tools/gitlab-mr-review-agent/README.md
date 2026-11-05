@@ -73,13 +73,21 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
        token: ${GITLAB_TOKEN}
    ```
 
-6. kiro-cli の動かし方を書く。`handle-step.yaml.example` を `~/.config/dagu/gitlab-mr-review-agent.handle.yaml` にコピーし、作業フォルダ（`working_dir`）を
-   2 の `MR_REVIEW_WORKTREE` と同じにする。kiro-cli はこの PC に入れて、ログインしておく。続けて `prepare` でレビュー用の作業フォルダを作る
-   （リポジトリが無ければ、ここで 1 回だけ取ってくる。ファイルの中身は要るときに取るので、履歴の大きなリポジトリでも軽い）。git（2.31 以降）が要る。
+6. Dagu のワークフローを置く。`api-watch-mr-review.yaml.example` を `~/.config/dagu/dags/api-watch-mr-review.yaml` にコピーし、
+   `handle` の作業フォルダ（`working_dir`）を 2 の `MR_REVIEW_WORKTREE` と同じにして、`/home/you` を自分のものに直す。
+   kiro-cli はこの PC に入れて、ログインしておく。毎日の整理のワークフローは api-watch の例をそのまま置く。
+   Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
-   cp tools/gitlab-mr-review-agent/handle-step.yaml.example ~/.config/dagu/gitlab-mr-review-agent.handle.yaml
+   cp tools/gitlab-mr-review-agent/api-watch-mr-review.yaml.example ~/.config/dagu/dags/api-watch-mr-review.yaml
    ```
+
+   ```bash
+   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
+   ```
+
+7. 環境変数を読み込んで、`prepare` でレビュー用の作業フォルダを作る（リポジトリが無ければ、ここで 1 回だけ取ってくる。ファイルの中身は
+   要るときに取るので、履歴の大きなリポジトリでも軽い）。git（2.31 以降）が要る。
 
    ```bash
    set -a; . ~/.config/dagu/gitlab-mr-review-agent.env; set +a
@@ -87,17 +95,6 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 
    ```bash
    python3 ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py prepare
-   ```
-
-7. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す。`api-watch-mr-review.yaml`（取得からレビューまで。6 のステップが handle に入る。
-   中身は `api-watch-mr-review.yaml.example` と同じで、パスが自分の PC のものになる）と `api-watch-maintenance.yaml`（毎日の整理）ができる。
-
-   ```bash
-   set -a; . ~/.config/dagu/gitlab-mr-review-agent.env; set +a
-   ```
-
-   ```bash
-   api-watch --plugin dagu --plugin ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-mr-review-agent.env --handle-step mr-review.run=~/.config/dagu/gitlab-mr-review-agent.handle.yaml
    ```
 
 8. Dagu のスケジューラを動かす（`dagu start-all` など）。設定の例は `initial: emit` なので、**最初の取得で、いま開いている MR もレビューする**
@@ -171,9 +168,9 @@ kiro-cli が 0 以外で終わる・時間切れ・止められると失敗に�
 
 ## kiro-cli とプロンプト
 
-- kiro-cli は Dagu の `harness.run` で動かす（`gitlab-mr-review-agent.handle.yaml`）。プロンプトは引数で渡し（`prompt: "${INPUT}"`）、
+- kiro-cli は Dagu の `harness.run` で動かす（ワークフローの `handle`）。プロンプトは引数で渡し（`prompt: "${INPUT}"`）、
   `trust_all_tools: true`（`--trust-all-tools`）で確認なしにコマンドを実行させる。Dagu の `harness.run` が使えない版なら、
-  ファイルのコメントにある `action: exec` で kiro-cli を直接呼ぶ
+  `handle` のコメントにある `action: exec` で kiro-cli を直接呼ぶ
 - プロンプトは `~/.config/dagu/gitlab-mr-review-agent.prompt.md`（api-watch の設定の `input_template`）。何を指摘するか・まとめに何を書くかは
   ここで変える。`{{ event.record.iid }}`・`{{ event.record.title }}`・`{{ event.record.web_url }}`・`{{ delivery.attempt }}`（何回目か）と、
   プラグインの `{{ event | gitlab_mr_since }}`（前回レビューしたコミット）・`{{ event | gitlab_mr_kind }}`（初めて / 再レビュー）が使える
@@ -208,9 +205,9 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 
 ## Windows で使うとき
 
-- api-watch は `python install.py install` で入れる
 - `gitlab-mr-review-agent.env` の `MR_REVIEW_CLI` は `python C:/Users/<名前>/.local/share/gitlab-mr-review-agent/gitlab_mr.py` のように書く
-- `MR_REVIEW_REPO_DIR`・`MR_REVIEW_WORKTREE` と、`gitlab-mr-review-agent.handle.yaml` の `working_dir` は `C:/Users/you/work/project` のように書く
+- api-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `api-watch.pyz` のフルパスにする
+- `MR_REVIEW_REPO_DIR`・`MR_REVIEW_WORKTREE` と、ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く
 - git は Git for Windows（2.31 以降）。長いパス（260 字を超える）と日本語のファイル名は、このツールが git に設定を渡して扱う。
   HTTPS のリモートは、その PC の資格情報マネージャーか、GitLab と同じホストならトークンで取る
 
@@ -222,7 +219,7 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 | `~/.github/connections.yaml` | GitLab の接続（値は上の環境変数から取る） |
 | `~/.config/api-watch/api-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
 | `~/.config/dagu/gitlab-mr-review-agent.prompt.md` | プロンプト（レビューの観点） |
-| `~/.config/dagu/gitlab-mr-review-agent.handle.yaml` | kiro-cli のフラグ・作業フォルダ |
+| `~/.config/dagu/dags/api-watch-mr-review.yaml` | Dagu のワークフロー（kiro-cli のフラグ・作業フォルダは `handle`） |
 
 ## テスト
 

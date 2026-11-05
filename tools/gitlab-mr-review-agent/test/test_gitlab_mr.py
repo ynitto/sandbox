@@ -769,45 +769,41 @@ class FlowTest(_GitLabBase):
         self.assertEqual(len(self.gl.discussions["1"]), 1)
         self.assertEqual(self.cycle(), (None, None))
 
+    def test_example_dag_reviews_once(self):
+        """例の Dagu のワークフローを Dagu と同じ順で本物の api-watch に流す（kiro-cli の代わりにテストがレビューする）。"""
+        sys.path.insert(0, str(API_WATCH.parent / "test"))
+        import dagrun
+        dag = ROOT / "api-watch-mr-review.yaml.example"
+        dagrun.check_shape(self, dagrun.load(dag), dag.name)
+        self.gl.put(make_mr(1))
+        prompts: list[str] = []
+
+        def handle(step, vars):
+            self.assertEqual((step["action"], step["with"]["provider"], step["with"]["prompt"]),
+                             ("harness.run", "kiro", "${INPUT}"))
+            self.assertEqual(step["timeout_sec"], 1800)                   # api-watch の設定の timeout_sec と同じ
+            prompts.append(vars["INPUT"])
+            self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")])(vars["INPUT"])
+            return 0
+
+        def run():
+            return dagrun.run(dag, aw=[sys.executable, str(API_WATCH)], head=["--config", str(self.cfg)],
+                              paths={"/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py": str(PLUGIN),
+                                     "/home/you/.github/connections.yaml": str(self.conn)},
+                              handle=handle, env=self.env)
+        r = run()
+        self.assertEqual(r, {"fetch": 0, "evaluate": 0, "claim": 0, "render": 0, "handle": 0, "finish": 0})
+        self.assertIn("!1「MR 1」をレビューしてください", prompts[0])
+        self.assertEqual(len(self.gl.discussions["1"]), 1)
+        r = run()                                                        # 同じコミットはもう流さない
+        self.assertEqual((r["handle"], r["finish"], len(prompts)), (None, None, 1))
+
     def test_merged_while_waiting_is_skipped(self):
         self.gl.put(make_mr(1))
         self.aw("fetch", "--force", "--no-jitter")
         self.aw("evaluate", "--rule", "mr-review")
         self.gl.mrs["1"]["state"] = "merged"
         self.assertEqual(self.aw("claim", "--rule", "mr-review").strip(), "")
-
-
-@unittest.skipUnless(API_WATCH.is_file() and yaml is not None, "api-watch か PyYAML が無い")
-class ExampleDagTest(unittest.TestCase):
-    def test_example_dag_matches_dags_output(self):
-        if os.name == "nt":
-            self.skipTest("例のパスは /home/you（POSIX）で書いている")
-        root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, root, True)
-        home = root / "home" / "you"
-        cfg = home / ".config" / "api-watch" / "api-watch.yaml"
-        conn = home / ".github" / "connections.yaml"
-        plugin = home / ".local" / "share" / "gitlab-mr-review-agent" / "gitlab_mr.py"
-        handle = home / ".config" / "dagu" / "gitlab-mr-review-agent.handle.yaml"
-        for dst, src in ((cfg, ROOT / "api-watch.yaml.example"), (plugin, PLUGIN),
-                         (handle, ROOT / "handle-step.yaml.example")):
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, dst)
-        conn.parent.mkdir(parents=True, exist_ok=True)
-        conn.write_text("gitlab:\n  - label: default\n    url: ${GITLAB_URL}\n    token: ${GITLAB_TOKEN}\n",
-                        encoding="utf-8")
-        env = {**os.environ, "GITLAB_URL": "https://gitlab.example.com", "GITLAB_TOKEN": "x",
-               "GITLAB_PROJECT": "group/project"}
-        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", "dagu", "--plugin", str(plugin),
-                            "--config", str(cfg), "--connections", str(conn), "dags", "--out", str(root / "dags"),
-                            "--python", "/usr/bin/python3", "--script", "/home/you/.local/bin/api-watch",
-                            "--dotenv", "/home/you/.config/dagu/gitlab-mr-review-agent.env",
-                            "--handle-step", f"mr-review.run={handle}"],
-                           env=env, capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        got = (root / "dags" / "api-watch-mr-review.yaml").read_text(encoding="utf-8").replace(str(root), "")
-        self.assertEqual(got, (ROOT / "api-watch-mr-review.yaml.example").read_text(encoding="utf-8"),
-                         "api-watch-mr-review.yaml.example を dags の出力で書き直してください")
 
 
 if __name__ == "__main__":

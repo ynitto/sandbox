@@ -1168,7 +1168,7 @@
     {
       "name": "obsidian-use",
       "description": "「Obsidianのノートを作って」「.baseでフィルターを設定して」「キャンバスを作って」「このURLを読んで」「PDFをMarkdownに変換して」などのノート操作と、「Obsidianのwikiに取り込んで」「Obsidianのwikiで調べて」「wikiを点検して」の知識wiki管理、フックの OBSIDIAN NOTE で発動する。",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "tier": "domain",
       "category": "knowledge-management",
       "tags": [

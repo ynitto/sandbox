@@ -28,7 +28,8 @@ Dagu: api-watch-issue-agent（毎分。1 回の起動で 1 件を処理する）
   （render 以降は DELIVERY が aw_ で始まるときだけ動く: preconditions の re:^aw_）
 ```
 
-- ワークフローは api-watch の `dags` が雛形を書く。`handle` の中身は `--handle-step` で `gitlab-issue-agent.handle.yaml` から差し込む
+- ワークフローは例（`api-watch-issue-agent.yaml.example`・`examples/gitlab-idd/api-watch-idd.yaml.example`）をコピーして置き、`handle` の中身（エージェント CLI）を直す。
+  例は試験で、偽の GitLab と本物の api-watch を相手に Dagu と同じ順で流して確かめる
 - 予定は api-watch の設定 1 か所（取得元の `schedule`）。ワークフローは毎分起動し、失敗したもののやり直しも毎分の起動で進む
 - 実行を待つ issue が複数あっても、1 回の起動では 1 件だけ。次の 1 件は次の起動（1 分後）が取る。同時に 1 つしか動かさないので、
   1 回で全部を流しても待ちの合計はほとんど変わらない

@@ -31,8 +31,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   Windows の CI で試験を回す
 - `gitlab_mr.py`: api-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
   `prepare` / `context` / `show` / `comment` / `resolve` / `summary`。標準ライブラリと git だけ
-- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`gitlab-mr-review-agent.env.example`、
-  Dagu のワークフローの例 `api-watch-mr-review.yaml.example`（`dags` の出力と一致することを試験で確かめる）
+- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`gitlab-mr-review-agent.env.example`、
+  Dagu のワークフローの例 `api-watch-mr-review.yaml.example`（`handle` で kiro-cli を動かす。試験で Dagu と同じ順に本物の api-watch へ流す）
 - 設計: `docs/designs/gitlab-mr-review-agent-design.md`
 
 ### gitlab-idd: ワーカーの作業用フォルダを、既にある作業コピーの git worktree にできる・Windows でも動く（4.4.0）
@@ -47,6 +47,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - gitlab-issue-agent の gitlab-idd の設定の例（`gitlab-issue-agent.env.example`・`examples/gitlab-idd/`）と README に、`GITLAB_IDD_LOCAL_REPO` と Windows の注意を足す
 - CI: gitlab-idd の作業用フォルダの試験を Linux と Windows で、redmine-ticket-agent・gitlab-mr-review-agent の試験を Windows でも回す
 - redmine-ticket-agent: Windows で `close` の失敗の文が `\u5909…` のように崩れて api-watch・Dagu のログに出ていたのを直す（標準出力・標準エラーを UTF-8 にする）
+
+### obsidian-use: Obsidian の LLM wiki のつなぎ込みと点検を、Obsidian が閉じていても回せるようにする（1.2.0）
+
+- `vault.py links "<題>"` を足す。出ていくリンク・入ってくるリンクと、題や別名を書いているのにリンクしていないノート
+  （ingest のつなぎ込み先）を出す。`[[…]]` は Obsidian と同じく名前でボルト全体から引く
+- `vault.py ingested "<URL かファイル>"` を足す。`sources` で取り込み済みかを決める（URL の末尾の `/` と http/https は無視）
+- `vault.py lint` をファイルだけで完結させた。Obsidian の `unresolved` / `orphans`（ボルト全体が混ざる）をやめ、wiki の中の
+  リンク切れ、knowledge の孤立ノート、題とファイル名の違い、knowledge の `summary` の欠け、題・別名が重なるノート（統合の候補）を出す
+- `note` の追記で題の見出しを二度書かない。`--sources` を渡すと操作ログに出典も残る
+- 手順書（`references/wiki.md`）の ingest に「つなぐ → 区切りごとに lint」を、lint にエージェントが読んで行う点検（食い違い・古さ・統合）を足した
+
+### api-watch: フォルダの取得元と、DAG を書き出す `dags` の廃止（0.3.0）
+
+- 取得元に `request` の代わりに `folder` を書くと、フォルダの中のファイルを 1 件ずつのレコードにする。ファイルの追加は `appeared`、
+  更新は `changed`、削除は `removed`。ルール・受け渡し先・Dagu のワークフローは API の取得元と同じ
+- 対象は `include` / `exclude` の glob（`**` で下のフォルダも）で選ぶ。更新時刻から `settle_sec`（既定 5 秒）たっていないファイルは書き込み中とみなして拾わない
+- `hash: true` で中身の SHA-256、`content: text` / `json` で中身もレコードに入れる
+- フォルダが無い・読めないときは一時的な失敗（終了コード 3）にし、全部のファイルが消えたとはみなさない
+- **`dags` コマンドを廃止する**。api-watch を動かす Dagu のワークフローは、`tools/api-watch/dags/` の例
+  （取得元・ルール・`external`・再送・整理の 5 つ）をコピーし、名前とパスを直して置く。例は `install.py install` が置いた `api-watch` を呼ぶ。
+  例は試験で Dagu と同じ順に本物の api-watch へ流して確かめる。`dags` で書き出したワークフローはそのまま動く（引数は変わらない）
+- gitlab-issue-agent・redmine-ticket-agent: ワークフローの例（`api-watch-issue-agent.yaml.example`・`examples/gitlab-idd/api-watch-idd.yaml.example`・
+  `api-watch-auto-close.yaml.example`）を置く。`handle-step.yaml.example` は、その中身をワークフローの例の `handle` に入れたので消す
 
 ### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
 

@@ -67,28 +67,25 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
        token: ${GITLAB_TOKEN}
    ```
 
-6. エージェント CLI の動かし方を書く。`handle-step.yaml.example` を `~/.config/dagu/gitlab-issue-agent.handle.yaml` にコピーし、
-   `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・作業フォルダ（`working_dir`）を直す。
-   CLI はこの PC に入れて、ログインしておく。
+6. Dagu のワークフローを置く。`api-watch-issue-agent.yaml.example` を `~/.config/dagu/dags/api-watch-issue-agent.yaml` にコピーし、
+   `handle` の `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・作業フォルダ（`working_dir`）と、`/home/you` を自分のものに直す。
+   CLI はこの PC に入れて、ログインしておく。毎日の整理のワークフローは api-watch の例をそのまま置く（`--plugin` は要らない）。
+   Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
-   cp tools/gitlab-issue-agent/handle-step.yaml.example ~/.config/dagu/gitlab-issue-agent.handle.yaml
+   cp tools/gitlab-issue-agent/api-watch-issue-agent.yaml.example ~/.config/dagu/dags/api-watch-issue-agent.yaml
    ```
 
-7. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す。`api-watch-issue-agent.yaml`（取得から処理まで。
-   6 のステップが handle に入る）と `api-watch-maintenance.yaml`（毎日の整理）ができる。
-   作ったあとは自由に直してよい（既にあるファイルは上書きしない）。Dagu の設定（`config.yaml`）に足すものは無い。
+   ```bash
+   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
+   ```
+
+7. 環境変数を読み込んで、一度手で取得して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす
+   （`dagu start-all` など）。以後は issue にコメント・ラベル変更・本文の更新などがあると、次の取得（1 時間に 1 回）でエージェントが起きる。
 
    ```bash
    set -a; . ~/.config/dagu/gitlab-issue-agent.env; set +a
    ```
-
-   ```bash
-   api-watch --plugin dagu --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-issue-agent.env --handle-step issue-agent.run=~/.config/dagu/gitlab-issue-agent.handle.yaml
-   ```
-
-8. 一度手で取得して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす
-   （`dagu start-all` など）。以後は issue にコメント・ラベル変更・本文の更新などがあると、次の取得（1 時間に 1 回）でエージェントが起きる。
 
    ```bash
    api-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
@@ -104,7 +101,7 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
 - 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）は問い合わせない
 
 予定は api-watch の設定の取得元の `schedule`、ずらす幅は `jitter_sec` で変えられる。予定を変えるときは api-watch の設定だけを直せばよく、
-ワークフローは書き出し直さなくてよい。
+ワークフローは直さなくてよい。
 
 ## 何を「変化」とみなすか
 
@@ -146,7 +143,7 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
 
 ## エージェント CLI とプロンプト
 
-- エージェント CLI は Dagu の `harness.run` で動かす（`gitlab-issue-agent.handle.yaml`）。`provider` に `claude` / `codex` / `kiro` / `copilot` / `gemini` などを書き、
+- エージェント CLI は Dagu の `harness.run` で動かす（ワークフローの `handle` のステップ）。`provider` に `claude` / `codex` / `kiro` / `copilot` / `gemini` などを書き、
   `with` のほかの項目は CLI のフラグになる（`dangerously_skip_permissions: true` → `--dangerously-skip-permissions`）。権限の確認で止まらないよう、
   無人で動かせるフラグを付けること
 - プロンプトは `~/.config/dagu/gitlab-issue-agent.prompt.md`（api-watch の設定の `input_template`）。api-watch のテンプレートで書き、
@@ -193,14 +190,14 @@ GitLab への問い合わせは、api-watch の取得元の接続で送り、要
 
 ### 入れ方
 
-上の「入れ方」の 1〜8 のうち、次のファイルを `examples/gitlab-idd/` のものに替える。
+上の「入れ方」の 1〜7 のうち、次のファイルを `examples/gitlab-idd/` のものに替える。
 
 | 置く場所 | 例 | 替えるもの |
 |---|---|---|
 | `~/.config/api-watch/api-watch.yaml` | `api-watch.yaml.example` | 4 の設定（ルール `idd`） |
 | `~/.config/api-watch/idd.prompt.md` | `idd.prompt.md.example` | プロンプト（設定と同じフォルダに置く） |
 | `~/.github/connections.yaml` | `connections.yaml.example` | 5 の接続設定（`default` は gitlab-idd 用のプロジェクトの URL、`watch` は api-watch 用の GitLab の URL） |
-| `~/.config/dagu/gitlab-issue-agent.handle.yaml` | `handle-step.yaml.example` | 6 のステップ |
+| `~/.config/dagu/dags/api-watch-idd.yaml` | `api-watch-idd.yaml.example` | 6 のワークフロー（ルール `idd`） |
 | エージェントのホームの `skill-registry.json`（Claude Code なら `~/.claude/skill-registry.json`） | `skill-registry.json.example` | 足す（既にあれば `skill_configs.gitlab-idd` だけを足す） |
 
 `gitlab-issue-agent.env` には `SKILL_CONNECTIONS_FILE`（上の connections.yaml のパス。gitlab-idd にも同じ接続設定を読ませる）と
@@ -212,12 +209,7 @@ gitlab-idd のワーカーは、イシューごとにリポジトリをクロー
 （取ってくるのは対象ブランチの新しいコミットだけ）。作業コピーのブランチ・書きかけの変更には触らない。作業コピーの `origin` は
 gitlab-idd 用のプロジェクトを指していること。書かなければ、従来どおりイシューごとに一時フォルダへクローンする。
 
-7 のワークフローは、ルール名が `idd` なので `--handle-step idd.run=~/.config/dagu/gitlab-issue-agent.handle.yaml` を付けて書き出す。
-`api-watch-idd.yaml` ができる（中身は `examples/gitlab-idd/api-watch-idd.yaml.example` と同じで、パスが自分の PC のものになる）。
-
-```bash
-api-watch --plugin dagu --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-issue-agent.env --handle-step idd.run=~/.config/dagu/gitlab-issue-agent.handle.yaml
-```
+6 のワークフローは、`api-watch-issue-agent.yaml` の代わりに `api-watch-idd.yaml` を置く（ルール名が `idd`）。7 は `--rule idd` で取る。
 
 ```bash
 api-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule idd --no-jitter
@@ -237,9 +229,9 @@ api-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/
 
 ## Windows で使うとき
 
-- api-watch は `python install.py install` で入れる（`dags` はその Python と `api-watch.pyz` のフルパスでワークフローを書く）
+- api-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `api-watch.pyz` のフルパスにする
 - Dagu の設定フォルダは `C:\Users\<名前>\.config\dagu\` で、DAG は `dags\` に置く
-- `gitlab-issue-agent.handle.yaml` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
+- ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
 - gitlab-idd のワーカーの作業用フォルダは、一時フォルダ（`%TEMP%`）の下に作る。git（Git for Windows 2.31 以降）が要る
 
 ## 設定の置き場所
@@ -249,7 +241,7 @@ api-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/
 | `~/.config/dagu/gitlab-issue-agent.env` | GitLab の URL・プロジェクト・トークン |
 | `~/.config/api-watch/api-watch.yaml` | 取得の予定・ずらし・監視する項目・絞り込み・再試行・実行の上限・`lock` |
 | `~/.config/dagu/gitlab-issue-agent.prompt.md` | プロンプト |
-| `~/.config/dagu/gitlab-issue-agent.handle.yaml` | エージェント CLI の種類・フラグ・作業フォルダ |
+| `~/.config/dagu/dags/api-watch-issue-agent.yaml` | エージェント CLI の種類・フラグ・作業フォルダ（`handle` のステップ） |
 
 ## テスト
 

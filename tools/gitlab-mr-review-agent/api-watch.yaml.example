@@ -1,15 +1,11 @@
 # gitlab-mr-review-agent の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
-# Dagu のワークフロー 1 本（api-watch-mr-review。api-watch の dags で作る）で動く。毎分起動し、1 回の起動で 1 件をレビューする:
+# Dagu のワークフロー 1 本（api-watch-mr-review。api-watch-mr-review.yaml.example をコピーして置く）で動く。
+# 毎分起動し、1 回の起動で 1 件をレビューする:
 #   fetch → evaluate（コミットが変わった MR を拾う）→ claim（MR を取り直し、レビューし終えたコミットと同じなら流さない）
 #   → render（プロンプト）→ handle（kiro-cli。Dagu の harness.run）→ finish（レビューし終えたコミットの記録。失敗ならあとでやり直す）
 # GitLab の MR に固有の部分（前回レビューしたコミット・レビュー中のコミットの追加）は gitlab_mr.py（api-watch のプラグイン）が受け持つ。
-# api-watch を呼ぶときは毎回 --plugin <gitlab_mr.py のパス> を付ける（dags も付けた引数を DAG に書く）。
-#
-#   api-watch --plugin dagu --plugin ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py \
-#     --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
-#     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-mr-review-agent.env \
-#     --handle-step mr-review.run=~/.config/dagu/gitlab-mr-review-agent.handle.yaml
+# api-watch を呼ぶときは毎回 --plugin <gitlab_mr.py のパス> を付ける（例のワークフローにも付けてある）。
 #
 # GitLab の URL・プロジェクト・トークンは ~/.config/dagu/gitlab-mr-review-agent.env にだけ書く。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る:

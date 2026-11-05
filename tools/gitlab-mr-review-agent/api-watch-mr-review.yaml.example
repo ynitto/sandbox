@@ -1,8 +1,10 @@
-# api-watch 0.2.0 の dags が作った雛形。作ったあとは自由に直してよい（dags は既にあるファイルを上書きしない）。
-# 設定: /home/you/.config/api-watch/api-watch.yaml
-# schedule は Dagu がこのワークフローを起動する間隔。取得元に schedule があれば、起動されても予定の時刻までは
-# api-watch が取得しない（取得の予定は api-watch の設定にある）。無ければ起動されるたびに取得する
-description: "gitlab-mrs を取得し、ルール mr-review で判定して、その場で実行する"
+# gitlab-mr-review-agent の Dagu のワークフロー（~/.config/dagu/dags/api-watch-mr-review.yaml にコピーして使う）。
+# 毎分起動し、1 回の起動で 1 件をレビューする: fetch → evaluate → claim → render → handle（kiro-cli）→ finish。
+# GitLab にいつ問い合わせるかは api-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
+# handle の working_dir を自分のものに直す。
+# command は install.py install が置いた api-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
+# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/api-watch/api-watch.pyz にする。
+description: "gitlab-mrs を取得し、ルール mr-review で判定して、kiro-cli で 1 件をレビューする"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
@@ -12,11 +14,8 @@ steps:
   - name: fetch
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--plugin"
@@ -26,8 +25,8 @@ steps:
         - "fetch"
         - "--source"
         - "gitlab-mrs"
-    timeout_sec: 1620
-    retry_policy:
+    timeout_sec: 1440            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
       interval_sec: 60
       backoff: true
@@ -37,11 +36,8 @@ steps:
     depends: [fetch]
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--plugin"
@@ -59,11 +55,8 @@ steps:
     depends: [evaluate]
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--plugin"
@@ -81,11 +74,8 @@ steps:
     depends: [claim]
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--plugin"
@@ -105,19 +95,15 @@ steps:
     preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
       - condition: "${DELIVERY}"
         expected: "re:^aw_"
-    timeout_sec: 1800
+    timeout_sec: 1800             # api-watch の設定の timeout_sec と同じにする
     continue_on:                # 失敗・時間切れでも finish で記録する
       failure: true
-    # ワークフロー api-watch-mr-review の handle に差し込むステップ（~/.config/dagu/gitlab-mr-review-agent.handle.yaml にコピーして使う）。
-    # api-watch の dags に --handle-step mr-review.run=<このファイル> を付けると、handle の中身としてそのまま入る
-    # （name・id・depends・preconditions・timeout_sec・continue_on は dags が付ける）。Dagu v2 の harness.run で kiro-cli を動かす。
-    # 終了コードは次の finish が受け取り、0 ならレビューし終えた状態を記録し、それ以外ならあとでやり直す。
-    #
+    # kiro-cli の動かし方（Dagu v2 の harness.run）。終了コードは finish が受け取り、0 ならレビューし終えた状態を記録し、
+    # それ以外ならあとでやり直す。
     #   provider  kiro（Dagu の組み込み）。kiro-cli はこの PC にインストールしてログインしておく
     #   prompt    render が組んだプロンプト（${INPUT}）。kiro-cli はプロンプトを引数で受け取る
     #   ほかの with の項目は CLI のフラグになる（trust_all_tools: true → --trust-all-tools）
-    #
-    # Dagu の harness.run が使えない版なら、kiro-cli を直接呼んでもよい（with を次の 2 行に替える）:
+    # Dagu の harness.run が使えない版なら、kiro-cli を直接呼んでもよい（action と with を次の 2 行に替える）:
     #   action: exec
     #   with: { command: kiro-cli, args: [chat, --no-interactive, --trust-all-tools, "${INPUT}"] }
     action: harness.run
@@ -133,11 +119,8 @@ steps:
     depends: [handle]
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--plugin"

@@ -23,14 +23,15 @@ wiki-use（Karpathy LLM Wiki パターン）と同じく、エージェントが
 
 | 役目 | 誰がするか |
 |---|---|
-| 検索・バックリンク・タグ・別名の解決 | Obsidian（公式 CLI の `search` / `backlinks` / `links` / `tags`） |
+| 検索・タグ・別名の解決 | Obsidian（公式 CLI の `search` / `tags`） |
 | 一覧・最近の更新・絞り込み | Obsidian の Bases（`index.base`。`index.md` や `hot.md` を手で更新しない） |
-| リンク切れ・孤立ノートの数え上げ | Obsidian（`unresolved` / `orphans`） |
+| リンク・バックリンク・リンクしていない言及・リンク切れ・孤立 | `vault.py links` / `lint`（その場でファイルを読む。Obsidian が閉じていても動く） |
 | ノートの中身を書く・つなぐ | エージェント（`vault.py note` / `memo`、`[[題]]` のリンク） |
 | 操作ログ | `vault.py log`（`meta/log.md` に追記） |
 
 `vault.py` は索引・スコア・グラフを持たない。Obsidian が閉じているときだけ、`search` は素の文字列一致
-（語がすべて含まれるノート。順位なし）に落ち、そのことを 1 行で知らせる。
+（語がすべて含まれるノート。順位なし）に落ち、そのことを 1 行で知らせる。`[[…]]` は Obsidian と同じく
+名前（大文字小文字は区別しない）でボルト全体から引く。
 
 ## 置き場所と設定
 
@@ -92,7 +93,7 @@ python scripts/vault.py init --vault ~/Documents/Obsidian/Main [--wiki-dir llm-w
 
 ## ingest — ソースを取り込む
 
-1. **取り込み済みか確かめる**: `python scripts/vault.py search "<題やURLの語>" --scope knowledge`
+1. **取り込み済みか確かめる**: `python scripts/vault.py ingested "<URL かファイル>"`（`sources` で引く）
    - 当たった → そのノートを読み（`obsidian read path=…` か Read）、足りない分だけ追記する
 2. **ソースを Markdown にする**: URL・HTML は defuddle、Office・PDF は markitdown（SKILL.md の表）
 3. **知識を切り出す**: 1 ソースから 3〜10 件。それぞれ既存ノートを `search` で確かめ、あれば追記、無ければ作る
@@ -103,8 +104,10 @@ python scripts/vault.py note --scope knowledge --type concept --title "注意機
 ```
 
    同じ題のノートがあれば `## 追記 <日付>` として足し、`aliases` / `sources` を合わせる。
-4. **つなぐ**: 新しいノートを参照すべき既存ノートを `obsidian backlinks file="題"` / `search` で探し、`[[題]]` を足す
-5. ログは `note` が自動で書く（`meta/log.md`）。一覧は Bases が勝手に追う
+4. **つなぐ**: `python scripts/vault.py links "<題>"` の「リンクしていない言及」（題や別名を書いているのに
+   リンクしていないノート）に `[[題]]` を足す。新しいノートの `## 関連` にも、つながる既存ノートを並べる
+5. ログは `note` が自動で書く（`meta/log.md`。`--sources` を渡せば出典も残る）。一覧は Bases が勝手に追う
+6. 区切りの終わりに `vault.py lint` を 1 回回し、出たリンク切れ・孤立だけは直してから次へ進む
 
 大量のファイルは 5 件ずつ区切り、区切りごとに 1〜4 を回す（先読みしない）。
 
@@ -118,8 +121,8 @@ python scripts/vault.py search "<語>" --scope project # このプロジェク�
 ```
 
 - 当たったノートを読み、`[[題#見出し]]` で出典を示して答える。wiki の根拠と自分の推測は分けて書く
-- 手がかりが弱いときは、当たったノートの `obsidian links file="題"`（出ていくリンク）と
-  `obsidian backlinks file="題"`（入ってくるリンク）を 1〜2 段たどる
+- 手がかりが弱いときは、当たったノートを `vault.py links "<題>"` で見て、出ていくリンクと入ってくるリンクを
+  1〜2 段たどる
 - 語を変えても当たらない → wiki に無い。答えたあと、残す価値があれば ingest / save する
 - moltbook-use が有効なら、共有の知見も `moltbook.py search --query …` で補う（出典は「Moltbook（共有）」）
 
@@ -140,20 +143,27 @@ python scripts/vault.py note --scope knowledge --type topic --title "<まとめ�
 python scripts/vault.py lint
 ```
 
-- `vault.py` が見る: プロパティ（`title` / `type` / `updated`）の欠け、決まりにない `type`、中身がほとんど無いノート
-- Obsidian が数える: リンク切れ（`unresolved`）、wiki の中の孤立ノート（`orphans`）。Obsidian が閉じていれば数えない
+1. **機械で分かること**（`vault.py lint`。Obsidian が閉じていても動く）
+   - プロパティの欠け（`title` / `type` / `updated`、knowledge は `summary` も）、決まりにない `type`、題とファイル名の違い
+   - 中身がほとんど無いノート
+   - リンク切れ（wiki のノートから、ボルトに無い名前への `[[…]]`）
+   - 孤立ノート（knowledge のうち、ボルトのどこからもリンクされていないもの。メモは対象外）
+   - 同じ名前を持つノート（題や `aliases` が重なる knowledge。統合の候補）
+2. **読んで分かること**（エージェント。ノートが多ければ最近更新したものから）
+   - 同じ主題のノート同士で事実が食い違っていないか
+   - 新しいソースが古い記述を覆していないか（覆していれば `> [!warning] YYYY-MM-DD 時点の情報` を付ける）
+   - 重なりの候補は 1 つにまとめ、残す側の `aliases` に寄せて、消す側へのリンクを張り替える
 
-見つかったものは、リンクを足す・ノートを作る・統合するで直す。直したら `vault.py log "lint の指摘を直した"`。
+直すのはリンクを足す・ノートを作る・統合するまで。ノートを消すときは利用者に確かめる。
+直したら `vault.py log "lint の指摘を直した"`。
 
 ## Obsidian CLI で直接引くもの
 
-`vault.py` が包むのは `search` だけ。ほかは Obsidian CLI を直接使う（[obsidian-cli.md](obsidian-cli.md)）。
+`vault.py` が Obsidian に渡すのは `search` だけ。ほかは Obsidian CLI を直接使う（[obsidian-cli.md](obsidian-cli.md)）。
 どれも先頭に `vault="<vault_name>"` を付ける。
 
 ```bash
 obsidian vault="Main" read path="llm-wiki/knowledge/注意機構.md"
-obsidian vault="Main" backlinks file="注意機構"
-obsidian vault="Main" links file="注意機構"
 obsidian vault="Main" tags sort=count counts
 obsidian vault="Main" search:context query="attention" path="llm-wiki"
 ```

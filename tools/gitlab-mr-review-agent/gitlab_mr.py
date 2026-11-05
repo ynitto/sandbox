@@ -30,7 +30,7 @@
                                       今の head のレビューのまとめを 1 回だけ書く（2 回目は書かない）
 
 コマンドは GitLab の URL・トークン・プロジェクトを環境変数 GITLAB_URL / GITLAB_TOKEN / GITLAB_PROJECT から読む
-（Dagu なら dags --dotenv の .env）。MR_REVIEW_REPO_DIR があれば、差分・ファイルはその手元のリポジトリ（既にある作業コピーでよい。
+（Dagu ならワークフローの dotenv の .env）。MR_REVIEW_REPO_DIR があれば、差分・ファイルはその手元のリポジトリ（既にある作業コピーでよい。
 無ければ 1 回だけ取ってきて、以後は足りないコミットだけを取る）から git で読み、API には問い合わせない。リポジトリの作業ツリー・
 ブランチには触らず、MR のコミットは git worktree で足したレビュー用の作業フォルダ（MR_REVIEW_WORKTREE）に取り出す。
 git が失敗したら API に戻る。

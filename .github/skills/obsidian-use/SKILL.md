@@ -2,7 +2,7 @@
 name: obsidian-use
 description: "「Obsidianのノートを作って」「.baseでフィルターを設定して」「キャンバスを作って」「このURLを読んで」「PDFをMarkdownに変換して」などのノート操作と、「Obsidianのwikiに取り込んで」「Obsidianのwikiで調べて」「wikiを点検して」の知識wiki管理、フックの OBSIDIAN NOTE で発動する。"
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   tier: domain
   category: knowledge-management
   tags:
@@ -57,15 +57,16 @@ Obsidian に関連するすべての操作をカバーする統合スキル。�
 ## ナレッジ wiki
 
 wiki-use と同じ「エージェントがソースを読んで知識ノートを育てる」使い方を、Obsidian のボルトの中で行う。
-**検索・バックリンク・タグ・一覧・リンク切れの数え上げは Obsidian に任せ**、索引やスコアは持たない
-（一覧は Bases の `index.base`、検索は Obsidian CLI の `search`。Obsidian が閉じているときだけ文字列一致に落ちる）。
+**検索・タグ・一覧は Obsidian に任せ**、索引やスコアは持たない（一覧は Bases の `index.base`、検索は Obsidian CLI の
+`search`。Obsidian が閉じているときだけ文字列一致に落ちる）。リンクのつなぎ込みと点検は、Obsidian が閉じていても
+できるよう `vault.py` がその場でファイルを読んで行う。
 手順は [references/wiki.md](references/wiki.md)。コマンドは `python scripts/vault.py <操作>`。
 
 | 操作 | トリガー例 | コマンドの入口 |
 |------|-----------|---------|
 | **init** | 「Obsidian の wiki を作って」「ボルトを wiki にして」 | `vault.py init --vault <フォルダ>` |
-| **ingest** | 「Obsidian の wiki に取り込んで」「この URL をボルトにまとめて」 | `vault.py search` → `vault.py note --scope knowledge` |
-| **query** | 「wiki で調べて」「ボルトに何かある？」 | `vault.py search "<語>"` → ノートを読む → `obsidian backlinks` / `links` |
+| **ingest** | 「Obsidian の wiki に取り込んで」「この URL をボルトにまとめて」 | `vault.py ingested` → `note --scope knowledge` → `links` でつなぐ |
+| **query** | 「wiki で調べて」「ボルトに何かある？」 | `vault.py search "<語>"` → ノートを読む → `vault.py links "<題>"` でたどる |
 | **save** | 「この答えを wiki に残して」 | `vault.py note --type topic` |
 | **lint** | 「wiki を点検して」 | `vault.py lint` |
 | **memo** | **（フック）** 会話に `OBSIDIAN NOTE` の指示が出た | 指示に書かれた `vault.py memo …` |
@@ -79,7 +80,7 @@ wiki-use と同じ「エージェントがソースを読んで知識ノート�
 
 - 質問に答える前、またはエラーで詰まったときに、関係しそうなら `vault.py search "<語>"` を 1 回引く
   （このプロジェクトだけなら `--scope project`）。当たったノートを読んで答えに使う
-- URL・文書を「読んで」「まとめて」と渡されたら、`search` で取り込み済みか確かめ、未取り込みなら ingest する
+- URL・文書を「読んで」「まとめて」と渡されたら、`ingested` で取り込み済みか確かめ、未取り込みなら ingest する
   （コード・設定ファイル・ログは対象外）
 - 会話に `OBSIDIAN NOTE` が出たら、[references/memo-hooks.md](references/memo-hooks.md) のとおり役立つことだけを
   `vault.py memo` で残し、利用者への返事は「Obsidian: <パス>」の 1 行にする（無ければ何もしない）
