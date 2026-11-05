@@ -17,6 +17,121 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `note` の追記で題の見出しを二度書かない。`--sources` を渡すと操作ログに出典も残る
 - 手順書（`references/wiki.md`）の ingest に「つなぐ → 区切りごとに lint」を、lint にエージェントが読んで行う点検（食い違い・古さ・統合）を足した
 
+### api-watch: フォルダの取得元と、DAG を書き出す `dags` の廃止（0.3.0）
+
+- 取得元に `request` の代わりに `folder` を書くと、フォルダの中のファイルを 1 件ずつのレコードにする。ファイルの追加は `appeared`、
+  更新は `changed`、削除は `removed`。ルール・受け渡し先・Dagu のワークフローは API の取得元と同じ
+- 対象は `include` / `exclude` の glob（`**` で下のフォルダも）で選ぶ。更新時刻から `settle_sec`（既定 5 秒）たっていないファイルは書き込み中とみなして拾わない
+- `hash: true` で中身の SHA-256、`content: text` / `json` で中身もレコードに入れる
+- フォルダが無い・読めないときは一時的な失敗（終了コード 3）にし、全部のファイルが消えたとはみなさない
+- **`dags` コマンドを廃止する**。api-watch を動かす Dagu のワークフローは、`tools/api-watch/dags/` の例
+  （取得元・ルール・`external`・再送・整理の 5 つ）をコピーし、名前とパスを直して置く。例は `install.py install` が置いた `api-watch` を呼ぶ。
+  例は試験で Dagu と同じ順に本物の api-watch へ流して確かめる。`dags` で書き出したワークフローはそのまま動く（引数は変わらない）
+- gitlab-issue-agent・redmine-ticket-agent: ワークフローの例（`api-watch-issue-agent.yaml.example`・`examples/gitlab-idd/api-watch-idd.yaml.example`・
+  `api-watch-auto-close.yaml.example`）を置く。`handle-step.yaml.example` は、その中身をワークフローの例の `handle` に入れたので消す
+
+### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
+
+- 受け渡し先に `command` を書くと、別のワークフローへ渡さず、新しいコマンド `work` がその場で 1 件ずつ実行する。
+  順序・試行回数と間隔・`retry` / `skip` は従来の受け渡し先と同じ。`timeout_sec` で打ち切り、止められたら実行中のコマンドにも伝える。
+  `command` の受け渡し先だけなら `delivery`（アダプタ）は要らない
+- `run --rule R`: そのルールの取得元を取得し、そのルールだけを判定・受け渡し・実行する
+- 取得元の `jitter_sec`: 取得の前に 0〜その秒数だけランダムに待つ（`fetch --no-jitter` でずらさない）
+- 取得元の `busy_wait_sec`: 別のプロセスが取得中なら終わるのを待ち、その取得結果を使う。`min_interval_sec` と合わせて、
+  同じ取得元を複数のワークフローが呼んでも API への問い合わせを 1 回にまとめる（`check` は設定が足りなければ注意を出す）
+- **取得元の `schedule` の意味を変える**: これまでは `dags` が DAG の `schedule` に書き写すだけだった。今は「API に問い合わせる予定」で、
+  起動されたときに api-watch が見る（直近の予定の時刻のあとに取得し終えていれば取得しない）。既定は無し（起動されるたびに取得し、予定は
+  Dagu の起動間隔に任せる）。0.1.0 で `schedule` を書かずに既定（5 分ごと）で動かしていたなら、`schedule: "*/5 * * * *"` を書くか、
+  DAG の起動間隔で決める
+- `dags`: 設定の `schedule` を書き写さない。起動間隔は `--schedule`（既定は毎分）。雛形を作るだけで、既にあるファイルは `--force` のときだけ
+  上書きする。`command` の受け渡し先を持つルールごとに fetch → evaluate → work のワークフローを書き、要らない取得元の DAG・再送の DAG は書かない
+- 取得元の `rate_limit.group`: 同じ名前の取得元どうしで、同時に取得せず、要求の間隔・1 分あたりの上限・失敗の待ちを分け合う
+- 取得元に `schedule` が無く、2 本以上のワークフローがその取得元を取得するなら、`min_interval_sec`・`busy_wait_sec` を必須にし、
+  `jitter_sec` が `min_interval_sec` 以上なら設定の誤りにする
+- 取得元の `failure_backoff_sec` / `failure_max_backoff_sec`（既定 60 / 3600 秒）: 取得が失敗したら、どのワークフローもその間は問い合わせない
+  （続けて失敗するほど倍）。これまでは `Retry-After` が無ければ、起動したワークフローがそれぞれすぐ取り直していた
+- `rate_limit.per_minute` を、前の実行（別のワークフロー）の要求も数えて守る
+- 受け渡し先の `refresh`（`command` の受け渡し先だけ）: 実行の前後にレコードを 1 件取り直す。実行の前は、最新のレコードで実行し、
+  `filter` から外れた・見つからない・「処理し終えた状態」と同じなら実行しない。実行のあとは、その状態を処理し終えた状態として受け渡し先 ×
+  レコードごとに覚える（コマンド自身の書き込みで出た変化では実行しない。たまったイベントは最新で 1 回）。コマンドは `APIWATCH_RESULT_FILE` に
+  `{"handled": "before"}` を書くと、実行前の状態までを処理済みにできる（実行中にほかの人が動いたとき）
+- `work` はコマンドに `APIWATCH_ATTEMPT`（何回目か）と `APIWATCH_RESULT_FILE` を渡す
+- `forget-handled --rule R <レコード>`: 処理し終えた状態を忘れさせ、次の変化で必ず実行させる
+- 受け渡し先の `external: true`: api-watch は実行せず、外のワークフローが `due`（実行を待つ ID の配列）→ `begin`（取る・`lock`・取り直し・
+  飛ばす判定。`run` / `skip` / `busy` / `wait` / `failed` / `gone` を出す）→ 処理 → `finish`（処理し終えた状態の記録・失敗ならあとでやり直す）を呼ぶ。
+  `render` は `begin` が取り直したイベントでテンプレート（受け渡し先の `input_template`）を展開する
+- 受け渡し先の `lock`: 同じ名前の受け渡し先どうしは、ルール・取得元をまたいで同時に 1 件だけ実行する
+- 受け渡し先の `skip_if` / `handled_before_if`: プラグインが足すチェックを、実行の前（真なら実行しない）と実行のあと（真なら実行前の状態までを処理済み）に呼ぶ
+- **プラグインの口を広げる**: `api.add_filter`（テンプレートのフィルタ）と `api.add_check`（実行の前後の判定。`ctx.get_json` で取得元の接続・
+  要求の間隔・失敗の待ちを分け合って API に問い合わせる）を足す
+- `claim`: 実行を待っているものを古い順に `begin` し、最初に実行できる 1 件の ID を出す。`finish --exit-code N`: 処理のステップの終了コードで成否を決める
+- `dags`: `external` の受け渡し先を、ルールのワークフロー 1 本の中に `claim` → `render` → `handle` → `finish --exit-code ${handle.exit_code}` として書く
+  （1 回の起動で 1 件。1 つのルールに `external` は 1 つまで）。`--handle-step <ルール>.<受け渡し先>=<ファイル>` で `handle` の中身を差し込む
+- テンプレートの `{{ x | json: 2 }}`（整形）。フィルタの引数の `'...'`（単引用符）を外す（`| default: ''` が `''` になっていたのを直す）
+- ログを標準エラーに出す（標準出力は結果だけ。`due`・`begin`・`render`・`status --json` などを Dagu の `output:` で受け取れるように）
+
+### agent-app: ファイルのプレビューと実行ログの末尾で、バイト数の切り口の文字化けを直す（agent-app 0.49.2）
+
+- 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
+
+### redmine-ticket-agent: 自分が担当する Redmine のチケットを、文字列で見分けてコメントし完了にする（0.1.0）
+
+- `tools/redmine-ticket-agent/` を足す。自分（API キーの持ち主）が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むものに、
+  決めた文をコメントしてステータスを完了にする（1 回の更新）。取得・変化の検知・実行待ち・再試行は api-watch、定期起動は Dagu が受け持つ
+- `redmine_issue.py`: api-watch のプラグインとしてチェック `redmine.not_mine`（取り直したチケットの担当が自分でなければ飛ばす）を足し、
+  `close --status <名前か ID> --note <文>`（`--note-file` も可）でコメントとステータスの変更を行う。書く前に選べるステータスかを確かめ、
+  既に目的のステータスなら何もしない。標準ライブラリだけ
+- Dagu のワークフローは 1 本（`api-watch-auto-close`。fetch → evaluate → work）。問い合わせは 15 分ごと。最初の取得で、いま当たっているチケットも完了にする
+- 設定の例: `api-watch.yaml.example`・`redmine-ticket-agent.env.example`
+- 設計: `docs/designs/redmine-ticket-agent-design.md`
+
+### gitlab-issue-agent: GitLab の issue の変化をエージェント CLI に 1 件ずつ渡す（0.1.0）
+
+- `tools/gitlab-issue-agent/` を足す。issue の取得・変化の検知・実行待ち・再試行・処理し終えた状態の記録・1 セッションの排他は api-watch、
+  起動とエージェント CLI の実行は Dagu（v2.25 以降の `harness.run`）が受け持ち、ここには GitLab に固有の部分と設定の例を置く
+- `gitlab_issue.py`（api-watch のプラグイン）: フィルタ `gitlab_issue_changes`（前回処理し終えたときからの変化の箇条書き）・`gitlab_issue_kind`（新規 / 更新）と、
+  チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。標準ライブラリだけ
+- Dagu のワークフローは 1 本（毎分起動、1 回の起動で 1 件）: fetch → evaluate → claim → render → handle（`harness.run`）→ finish。api-watch の `dags` で雛形を作る
+- GitLab の負荷: 一覧の取得は毎時 0 分の予定のあと 0〜15 分ずらして 1 回。予定の時刻のあとに取得済みなら問い合わせない。取得が失敗したらしばらく問い合わせない
+- 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ流す。初回は今ある issue を覚えるだけ。
+  実行の直前に取り直し、閉じた・絞り込みから外れた・処理し終えた状態と同じなら流さない。エージェント自身のコメントでは起きず、実行中に他人が動いたときだけもう一度流す
+- エージェント CLI は同時に 1 つ（api-watch の `lock`。プロジェクトをまたいでも 1 つ）。失敗は指数バックオフで再試行し、上限で打ち切る
+- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`gitlab-issue-agent.env.example`
+- **gitlab-idd スキルと繋ぐ設定の例**（`examples/gitlab-idd/`）: `status:*` のラベルが付いたイシューを、ラベルに合ったロール
+  （`status:review-ready` はレビュアー、`status:open` / `needs-rework` / `needs-clarification` はワーカー）で gitlab-idd に処理させる。
+  ルールもワークフロー（`api-watch-idd`）も 1 つ。フィルタ `gitlab_idd_role` がロールを選び、チェック `gitlab_idd.role_changed` が
+  ワーカー → レビュアー → 差し戻し → ワーカー の受け渡しで、エージェント自身のラベル変更でももう一度流させる。Dagu のワークフローの例
+  （`api-watch-idd.yaml.example`）は `dags` の出力と一致することを試験で確かめる
+- 設計: `docs/designs/gitlab-issue-agent-design.md`
+
+### api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
+
+- `tools/api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持つ。
+  スケジュール・再試行・キュー・並列数・ログ・履歴は Dagu に任せ、常駐しない
+- 本体（`apiwatch/`）は Dagu に依存しない。受け渡しはアダプタ（`delivery.adapter`）に任せ、Dagu へのアダプタと DAG の生成（`dags`）は
+  1 ファイルのプラグイン `apiwatch/plugins/dagu.py` に集めた。プラグインは `--plugin dagu`（または `.py` のパス）で指定したときだけ読み込む。
+  Dagu を使わないときは `adapter: command` で任意のコマンドへ渡せる
+- インストーラ `install.py`: 本体と同梱のプラグイン（PyYAML があれば同梱）を 1 つの実行可能な zip（`.pyz`）にまとめ、
+  `~/.local/bin/api-watch`（Windows は `.pyz` と `.cmd`）として置く
+- 認証情報は `--connections <パス>` で渡した connections.yaml からだけ読む（環境変数・決まった場所からは探さない）。
+  設定ファイル・状態の置き場所も `--config` / `--state-dir` で渡し、環境変数は見ない
+- 取得: URL・メソッド・ヘッダー・クエリ・本文・レコードの場所を設定で書く。ページングは page / offset / cursor / next_url / Link ヘッダー、
+  増分は最大値（更新日時など）とカーソル。条件付き要求（ETag / Last-Modified）、取得元単位のレート制限・再試行・Retry-After。
+  ページ単位で保存し、途中で止まっても続きから再開する。全ページそろうまで判定も増分の位置の前進もしない
+- 1 つの取得元の取得結果を複数のルール・受け渡し先で共有する。取得条件や認証を変えると前のデータを使わず取り直す
+- 判定: ルールごとに対象の絞り込み・識別 ID（複合可）・監視する項目・発火条件・受け渡し先。新規・変更・条件の一致 / 不一致への遷移・
+  一致している間・全件取得で消えた、を区別する。キー順・配列の順序（全体 / 項目ごと）・欠落と null・監視外の項目を扱え、
+  A→B→A をそれぞれ検知する。初回は基準値だけか既存も新規か、ルールの変更時は基準値の取り直しか継続かを選べる。保存済みの結果で判定をやり直せる
+- 受け渡し: 受け渡しの ID を Dagu の実行 ID にして `dagu enqueue`（または REST API）で渡し、再送しても 1 回だけ実行される。
+  同じレコードの変更は受け渡し先ごとに順に、別のレコードは並列に。1 件の失敗は同じレコードの後ろだけを止める。
+  完了は後続の DAG の `ack`（または API での問い合わせ）で記録し、失敗は同じ実行 ID のまま Dagu で再実行できる
+- 運用: `status`・`events`・`show`・`retry`・`skip`・`rebaseline`・`replay`・`gc`。認証情報はログ・状態に出さない。
+  保持期間は未判定の取得結果・未完了のイベントを消さない。状態は SQLite 1 ファイル（Windows・WSL2・Linux）
+- 肥大化の防止: 整理のたびに消した行の領域を DB ファイルから返し、WAL を切り詰める（`auto_vacuum=INCREMENTAL`。古い DB は
+  `gc --vacuum` で切り替え）。消えたレコードの観測値は `removed_days`、増分取得で組み立てた全体の姿は `record_days`（既定は消さない）で消す。
+  `status` に DB・WAL・イベントのファイルの大きさを出す
+- CI に Linux と Windows のテストを足した。設計: `docs/designs/api-watch-design.md`
+
 ### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）
 
 - 新しいスキル。`scripts/chain.py`（標準ライブラリだけ）の `scan` / `check` / `plan` / `build` で、各エージェントのスキル置き場を見て
@@ -30,24 +145,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （スクリプトだけで組めず、使えば組めるときは、そのアクションを名指しして止まる）。スキルにしない手元の宣言は `--actions <ファイル>` で足す
 - api-designer（`validate`: openapi → openapi-report）と dependency-auditor（`audit`: project-dir → dependency-audit）に `chain.json` を足した
 - 設計: `docs/designs/dagu-workflow-builder-design.md`
-
-### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
-
-- `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本
-  （`gitlab-issue-poll` 1 時間ごと / `gitlab-issue-agent` 毎分）で動く
-- GitLab の負荷を抑える: 取得は毎時 0 分に起動して 0〜15 分ランダムにずらす（`--jitter`）。エージェントの DAG は
-  待ち行列が空なら GitLab に問い合わせない
-- 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ積む。
-  初回は今ある issue を既読にするだけ。同じ issue の変化は待ち行列で 1 件にまとめる
-- 実行後に issue を取り直して既読にし、エージェント自身のコメントで再発火しない。実行中に他人が動いたときだけもう一度流す
-- 1 セッションの保証: Dagu の重複起動抑止に加え、全プロジェクト共通のロックファイルと実行中の pid で排他する。
-  停止・タイムアウトでは CLI を子プロセスごと止めて失敗として記録し、指数バックオフで再試行、上限で打ち切る
-- エージェント CLI は `agents/<name>.json` の名前でもコマンド行でも指定できる
-- Windows（ネイティブ）でも動く。ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル・コマンド行の分割を OS ごとに切り替え、
-  DAG の Python は `ISSUE_LOOP_PYTHON` で渡す。CI に Windows でのテストを足した
-- 設計: `docs/designs/dagu-issue-loop-design.md`
-- 直し: 自分のユーザー名が分からないとき、成功のたびに同じ issue を流し直し続けていたのを、既読にして止める（警告を 1 行出す）。
-  エージェント CLI を起動できない設定の誤りで、実行中の印が残り試行回数が減っていたのを直す
 
 ### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
 
