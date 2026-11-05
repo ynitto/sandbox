@@ -22,6 +22,7 @@ class FolderTest(unittest.TestCase):
         self.env.plugins = []
         self.inbox = self.env.tmp / "inbox"
         self.inbox.mkdir()
+        self.inbox = self.inbox.resolve()           # Windows の短い名前（RUNNER~1）を、設定が解決した長い名前にそろえる
         self.log = self.env.tmp / "handled.jsonl"
         self.handler = self.env.tmp / "handler.py"
         self.handler.write_text(
