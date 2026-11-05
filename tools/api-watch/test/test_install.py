@@ -42,13 +42,6 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
             env.api.put(1, status="b")
         self.assertEqual(len(env.enqueued()), 1)
-        p = run(base + ["dags", "--out", str(env.tmp / "dags"), "--schedule", "*/5 * * * *"])
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        text = (env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8")
-        self.assertIn(json.dumps(str(far.resolve())), text)                    # DAG はこの .pyz を呼ぶ
-        self.assertIn('"--plugin"', text)
-        p = run([sys.executable, str(far), "--help"])
-        self.assertNotIn("dags", p.stdout)                                     # 指定しなければプラグインは無い
 
     def test_bundled_yaml_works_without_site_packages(self):
         try:

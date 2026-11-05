@@ -1,7 +1,7 @@
 # api-watch
 
-任意の Web API を [Dagu](https://github.com/dagu-org/dagu)（v2）の定期実行からポーリングし、レコードの追加・変更・
-条件の成立を検知して、設定した Dagu のワークフロー（DAG）へ渡す。外から受ける口は持たず、こちらから API を見に行く。
+任意の Web API（またはフォルダ）を [Dagu](https://github.com/dagu-org/dagu)（v2）の定期実行からポーリングし、レコードの追加・変更・
+条件の成立を検知して、設定した Dagu のワークフロー（DAG）へ渡す。フォルダを見るときは、ファイル 1 つが 1 件のレコードになる（「フォルダを見る」）。外から受ける口は持たず、こちらから API を見に行く。
 起動・キュー・並列数・再試行・ログ・実行履歴は Dagu に任せ、このツールは常駐しない。
 API にいつ問い合わせるかは、起動されたときに api-watch が取得元ごとに決める（取得元の `schedule`・`min_interval_sec` など。
 書かなければ起動されるたびに取得する＝Dagu の起動間隔どおり）。
@@ -31,10 +31,11 @@ API にいつ問い合わせるかは、起動されたときに api-watch が�
 | `apiwatch/adapters/command.py` | 任意のコマンドで受け渡すアダプタ（`adapter: command`） | なし |
 | `apiwatch/plugins/__init__.py` | `--plugin` で指定されたプラグインの読み込み。同梱のプラグインを自分では import しない | なし |
 | `apiwatch/hooks.py` | プラグインが足すフィルタ（テンプレート）とチェック（実行の前後の判定）の登録先 | なし |
-| `apiwatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド。**Dagu に依存するものはこの 1 ファイルだけ** | あり |
+| `apiwatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）。**Dagu に依存するコードはこの 1 ファイルだけ** | あり |
+| `dags/*.example.yaml` | api-watch を動かす Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） | あり |
 
 プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
-（`dags` が書き出す DAG にも付く）。付けなければ `dags` コマンドも `adapter: dagu` も無く、`adapter: dagu` の設定で受け渡そうとすると
+（例のワークフローにも付けてある）。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
 「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。`status`・`events`・`ack` などアダプタを使わないコマンドは付けなくても動く。
 
 1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
@@ -123,17 +124,20 @@ Dagu を使わないときは、起動を cron・タスク スケジューラな
    api-watch --config ~/.config/api-watch/api-watch.yaml status
    ```
 
-6. Dagu の DAG の雛形を書き出す（`--plugin dagu` のときだけあるコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
-   DAG には、今の Python・この `api-watch`（`.pyz`）・設定ファイル・`--connections` で渡したパスの絶対パスと `--plugin dagu` が入る。
-   作ったあとは自由に直してよい（既にあるファイルは上書きしない。上書きするなら `--force`）。
+6. Dagu のワークフローを置く。`dags/` の例をコピーし、名前とパスを直す（下の「Dagu のワークフロー」）。
+   取得元ごとのワークフロー・再送のワークフロー・整理のワークフローを置く。
 
    ```bash
-   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
+   cp tools/api-watch/dags/api-watch-source.example.yaml ~/.config/dagu/dags/api-watch-<取得元>.yaml
    ```
 
-   `dags` の追加の引数: `--schedule`（取得する DAG を Dagu が起動する間隔。既定は毎分で、取得するかは api-watch が決める。下の「いつ取得するか」）・
-   `--force`（既にある DAG を上書きする）・`--dotenv <ファイル>`（DAG に読み込ませる環境変数のファイル。繰り返し可）・`--dispatch-schedule`（再送の DAG、既定は毎分）・
-   `--maintenance-schedule`（整理の DAG、既定は毎日 3:17）・`--hist-retention-days`（14）・`--prefix`（`api-watch`）・`--python`・`--script`。
+   ```bash
+   cp tools/api-watch/dags/api-watch-dispatch.example.yaml ~/.config/dagu/dags/api-watch-dispatch.yaml
+   ```
+
+   ```bash
+   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
+   ```
 
 7. 受け渡し先の DAG を用意する（下の「受け渡し先の DAG」）。Dagu のスケジューラを動かせば（`dagu start-all` など）以後は自動で回る。
 
@@ -141,7 +145,7 @@ Dagu を使わないときは、6・7 の代わりに cron などから `api-wat
 
 ### Windows で使うとき
 
-- `install.py install` を、Dagu から使う Python で実行する。`dags` はその Python（`python.exe`）と `api-watch.pyz` の絶対パスで DAG を書く
+- `install.py install` を、Dagu から使う Python で実行する。Dagu のワークフローの `command` はその Python（`python.exe`）、`args` の先頭は `api-watch.pyz` の絶対パスにする
 - `delivery.executable` に `dagu.exe` の場所を書く（PATH にあれば `dagu` のままでよい）
 - 状態のフォルダを Windows と WSL2 で共有しない（`/mnt/c/...` 越しの SQLite はロックが効かない）。どちらか片方で動かす
 
@@ -220,35 +224,28 @@ queues:
       max_concurrency: 3
 ```
 
-### 4. 取得・再送・整理の DAG を書き出す
+### 4. 取得・再送・整理のワークフローを置く
 
-```bash
-api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
-```
+`dags/` の例を `~/.config/dagu/dags/` にコピーし、`items` を取得元の名前 `issues` に直す。`/home/you` は自分の場所に直す。
 
-`~/.config/dagu/dags/` に 3 つできる。雛形なので、作ったあとは自由に直してよい（`dags` は既にあるファイルを上書きしない）。
+| 置くファイル | 例 | 起動 | すること |
+|---|---|---|---|
+| `api-watch-issues.yaml` | `api-watch-source.example.yaml` | 毎分（取得は取得元の `schedule` どおり 10 分ごと） | fetch → evaluate → dispatch。fetch は通信の失敗（終了コード 3）のときだけ Dagu が再試行する |
+| `api-watch-dispatch.yaml` | `api-watch-dispatch.example.yaml` | 毎分 | 判定し残し・渡せなかった変化の再送・後続処理の完了の確認 |
+| `api-watch-maintenance.yaml` | `api-watch-maintenance.example.yaml` | 毎日 3:17 | 保持期間を過ぎたものの整理 |
 
-| ファイル | 起動 | すること |
-|---|---|---|
-| `api-watch-issues.yaml` | 毎分（取得は取得元の `schedule` どおり 10 分ごと） | fetch → evaluate → dispatch。fetch は通信の失敗（終了コード 3）のときだけ Dagu が再試行する |
-| `api-watch-dispatch.yaml` | 毎分 | 判定し残し・渡せなかった変化の再送・後続処理の完了の確認 |
-| `api-watch-maintenance.yaml` | 毎日 3:17 | 保持期間を過ぎたものの整理 |
-
-書き出される DAG の中身（取得の DAG の一部）:
+取得のワークフローの中身（一部）:
 
 ```yaml
-description: "issues を取得し、ルールで判定して受け渡す"
+description: "issues を取得し、ルールで判定して、受け渡し先のワークフローへ渡す"
 schedule: "* * * * *"
 type: graph
 steps:
   - name: fetch
     action: exec
     with:
-      command: "/usr/bin/python3"
+      command: "/home/you/.local/bin/api-watch"
       args:
-        - "/home/you/.local/bin/api-watch"
-        - "--config"
-        - "/home/you/.config/api-watch/api-watch.yaml"
         - "--plugin"
         - "dagu"
         - "--connections"
@@ -256,6 +253,7 @@ steps:
         - "fetch"
         - "--source"
         - "issues"
+    timeout_sec: 720
     retry_policy:
       limit: 3
       interval_sec: 60
@@ -355,7 +353,7 @@ dagu:
 ### Windows のとき
 
 - api-watch は `python install.py install` で入れる（`%LOCALAPPDATA%\Programs\api-watch\` に `api-watch.pyz` と `api-watch.cmd`）。
-  `dags` は、その Python と `api-watch.pyz` のフルパスで DAG を書く
+  Dagu のワークフローの `command` は、その Python（`python`）にし、`args` の先頭を `api-watch.pyz` のフルパスにする
 - Dagu の設定と DAG の置き場所は `C:\Users\<名前>\.config\dagu\`（`config.yaml`・`dags\`）
 - `delivery.executable` は `dagu.exe` のフルパス（PATH にあれば `dagu`）
 - 受け渡し先の DAG の `command` は `python`、`args` の api-watch は `C:/Users/<名前>/AppData/Local/Programs/api-watch/api-watch.pyz` にする
@@ -446,15 +444,9 @@ targets:
 
 ### Dagu のワークフロー
 
-`dags` が、`command` の受け渡し先を持つルールごとに `api-watch-<ルール>.yaml` の雛形を書く。この例では `api-watch-triage.yaml`・
-`api-watch-notify.yaml`・`api-watch-maintenance.yaml` の 3 つ（どのルールも自分のワークフローで取得するので、取得元の DAG と再送の DAG は書かない）。
-Dagu の設定（`config.yaml`）に足すものは無い。
-
-```bash
-api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
-```
-
-書き出される `api-watch-triage.yaml`（引数は一部を省略）:
+`command` の受け渡し先を持つルールごとに、`dags/api-watch-rule.example.yaml` を `api-watch-<ルール>.yaml` としてコピーする。
+この例では `api-watch-triage.yaml`・`api-watch-notify.yaml` と、整理の `api-watch-maintenance.yaml` の 3 つ（どのルールも自分のワークフローで取得するので、
+取得元のワークフローと再送のワークフローは要らない）。Dagu の設定（`config.yaml`）に足すものは無い。
 
 ```yaml
 description: "issues を取得し、ルール triage で判定して、その場で実行する"
@@ -464,9 +456,8 @@ steps:
   - name: fetch
     action: exec
     with:
-      command: "/usr/bin/python3"
-      args: ["/home/you/.local/bin/api-watch", "--config", "…", "--plugin", "dagu", "--connections", "…",
-             "fetch", "--source", "issues"]
+      command: "/home/you/.local/bin/api-watch"
+      args: ["--plugin", "dagu", "--connections", "/home/you/.github/connections.yaml", "fetch", "--source", "issues"]
     timeout_sec: 2220            # 取得の時間 + jitter_sec + busy_wait_sec
     retry_policy: { limit: 3, interval_sec: 60, backoff: true, max_interval_sec: 600, exit_code: [3] }
   - name: evaluate
@@ -477,23 +468,23 @@ steps:
     # …（work --rule triage）。1 件ごとの上限は timeout_sec なので、ステップには上限を付けない
 ```
 
-雛形なので自由に直してよく、手で書いてもよい。必要なのは同じ 3 ステップ（`fetch --source S` → `evaluate --rule R` → `work --rule R`）か、
-1 ステップの `run --rule R` だけ。毎分起動しても、取得の予定の時刻でなければ API には問い合わせず、`work` が失敗したもののやり直しだけを進める。
+必要なのは同じ 3 ステップ（`fetch --source S` → `evaluate --rule R` → `work --rule R`）か、1 ステップの `run --rule R` だけ。
+毎分起動しても、取得の予定の時刻でなければ API には問い合わせず、`work` が失敗したもののやり直しだけを進める。
 
 ### いつ取得するか（api-watch の予定と Dagu の予定）
 
 `schedule` は「Dagu がいつ起動するか」ではなく「API にいつ問い合わせるか」で、api-watch が起動されたときに見る。
-Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `schedule` を書き写さない。どちらの予定でも動く:
+Dagu の起動間隔はワークフローの `schedule` に書く。どちらの予定でも動く:
 
 | 書き方 | DAG の `schedule` | 取得元の設定 | 動き |
 |---|---|---|---|
-| api-watch の予定 | 毎分（`dags` の既定） | `schedule: "0 * * * *"` | 毎分起動し、直近の予定の時刻（毎時 0 分）のあとにまだ誰も取得し終えていなければ取得する |
-| Dagu の予定 | `dags --schedule "0 * * * *"` か手で書く | `schedule` を書かない | 起動されるたびに取得する。`min_interval_sec` があれば、その秒数以内の取得はしない |
+| api-watch の予定 | 毎分（例のワークフローのまま） | `schedule: "0 * * * *"` | 毎分起動し、直近の予定の時刻（毎時 0 分）のあとにまだ誰も取得し終えていなければ取得する |
+| Dagu の予定 | `"0 * * * *"` などに書き換える | `schedule` を書かない | 起動されるたびに取得する。`min_interval_sec` があれば、その秒数以内の取得はしない |
 
 予定の時刻は、この PC の時刻（ローカル時刻）で見る。cron の 5 項目のほか `@hourly`・`@daily` なども使える。
 
-`dags` を `--schedule` なしで使うと、どの DAG も毎分起動する。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
-そのときは `dags` が止めて、どちらかを書くか `--schedule` を付けるよう案内する。
+例のワークフローは毎分起動する。取得元に `schedule` も `min_interval_sec` も無ければ毎分問い合わせることになるので、
+API の取得元ならどちらかを書くか、ワークフローの `schedule` を問い合わせてよい間隔にする（フォルダの取得元は毎分でよい）。
 
 ### 同じ API を呼ぶワークフローが重なったとき
 
@@ -530,7 +521,8 @@ api-watch は実行の前後だけを受け持ち、処理そのもの（エー�
 1 本のワークフローで 1 回の起動につき 1 件を処理するときは、`claim --rule R` を使う。実行を待っているものを古い順に `begin` し、最初に `run` になった
 1 件の ID を出す（無ければ空行）。`finish ID --exit-code N` は処理のステップの終了コードで成否を決める（0 以外・数でないものは失敗。ID が空なら何もしない）。
 
-`dags` は、`external` の受け渡し先をルールのワークフローの中に書く（1 つのルールに `external` は 1 つまで）:
+`external` の受け渡し先には、`dags/api-watch-external.example.yaml` を `api-watch-<ルール>.yaml` としてコピーし、`handle` を処理に置き換える
+（1 つのワークフローが扱う `external` の受け渡し先は 1 つ）:
 
 ```
  Dagu: api-watch-<ルール>（毎分。1 回の起動で 1 件）
@@ -540,20 +532,25 @@ api-watch は実行の前後だけを受け持ち、処理そのもの（エー�
 ```
 
 ワークフローごと止めたときは `finish` まで進まないので、その受け渡しは期限（`timeout_sec` + 120 秒）が切れてから次の起動がもう一度取る。
-
-`handle` は雛形のままでは失敗するので、処理に置き換える。`dags --handle-step <ルール>.<受け渡し先>=<ファイル>` を付けると、ファイルに書いた
-ステップの中身（`action`・`with` など。`name`・`id`・`depends`・`preconditions`・`timeout_sec`・`continue_on` は `dags` が付ける）を `handle` に差し込む。
-例えば Claude Code を動かすなら:
+例の `handle` は Claude Code を動かす形（Dagu v2 の `harness.run`）:
 
 ```yaml
-# handle.yaml
-action: harness.run
-working_dir: /home/you/work/project
-with:
-  provider: claude
-  prompt: 標準入力の指示に従ってください
-  stdin: "${INPUT}"
-  dangerously_skip_permissions: true
+  - name: handle
+    id: handle
+    depends: [render]
+    preconditions:
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
+    timeout_sec: 3600
+    continue_on:
+      failure: true
+    action: harness.run
+    working_dir: /home/you/work/project
+    with:
+      provider: claude
+      prompt: 標準入力の指示に従って対応してください。
+      stdin: "${INPUT}"
+      dangerously_skip_permissions: true
 ```
 
 ### 別の取得元とも API への負荷を分け合う（`rate_limit.group`）
@@ -616,6 +613,54 @@ with:
 位置は**全ページを取り終えたときだけ**進む。途中で失敗したら同じ位置から取り直す。`param` を書かずに
 `{{ position }}` を URL や本文に直接埋めてもよい。境界のレコードが 2 回取れても、値が変わっていなければ発火しない。
 
+### フォルダを見る（`folder`）
+
+取得元に `request` の代わりに `folder` を書くと、フォルダの中のファイルを 1 件ずつのレコードにする。ルール・受け渡し先は API の取得元と同じで、
+ファイルが増えたら `appeared`、更新されたら `changed`、消えたら `removed` になる。Dagu からは毎分起動してよい（フォルダを見るだけなので軽い）。
+
+```yaml
+sources:
+  inbox:
+    folder:
+      path: /data/inbox            # 相対パスは設定ファイルの場所から
+      include: ["*.csv"]           # 下のフォルダも見るなら "**/*.csv"
+rules:
+  new-csv:
+    source: inbox
+    id: rel                        # フォルダからの相対パスで見分ける
+    on: [appeared]
+    targets:
+      - name: import
+        command: ["python3", "/opt/import.py", "{{ event.record.path }}"]
+```
+
+| 項目 | 既定 | 意味 |
+|---|---|---|
+| `folder.path` | （必須） | 見るフォルダ。`~` と環境変数（`$HOME`・`%USERPROFILE%`）を展開する |
+| `folder.include` / `exclude` | `["*"]` / なし | 対象にするファイル・外すファイルの glob（フォルダからの相対パス、`/` 区切り）。`*` はフォルダをまたがず、`**` は何階層でもまたぐ。`include` が `/` か `**` を含むときだけ下のフォルダを見る |
+| `folder.hidden` | false | 名前が `.` で始まるファイル・フォルダも見る |
+| `folder.settle_sec` | 5 | 更新時刻からこの秒数たっていないファイルは、書き込みの途中とみなす。新しいファイルはまだ無いものとし、前からあるファイルは前回の姿のまま扱う |
+| `folder.hash` | false | 中身の SHA-256 を `sha256` に入れる。大きさも更新時刻も変わらない書き換えも `changed` になる |
+| `folder.content` | `none` | `text` か `json` で、中身を `content` に入れる（UTF-8）。読めなければ `content` を入れず `content_error`（`too_large`・`not_utf8`・`invalid_json`） |
+| `folder.max_bytes` | 1048576 | `hash`・`content` で読む上限のバイト数。超えたファイルは読まない |
+| `folder.max_files` | 10000 | ファイル数がこれを超えたら、取りこぼさないよう取得を完了にしない |
+
+レコードの項目:
+
+| 項目 | 例 | 意味 |
+|---|---|---|
+| `rel` | `sub/a.csv` | フォルダからの相対パス（`/` 区切り）。ルールの `id` に使う |
+| `path` | `/data/inbox/sub/a.csv` | この PC でのパス |
+| `name` / `stem` / `ext` / `dir` | `a.csv` / `a` / `.csv` / `sub` | 名前・拡張子を除いた名前・拡張子・相対パスのフォルダ |
+| `size` / `mtime` / `mtime_iso` | `120` / `1762300800.5` / `2025-11-05T00:00:00.500000Z` | 大きさ・更新時刻（秒と UTC の ISO 8601） |
+| `sha256` / `content` / `content_error` | — | `hash`・`content` を書いたときだけ |
+
+- フォルダが無い・読めないとき（ネットワークのフォルダが切れたときなど）は、一時的な失敗（終了コード 3）にする。全部のファイルが「消えた」にはならない
+- `connection`・`records`・`key`・`pagination`・`incremental`・`conditional`・`rate_limit`・`retry` と、受け渡し先の `refresh` は書けない
+- 処理したファイルを動かしたり消したりしなくてよい。同じファイルは、変わらない限り 2 回渡さない。動かしたり消したりすると `removed` になる
+  （`on` に書かなければ何も起きない）
+- `path` を変えると、別のフォルダとして基準値を取り直す（その時にあるファイルでは発火しない。`initial: emit` なら発火する）
+
 ### ルール（rules）
 
 | 項目 | 既定 | 意味 |
@@ -660,9 +705,9 @@ with:
 |---|---|---|
 | `workflow` | （`command` が無ければ必須） | 受け渡し先のワークフロー。Dagu なら DAG の名前（`mode: cli` ならファイルのパスでもよい） |
 | `command` | — | 別のワークフローへ渡さず、`work` がその場で実行する argv（下の「1 つのワークフローで取得から処理まで」）。書くときは `name` も書く。`workflow`・`queue`・`external` とはどれか 1 つ |
-| `timeout_sec` | 3600 | `command` / `external` の 1 回の実行の上限。`command` は過ぎたら止めて失敗として数える。`external` は受け渡しを取っておく期限（`timeout_sec` + 120 秒。過ぎたら次の `begin` が取り直す）と、`dags` が書く処理のステップの上限になる |
+| `timeout_sec` | 3600 | `command` / `external` の 1 回の実行の上限。`command` は過ぎたら止めて失敗として数える。`external` は受け渡しを取っておく期限（`timeout_sec` + 120 秒。過ぎたら次の `begin` が取り直す）。ワークフローの処理のステップの `timeout_sec` もこれより長くしない |
 | `external` | false | true なら api-watch は実行せず、外のワークフローが `begin` → 処理 → `finish` を呼ぶ（下の「外のワークフローで処理する」）。`name` も書く |
-| `input_template` | — | `external` の受け渡し先で、処理に渡す文章のテンプレートのファイル（`render` の既定。`dags` が `render` のステップを足す） |
+| `input_template` | — | `external` の受け渡し先で、処理に渡す文章のテンプレートのファイル（`render` の既定） |
 | `lock` | — | この名前の受け渡し先どうしは、ルール・取得元をまたいで同時に 1 件だけ実行する（`begin` で取り、`finish` で返す。期限は `timeout_sec` + 120 秒） |
 | `skip_if` | — | 実行の前に呼ぶチェック（プラグインが足す）の名前か `{check: 名前, options: {...}}` の配列。どれかが真なら実行しない |
 | `handled_before_if` | — | 実行のあとに呼ぶチェック。どれかが真なら、処理し終えたのは実行前の状態までにする（その間の変化を次の取得でもう一度処理する） |
@@ -720,6 +765,26 @@ with:
 
 認証情報は `--connections <パス>` で渡した connections.yaml（または .json）からだけ読む。環境変数・設定ファイル・決まった場所からは探さない。
 接続設定を使う取得元・受け渡し先があるのに `--connections` が無ければ、問い合わせる前に止める。生成する DAG にも同じパスが入る。
+
+## Dagu のワークフロー
+
+api-watch を動かす Dagu のワークフローは、`dags/` の例をコピーして書く（api-watch は Dagu のワークフローを書き出さない）。
+`/home/you` は自分の場所に、`items`・`triage` などの名前は自分の設定のものに直す。
+
+| 例 | 置く名前 | 使うとき | ステップ |
+|---|---|---|---|
+| `api-watch-source.example.yaml` | `api-watch-<取得元>.yaml` | `workflow` の受け渡し先（Dagu の DAG へ渡す）を持つルールがある | fetch → evaluate → dispatch |
+| `api-watch-rule.example.yaml` | `api-watch-<ルール>.yaml` | `command` の受け渡し先を持つルール | fetch → evaluate → work |
+| `api-watch-external.example.yaml` | `api-watch-<ルール>.yaml` | `external` の受け渡し先を持つルール | fetch → evaluate → claim → render → handle → finish |
+| `api-watch-dispatch.example.yaml` | `api-watch-dispatch.yaml` | `workflow` の受け渡し先がある | evaluate → dispatch → reconcile |
+| `api-watch-maintenance.example.yaml` | `api-watch-maintenance.yaml` | いつも | gc |
+| `api-watch-handler.example.yaml` | ルールの `workflow` の名前 | `workflow` の受け渡し先の側 | handle → ack（下の「受け渡し先の DAG」） |
+
+- fetch は、一時的な失敗（終了コード 3）のときだけ Dagu に再試行させる（`retry_policy.exit_code: [3]`）。設定の誤りや認証の失敗は再試行しない
+- fetch の `timeout_sec` は、取得元の `jitter_sec`・`busy_wait_sec` を書いたらその分を足す
+- `--plugin` を足すとき（`gitlab_issue.py` などのプラグイン）は、どのステップにも同じ順で足す
+- 設定ファイルが既定の `~/.config/api-watch/api-watch.yaml` でなければ、どのステップの `args` の先頭にも `"--config"` と `<パス>` を足す
+- 例は試験で、Dagu と同じ順に本物の api-watch へ流して確かめている（`test/test_dag_examples.py`）
 
 ## 受け渡し先の DAG
 
@@ -781,7 +846,6 @@ with:
 | `forget-handled --rule R [--target T] レコード...` | `refresh` のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる） |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
-| `dags --out DIR` | Dagu の DAG の雛形を書き出す（`--plugin dagu` のときだけ）。`command` の受け渡し先を持つルールごとに、取得から実行までのワークフローも書く。既にあるファイルは `--force` のときだけ上書きする。起動間隔は `--schedule`（既定は毎分） |
 
 ログ・エラー・状態には認証情報を出さない（接続設定の値・認証のヘッダー・URL のトークンらしい引数は `***` に置き換える）。
 
@@ -808,6 +872,7 @@ with:
 - ページ番号・オフセットのページングは、取得中にデータが増減するとページの境目がずれる。並び順を更新日時の昇順にするか、
   カーソル方式を使う
 - 増分取得では「消えた」を判定できない（取得されないだけと区別できない）
+- フォルダの取得元も毎回フォルダ全体を一覧するので、ファイルが何十万もあるフォルダには向かない（`max_files` で止まる）。更新時刻を変えずに中身だけ書き換えるファイルは、`hash: true` のときだけ検知できる
 
 ## テスト
 
@@ -821,5 +886,6 @@ python3 -m unittest discover -s tools/api-watch/test
 変更検知の意味（キー順・配列の順序・欠落と null・A→B→A・一致の遷移・初回の扱い・ルールの変更）・保存済みの結果での判定のやり直し・
 受け渡しの再送・同じ ID・順序・失敗の隔離・REST API での受け渡しと完了の確認・保持期間・認証情報の伏せ字、
 接続設定を `--connections` からだけ読むこと、Dagu プラグインを `--plugin` で指定したときだけ使うこと、本体が Dagu なしで動くこと（`adapter: command`）、
-インストーラが作る 1 ファイル（`.pyz`）がそれだけで動くこと（同梱の PyYAML・DAG がその `.pyz` を呼ぶこと・インストールと削除）を見る。
+インストーラが作る 1 ファイル（`.pyz`）がそれだけで動くこと（同梱の PyYAML・インストールと削除）、フォルダの取得元、
+`dags/` の例のワークフローを Dagu と同じ順で流して動くことを見る。
 設計は `docs/designs/api-watch-design.md`。

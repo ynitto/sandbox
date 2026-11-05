@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import jpath, template
+from . import folder, jpath, template
 from .config import Config, SourceSpec
 from .httpclient import Client, Request, build_url
 from .store import Store
@@ -428,6 +428,8 @@ class Fetcher:
                   position: Any) -> dict | None:
         p = src.pagination
         page_no = int(st["page_no"]) + 1
+        if src.folder is not None:
+            return self._folder_page(src, fid, st, page_no)
         if page_no > p.max_pages:
             raise PermanentError(f"ページ数が上限（max_pages={p.max_pages}）を超えました。取りこぼさないよう、"
                                  "この取得は完了にしません。上限を上げるか、取得の条件を絞ってください")
@@ -534,6 +536,19 @@ class Fetcher:
                        (page_no, n, 1 if not_modified else 0, json.dumps(final_state), now(), fid))
         log(f"[{src.name}] {page_no} ページ目: {n} 件" + ("（変更なし・304）" if not_modified else ""))
         return nxt
+
+    def _folder_page(self, src: SourceSpec, fid: int, st: dict, page_no: int) -> None:
+        """フォルダの取得元: フォルダの一覧を 1 ページとして書く。書き込み中のファイルは前回の姿（source_records）を使う。"""
+        previous = {r["rkey"]: unpack(r["data"]) for r in
+                    self.store.q("SELECT rkey, data FROM source_records WHERE source=?", (src.name,))}
+        recs = folder.scan(src.folder, previous)
+        with self.store.tx() as db:
+            db.execute("INSERT OR REPLACE INTO fetch_pages(fetch_id, page_no, records) VALUES(?,?,?)",
+                       (fid, page_no, pack(recs)))
+            db.execute("UPDATE fetches SET pages=?, records=records+?, page_state=?, updated_at=? WHERE id=?",
+                       (page_no, len(recs), json.dumps(dict(st, page_no=page_no, done=True)), now(), fid))
+        log(f"[{src.name}] フォルダ {src.folder.path}: {len(recs)} 件")
+        return None
 
     def _complete(self, src: SourceSpec, fid: int, epoch: int, position: Any, outcome: FetchOutcome,
                   client: Client) -> FetchOutcome:

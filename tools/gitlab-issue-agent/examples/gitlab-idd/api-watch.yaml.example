@@ -7,7 +7,7 @@
 # ワーカーが status:review-ready にするとレビュアーが、レビュアーが差し戻す（status:needs-rework）とワーカーがもう一度起きる。
 # status:in-progress / status:approved / status:done などは filter で外れるので流さない（マージは人が行う）。
 #
-# Dagu のワークフロー（api-watch-idd）は dags で書き出す（README の「gitlab-idd スキルと繋ぐ」）。
+# Dagu のワークフロー（api-watch-idd）は api-watch-idd.yaml.example をコピーして置く（README の「gitlab-idd スキルと繋ぐ」）。
 version: 1
 state_dir: ~/.local/state/api-watch
 

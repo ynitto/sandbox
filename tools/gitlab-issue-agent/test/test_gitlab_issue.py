@@ -267,6 +267,31 @@ class _FlowBase(unittest.TestCase):
         return delivery, prompt
 
 
+    def run_dag(self, path: Path, exit_code: int = 0) -> str | None:
+        """例の Dagu のワークフローを、Dagu と同じ順で 1 回動かす。handle に渡ったプロンプトを返す（処理するものが無ければ None）。"""
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("例の DAG を読むのに PyYAML が要る")
+        sys.path.insert(0, str(API_WATCH.parent / "test"))
+        import dagrun
+        seen = []
+
+        def handle(step, vars):
+            self.assertEqual((step["action"], step["with"]["stdin"]), ("harness.run", "${INPUT}"))
+            seen.append(vars["INPUT"])
+            return exit_code
+
+        r = dagrun.run(path, aw=[sys.executable, str(API_WATCH)],
+                       head=["--config", str(self.cfg), "--state-dir", str(self.tmp / "aw-state")],
+                       paths={"/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py": str(PLUGIN),
+                              "/home/you/.github/connections.yaml": str(self.conn)},
+                       handle=handle, env=self.env)
+        self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n != "handle"], [], r)
+        self.assertEqual(r["finish"], 0 if seen else None, r)      # 失敗も finish で記録する。取れなければ何もしない
+        return seen[0] if seen else None
+
+
 @unittest.skipUnless(API_WATCH.is_file(), "api-watch が無い")
 class FlowTest(_FlowBase):
     def test_new_issue_runs_once_and_own_comment_does_not_retrigger(self):
@@ -286,6 +311,14 @@ class FlowTest(_FlowBase):
         d, prompt = self.cycle()
         self.assertIsNotNone(d)
         self.assertIn("- コメント +1", prompt)            # 前回処理し終えた（実行前の）状態からの差分
+
+    def test_example_dag_runs(self):
+        dag = HERE.parent / "api-watch-issue-agent.yaml.example"
+        self.assertIsNone(self.run_dag(dag))                     # 初回は覚えるだけ
+        self.gl.put(make_issue(2, labels=["todo"]))
+        self.assertIn("issue #2", self.run_dag(dag, exit_code=1))   # 失敗も finish で記録し、
+        self.assertIn("2 回目", self.run_dag(dag))                  # 次の起動でもう一度
+        self.assertIsNone(self.run_dag(dag))
 
     def test_failure_is_retried(self):
         self.cycle()
@@ -375,32 +408,12 @@ class IddExampleTest(_FlowBase):
         self.assertIn("ワーカーロールで", prompt)
         self.assertIn("- コメント +1", prompt)
 
-    def test_example_dag_matches_dags_output(self):
-        if os.name == "nt":
-            self.skipTest("例のパスは /home/you（POSIX）で書いている")
-        import shutil as _sh
-        root = Path(tempfile.mkdtemp())
-        home = root / "home" / "you"
-        cfg = home / ".config" / "api-watch" / "api-watch.yaml"
-        conn = home / ".github" / "connections.yaml"
-        plugin = home / ".local" / "share" / "gitlab-issue-agent" / "gitlab_issue.py"
-        handle = home / ".config" / "dagu" / "gitlab-issue-agent.handle.yaml"
-        for dst, src in ((cfg, EXAMPLE / "api-watch.yaml.example"), (conn, EXAMPLE / "connections.yaml.example"),
-                         (plugin, PLUGIN), (handle, EXAMPLE / "handle-step.yaml.example"),
-                         (cfg.parent / "idd.prompt.md", EXAMPLE / "idd.prompt.md.example")):
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            _sh.copy(src, dst)
-        env = {**os.environ, "GITLAB_URL": "https://gitlab.example.com", "GITLAB_TOKEN": "x", "GITLAB_PROJECT": "group/project"}
-        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", "dagu", "--plugin", str(plugin), "--config", str(cfg),
-                            "--connections", str(conn), "dags", "--out", str(root / "dags"), "--python", "/usr/bin/python3",
-                            "--script", "/home/you/.local/bin/api-watch",
-                            "--dotenv", "/home/you/.config/dagu/gitlab-issue-agent.env", "--handle-step", f"idd.run={handle}"],
-                           env=env, capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        got = (root / "dags" / "api-watch-idd.yaml").read_text(encoding="utf-8").replace(str(root), "")
-        _sh.rmtree(root, ignore_errors=True)
-        self.assertEqual(got, (EXAMPLE / "api-watch-idd.yaml.example").read_text(encoding="utf-8"),
-                         "examples/gitlab-idd/api-watch-idd.yaml.example を dags の出力で書き直してください")
+    def test_example_dag_runs(self):
+        self.assertEqual(self.run_dag(EXAMPLE / "api-watch-idd.yaml.example"), None)    # 初回は覚えるだけ
+        self.gl.put(make_issue(2, labels=["status:open", "assignee:any"]))
+        self.aw("fetch", "--force")                              # 取得元の schedule の予定の時刻まで、ワークフローの fetch は問い合わせない
+        prompt = self.run_dag(EXAMPLE / "api-watch-idd.yaml.example")
+        self.assertIn("ワーカーロールで、このイシュー #2 だけを処理してください", prompt)
 
 
 if __name__ == "__main__":

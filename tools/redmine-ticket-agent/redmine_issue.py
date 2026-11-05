@@ -12,7 +12,7 @@
 
 取得・変化の検知・実行待ち・再試行・実行の前後の取り直しは api-watch が受け持つ。どのチケットを対象にするか
 （自分が担当・タイトルや説明の文字列）は api-watch の設定（取得元の query とルールの filter）に書く。
-close は Redmine の URL と API キーを環境変数 REDMINE_URL / REDMINE_API_KEY から読む（Dagu なら dags --dotenv の .env）。
+close は Redmine の URL と API キーを環境変数 REDMINE_URL / REDMINE_API_KEY から読む（Dagu ならワークフローの dotenv に書いた .env）。
 標準ライブラリだけで動く。設計は docs/designs/redmine-ticket-agent-design.md。
 """
 from __future__ import annotations

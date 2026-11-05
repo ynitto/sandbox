@@ -60,8 +60,9 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
        token: ${REDMINE_API_KEY}
    ```
 
-6. 環境変数を読み込んで設定を確かめ、Dagu のワークフローを書き出す。`api-watch-auto-close.yaml`（取得から完了まで）と
-   `api-watch-maintenance.yaml`（毎日の整理）ができる。Dagu の設定（`config.yaml`）に足すものは無い。
+6. 環境変数を読み込んで設定を確かめ、Dagu のワークフローを置く。`api-watch-auto-close.yaml.example`（取得から完了まで）を
+   `~/.config/dagu/dags/api-watch-auto-close.yaml` にコピーして `/home/you` を自分の場所に直し、毎日の整理のワークフローは api-watch の例を
+   そのまま置く。Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
    set -a; . ~/.config/dagu/redmine-ticket-agent.env; set +a
@@ -72,13 +73,17 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
    ```
 
    ```bash
-   api-watch --plugin dagu --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/redmine-ticket-agent.env
+   cp tools/redmine-ticket-agent/api-watch-auto-close.yaml.example ~/.config/dagu/dags/api-watch-auto-close.yaml
+   ```
+
+   ```bash
+   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
    ```
 
 7. Dagu のスケジューラを動かす（`dagu start-all` など）。設定の例は `initial: emit` なので、**最初の取得で、いま当たっているチケットも完了にする**。
    これから当たるものだけにしたいなら、動かす前に `initial: baseline` にする。
 
-Dagu を使わないなら、6 の `dags` の代わりに cron などから次を定期的に呼ぶ（環境変数は先に読み込んでおく）。
+Dagu を使わないなら、6 のワークフローの代わりに cron などから次を定期的に呼ぶ（環境変数は先に読み込んでおく）。
 
 ```bash
 api-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule auto-close

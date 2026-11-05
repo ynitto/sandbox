@@ -601,29 +601,12 @@ class StorageTest(unittest.TestCase):
 
 
 class OpsTest(unittest.TestCase):
-    def test_dags_and_check(self):
+    def test_check(self):
         env = Env(self)
         env.write_config({"items": env.source("/all", schedule="*/10 * * * *")}, {"r": simple_rules("d")})
         out = env.ok(self, "check")
         self.assertIn("問題ありません", out)
         self.assertNotIn(TOKEN, out)
-        env.ok(self, "dags", "--out", str(env.tmp / "dags"), "--dotenv", "~/.config/dagu/api-watch.env")
-        names = sorted(p.name for p in (env.tmp / "dags").iterdir())
-        self.assertEqual(names, ["api-watch-dispatch.yaml", "api-watch-items.yaml", "api-watch-maintenance.yaml"])
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML が無いので生成した YAML の中身は見ない")
-        d = yaml.safe_load((env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(d["schedule"], "* * * * *")      # 設定の schedule は書き写さない（毎分起動し、取得するかは api-watch が決める）
-        self.assertEqual([s["name"] for s in d["steps"]], ["fetch", "evaluate", "dispatch"])
-        self.assertEqual(d["steps"][1]["depends"], ["fetch"])
-        self.assertEqual(d["steps"][0]["retry_policy"]["exit_code"], [3])
-        args = d["steps"][0]["with"]["args"]
-        self.assertEqual(args[-3:], ["fetch", "--source", "items"])
-        self.assertEqual(args[args.index("--connections") + 1], str(env.conn_file.resolve()))   # 接続設定のパスを渡す
-        self.assertEqual(Path(args[0]).name, "api_watch.py")
-        self.assertEqual(d["dotenv"], ["~/.config/dagu/api-watch.env"])
 
     def test_connections_only_from_cli_path(self):
         try:
@@ -688,9 +671,6 @@ rules:
         self.assertTrue((other / "state.db").is_file())
         self.assertFalse((env.tmp / "from-env").exists())
         self.assertFalse((env.tmp / "state").exists())
-        env.ok(self, "--state-dir", str(other), "dags", "--out", str(env.tmp / "dags"), "--schedule", "*/5 * * * *")
-        text = (env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8")
-        self.assertIn(json.dumps(str(other.resolve())), text)
 
     def test_core_runs_without_dagu(self):
         env = Env(self)
@@ -740,9 +720,6 @@ rules:
         self.assertEqual(env.enqueued(), [])
         self.assertEqual([(d["status"], d["attempts"]) for d in env.deliveries()], [("pending", 0)])  # 試行回数は減らない
         env.ok(self, "status")                                          # アダプタを使わないコマンドは動く
-        with self.assertRaises(SystemExit) as cm:                       # dags は --plugin dagu のときだけ
-            env.run("dags", "--out", str(env.tmp / "dags"))
-        self.assertEqual(cm.exception.code, 2)
         code, out = env.run("check")
         self.assertEqual(code, 1)
         self.assertIn("--plugin dagu", out)

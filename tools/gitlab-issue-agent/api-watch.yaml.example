@@ -1,18 +1,14 @@
 # gitlab-issue-agent の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
-# Dagu のワークフロー 1 本（api-watch-issue-agent。api-watch の dags で作る）で動く。毎分起動し、1 回の起動で 1 件を処理する:
+# Dagu のワークフロー 1 本（api-watch-issue-agent。api-watch-issue-agent.yaml.example をコピーして置く）で動く。
+# 毎分起動し、1 回の起動で 1 件を処理する:
 #   fetch → evaluate → claim（実行できる issue を 1 件取る。取り直し・飛ばす判定）→ render（プロンプト）
 #   → handle（エージェント CLI。Dagu の harness.run）→ finish（処理し終えた状態の記録。失敗ならあとでやり直す）
 # GitLab の issue に固有の部分（プロンプトの差分・実行中の他人の動き）は gitlab_issue.py（api-watch のプラグイン）が受け持つ。
-# api-watch を呼ぶときは毎回 --plugin <gitlab_issue.py のパス> を付ける（dags も付けた引数を DAG に書く）。
-#
-#   api-watch --plugin dagu --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py \
-#     --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
-#     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-issue-agent.env \
-#     --handle-step issue-agent.run=~/.config/dagu/gitlab-issue-agent.handle.yaml
+# api-watch を呼ぶときは毎回 --plugin <gitlab_issue.py のパス> を付ける（例のワークフローにも付けてある）。
 #
 # GitLab にいつ問い合わせるかは、下の取得元の schedule を見て api-watch が決める（Dagu のワークフローは毎分起動するだけ）。
-# 問い合わせの予定も Dagu に任せたいなら、取得元の schedule を消し、dags --schedule "0 * * * *" のように Dagu の起動間隔で決める
+# 問い合わせの予定も Dagu に任せたいなら、取得元の schedule を消し、ワークフローの schedule を "0 * * * *" のように書き換える
 # （そのときは min_interval_sec を書いておくと、手で叩いたときや別のワークフローとの重複を防げる）。
 #
 # GitLab の URL・プロジェクト・トークンは ~/.config/dagu/gitlab-issue-agent.env にだけ書く。
@@ -79,7 +75,7 @@ rules:
         retry_backoff_sec: 300 # 失敗したら、毎分の起動のうちこの秒数（1 回ごとに倍）を過ぎたもので再試行
         order: none            # 打ち切った変化があっても、同じ issue の新しい変化は流す
 
-  # 同じ取得元を別のワークフローでも使う例。dags が api-watch-issue-notify を書き足す。
+  # 同じ取得元を別のワークフローでも使う例。ワークフロー api-watch-issue-notify（api-watch の dags/api-watch-rule.example.yaml）を足す。
   # 取得は上の schedule で 1 回にまとまる。
   # issue-notify:
   #   source: gitlab-issues

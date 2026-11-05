@@ -328,17 +328,16 @@ class FlowTest(unittest.TestCase):
         self.cycle()
         self.assertEqual(self.rm.notes[1], ["自動で完了にしました。"])
 
-    def test_dags_writes_one_workflow(self):
-        out = self.tmp / "dags"
-        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", "dagu", "--plugin", str(PLUGIN),
-                            "--config", str(EXAMPLE), "--connections", str(self.conn), "--state-dir", str(self.tmp / "s"),
-                            "dags", "--out", str(out), "--dotenv", "/home/you/.config/dagu/redmine-ticket-agent.env"],
-                           env=self.env, capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(sorted(p.name for p in out.iterdir()), ["api-watch-auto-close.yaml", "api-watch-maintenance.yaml"])
-        dag = (out / "api-watch-auto-close.yaml").read_text(encoding="utf-8")
-        self.assertIn(str(PLUGIN), dag)
-        self.assertIn("redmine-ticket-agent.env", dag)
+    def test_example_dag_runs(self):
+        sys.path.insert(0, str(API_WATCH.parent / "test"))
+        import dagrun
+        self.rm.put(make_issue(1, "【自動完了】ログの整理"))
+        dag = HERE.parent / "api-watch-auto-close.yaml.example"
+        r = dagrun.run(dag, aw=[sys.executable, str(API_WATCH)], head=["--config", str(self.cfg)],
+                       paths={"/home/you/.local/share/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
+                              "/home/you/.github/connections.yaml": str(self.conn)}, env=self.env)
+        self.assertEqual(r, {"fetch": 0, "evaluate": 0, "work": 0})
+        self.assertEqual(self.rm.notes[1], ["自動で完了にしました。"])
 
 
 if __name__ == "__main__":
