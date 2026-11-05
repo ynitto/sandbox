@@ -15,7 +15,7 @@
 使い方（入れたあと）:
 
     api-watch --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
-    api-watch --plugin dagu --config ... --connections ... dags --out ~/.config/dagu/dags
+    api-watch --plugin dagu --connections ... fetch --source <取得元>   （Dagu のワークフローの例は dags/*.example.yaml）
 
 標準ライブラリだけで動く。
 """

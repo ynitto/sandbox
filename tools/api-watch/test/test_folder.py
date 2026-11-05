@@ -176,14 +176,6 @@ class FolderTest(unittest.TestCase):
         self.assertEqual(cfg.sources["inbox"].folder.path, self.inbox)   # 相対パスは設定ファイルから
         self.assertEqual(cfg.sources["inbox"].key, "rel")
 
-    def test_dags_runs_folder_every_minute_without_schedule(self):
-        self.write()
-        self.env.plugins = ["dagu"]
-        out_dir = self.env.tmp / "dags"
-        self.env.ok(self, "dags", "--out", str(out_dir))
-        text = (out_dir / "api-watch-r.yaml").read_text(encoding="utf-8")
-        self.assertIn('schedule: "* * * * *"', text)
-
     def test_changing_folder_rebaselines(self):
         self.write()
         self.put("a.csv", "1")

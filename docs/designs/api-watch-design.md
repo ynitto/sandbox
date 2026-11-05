@@ -40,29 +40,46 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 | `apiwatch`（本体） | 取得・判定・状態・受け渡しの行の管理（順序・再送・ack・retry・skip）・運用のコマンド | 標準ライブラリ（YAML の設定なら PyYAML） |
 | `apiwatch.adapters` | アダプタの口（`parse` / `create`、`enqueue` / `retry` / `status`）と、任意のコマンドで渡す `command` | 本体だけ |
 | `apiwatch.plugins` | `--plugin` で指定されたプラグインの読み込み（同梱の `apiwatch/plugins/<名前>.py`、または任意の `.py` のパス）。パッケージ自体は同梱のプラグインを import しない | 本体だけ |
-| `apiwatch/plugins/dagu.py` | `dagu` アダプタ（CLI / REST API）と `dags` コマンド（DAG の生成）。Dagu に依存するものはこの 1 ファイルだけ | 本体の公開部品 + Dagu |
+| `apiwatch/plugins/dagu.py` | `dagu` アダプタ（CLI / REST API）。Dagu に依存するコードはこの 1 ファイルだけ | 本体の公開部品 + Dagu |
+| `dags/*.example.yaml` | api-watch を動かす Dagu のワークフローの例（§2.0.1）。利用者がコピーして直す | Dagu |
 
 - プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_adapter(name, parse, create)`・`api.add_command(name, fn, help)` を呼ぶ。
   本体はコマンド行の `--plugin` を先に読み（`parse_known_args`）、指定されたプラグインだけを読み込んでから残りの引数を解釈する。
-  サブコマンド（`dags`）はプラグインが足すので、指定しなければ存在しない
-- 自動では読み込まない。どのプラグインを使うかを実行のたびに呼び出し側が決め、`dags` は自分を読み込んだ `--plugin` を生成する DAG にも入れる。
+  プラグインが足すサブコマンドは、指定しなければ存在しない
+- 自動では読み込まない。どのプラグインを使うかを実行のたびに呼び出し側（Dagu のワークフローの argv）が決める。
   1 回の実行の始めにプラグインの登録を外すので、同じプロセスで続けて呼んでも前の指定は残らない
 - 設定の `delivery` は名前と設定を持つだけで、アダプタは使う時点（dispatch・reconcile・retry・check）で解決する。だから `status`・`events`・`ack`
   はプラグインなしで動き、`--plugin` を付け忘れた dispatch は設定の誤り（終了コード 1）で止まって、受け渡しの試行回数を減らさない
-- テストで、本体の主要モジュールを読み込んでも `apiwatch.plugins.dagu` が読み込まれないこと、`--plugin` なしでは `dags` も `dagu` アダプタも無いこと、
+- テストで、本体の主要モジュールを読み込んでも `apiwatch.plugins.dagu` が読み込まれないこと、`--plugin` なしでは `dagu` アダプタが無いこと、
   `.py` のパスでも読み込めることを確かめている
 - 配布: `install.py build` が `apiwatch/`（同梱のプラグインを含む）の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば
   その純 Python の部分とライセンス文を、`zipapp` で 1 つの `.pyz` にまとめる。C 拡張（`_yaml`）は zip から読み込めないので入れない（PyYAML は
   無ければ純 Python で動く）。`install` は Linux 系では `#!` 付きの実行ファイル `~/.local/bin/api-watch`、Windows では `.pyz` と `.cmd` を置く。
-  `.pyz` から動いているとき、`dags` は DAG から呼ぶ入口をその `.pyz` にする（`apiwatch` の親が zip のファイルかで見分ける）
+  Dagu のワークフローはこの 1 ファイルを呼ぶ（Linux 系は `~/.local/bin/api-watch` を `command` に、Windows は `python` の引数に `.pyz`）
 - アダプタが約束するのは「同じ run_id を 2 回実行しない（2 回目は duplicate を返す）」こと。本体の再送の正しさはこれだけに依る
 - 本体の語彙は「ワークフロー（`targets[].workflow`）」「run_id」。Dagu の DAG 名・実行 ID への読み替えはアダプタが持つ
-- 起動の間隔（取得元の `schedule`）は基盤に依らない cron の文字列として本体の設定に置き、`dags` がそれを DAG の `schedule` に写す。
-  DAG だけに要る項目（dotenv・再送 / 整理の DAG の間隔・履歴の日数）は設定に置かず `dags` の引数にした（本体の設定に Dagu の節を作らない）
+- 問い合わせの予定（取得元の `schedule`）は基盤に依らない cron の文字列として本体の設定に置く（§3.6）。ワークフローだけに要る項目
+  （起動の間隔・dotenv・履歴の日数）はワークフローに書く（本体の設定に Dagu の節を作らない）
 
 段を分けたのは、Dagu の再試行がその段だけをやり直すようにするため。判定や受け渡しを再試行しても、
-成功済みの取得は繰り返さない（生成する DAG は fetch → evaluate → dispatch の 3 ステップで、fetch だけが
+成功済みの取得は繰り返さない（例のワークフローは fetch → evaluate → dispatch の 3 ステップで、fetch だけが
 終了コード 3 で再試行する）。
+
+### 2.0.1 Dagu のワークフローは例を置き、生成しない
+
+当初は `dags` コマンド（Dagu プラグイン）が設定から DAG を書き出していた。初めは設定の `schedule` を DAG に写して設定と DAG を揃える役目も
+持っていたが、§3.6 で起動と取得を分けてからは「一度だけ雛形を書く」だけになった。書く形は取得元のワークフロー・ルールのワークフロー（command）・
+`external` のワークフロー・再送・整理の 5 つに限られ、設定から変わるのはパスと名前だけだった。一方で、生成のコード（約 230 行）・その試験・
+「例のファイルが生成の出力と一字一句同じか」の試験を持ち続け、版を上げるだけで他のツールの試験が落ちた。
+
+そこで生成をやめ、5 つの形を `dags/*.example.yaml` として置いた。ワークフローは `install.py install` が置いた 1 ファイルの `api-watch` を
+`command` にして呼ぶので、Python と入口のパスを組み立てる必要がない。例が古くならないよう、試験（`test/dagrun.py`）が例の DAG を Dagu と同じ順
+（depends・`output:`・`preconditions`・`retry_policy.exit_code`・`continue_on.failure`・`${<id>.exit_code}`）で本物の api-watch に流す。
+gitlab-issue-agent・redmine-ticket-agent の例のワークフローも同じ実行役で流す。
+
+生成が担っていた検査のうち、「1 つのルールに `external` は 1 つまで」「ルールの名前が取得元・再送・整理のワークフローの名前と重ならない」は、
+ワークフローの名前を生成が決めていたための制約なので、生成と一緒になくした（`claim --rule R --target T` は受け渡し先ごとに取れる）。
+「取得元に `schedule` も `min_interval_sec` も無いまま毎分起動する」の注意は README に書いた。
 
 ### 2.1 状態を SQLite にした理由
 
@@ -149,15 +166,14 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 ### 3.6 いつ取得するか・取得の共有とずらし
 
 **起動と取得を分ける**: いつ起動するかは Dagu（DAG の `schedule`）が、起動されたときに API へ問い合わせるかは api-watch が取得元ごとに決める。
-初版は設定の `schedule` を `dags` が DAG に書き写していたが、起動の間隔が設定と DAG の 2 か所に分かれ、設定だけ直すとずれた。
+初版は設定の `schedule` を DAG の生成（§2.0.1）が DAG に書き写していたが、起動の間隔が設定と DAG の 2 か所に分かれ、設定だけ直すとずれた。
 今は書き写さない。取得元の `schedule`（cron。`apiwatch/cron.py`。この PC の時刻）は「問い合わせの予定」で、`fetch` が起動されるたびに
 「直近の予定の時刻より後に、この取得元を取得し終えているか」（`last_success_at` ≥ 直近の予定の時刻）を見て、済んでいれば `skipped` で終わる。
 DAG は毎分起動にしておけば、予定は api-watch の設定 1 か所で決まる。取得元に `schedule` が無ければ起動されるたびに取得し、予定は
-Dagu の起動間隔に任せる（`dags --schedule` か手で書く）。どちらでも動く。
+Dagu の起動間隔（ワークフローの `schedule`）に任せる。どちらでも動く。
 
-`dags` は `--schedule` が無ければ毎分の DAG を書く。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
-そのときは止めて `--schedule` か設定を求める。`dags` は雛形を作るだけで、既にあるファイルは `--force` のときだけ上書きする
-（DAG の `schedule` は利用者が直す場所なので、作り直しで消さない）。
+例のワークフローは毎分起動する。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
+README でどちらかを書くか、ワークフローの `schedule` を問い合わせてよい間隔にするよう案内している。
 
 1 つの取得元を、それぞれ自分のワークフロー（§5.5）で取得から処理まで行う複数のルールが使うと、同じ API を何度も呼びかねない。
 `fetch` は次の順で判断して、問い合わせを 1 回にまとめる。
@@ -304,10 +320,10 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 - 同じ `work` を 2 つ動かしても、`sending` への書き換えを条件付きの UPDATE で取り合うので、1 件を 2 回実行しない。プロセスが死んだら、
   期限が過ぎたあとの `work` が同じ ID で実行し直す（少なくとも 1 回。冪等にするのはコマンドの側）
 - `dispatch` はこの受け渡し先を飛ばす。`workflow` の受け渡し先が 1 つも無ければ `delivery`（アダプタ）は要らない
-- `dags` は、command の受け渡し先を持つルールごとに `<prefix>-<ルール名>` のワークフロー（fetch → evaluate → [dispatch] → work）の雛形を書く。
-  起動間隔は `--schedule`（既定は毎分。§3.6）。毎分起動なら、予定の時刻以外は問い合わせず、`work` が失敗したもののやり直しだけを進める。
+- command の受け渡し先を持つルールは、ルールごとのワークフロー（fetch → evaluate → [dispatch] → work。`dags/api-watch-rule.example.yaml`）で動かす。
+  毎分起動なら、予定の時刻以外は問い合わせず、`work` が失敗したもののやり直しだけを進める。
   work のステップには上限を付けない（1 件ごとの上限は `timeout_sec`）。
-  どのルールも自分のワークフローを持つ取得元には取得元の DAG を、`workflow` の受け渡し先が無ければ再送の DAG を書かない
+  どのルールも自分のワークフローを持つ取得元には取得元のワークフローが、`workflow` の受け渡し先が無ければ再送のワークフローが要らない
 
 ### 5.6 実行の前後の取り直し（`refresh`）と「処理し終えた状態」
 
@@ -350,16 +366,16 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 `claim` は `due` の古い順に `begin` を呼び、最初に `run` になった 1 件の ID を出す（`skip` などはそのまま次へ、`busy` / `wait` ならやめる）。
 `finish --exit-code N` は処理のステップの終了コードで成否を決める（数でなければ失敗。ID が空なら何もしない）。
 
-`dags` は `external` の受け渡し先を、ルールのワークフロー 1 本の中に `claim`（`output: DELIVERY`）→ `render`（`output: INPUT`）→
+`external` の受け渡し先は、ルールのワークフロー 1 本（`dags/api-watch-external.example.yaml`）の中に `claim`（`output: DELIVERY`）→ `render`（`output: INPUT`）→
 `handle`（`id: handle`・`continue_on: failure`）→ `finish ${DELIVERY} --exit-code ${handle.exit_code}` として書く。`render` 以降は
 `preconditions` の `re:^aw_`（取れた ID があるとき）で動く。1 回の起動で 1 件だけ処理する。確かめたのは Dagu v2.25.2 のスキーマと実装
 （`${<ステップ>.exit_code}` で前のステップの終了コードを参照できる、`harness.run` の `with.stdin` は文字列で、組み込みの claude などは
-標準入力に流す）。書き出した DAG はそのスキーマで検証した。
+標準入力に流す）。例はそのスキーマで検証した（§8）。
 
 当初は親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` → `render` → `handle`、`handler_on` で
 `finish`）の 2 本にしていた。1 回の起動で全部を流せ、子の `handler_on.abort` で中止も記録できたが、ワークフローが 2 本になる。1 本にするため、
 1 回の起動で 1 件だけにし（同時に 1 つしか動かさないので待ちはほとんど変わらない）、中止は受け渡しの期限切れで取り直すことにした。
-`handle` は処理ごとに違うので雛形にし、`--handle-step` で中身を差し込めるようにした。1 つのルールに `external` の受け渡し先は 1 つまで。
+`handle` は処理ごとに違うので、例では `harness.run` で Claude Code を動かす形にし、利用者が書き換える。
 
 **プラグインの口**（`apiwatch/plugins/__init__.py`・`apiwatch/hooks.py`）: アダプタ・コマンドに加えて、フィルタ（テンプレートの関数）と
 チェック（実行の前後の真偽）を名前で登録できる。プラグインは本体の内部に触らず、チェックの HTTP も `CheckContext.get_json` を通す。
@@ -370,9 +386,9 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 - 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
   決まった場所（`.github/connections.yaml` など）からは探さない。どのファイルの認証情報を使うかを、実行のたびに呼び出し側が決める。
-  `dags` は渡されたパスを生成する DAG の argv に入れる。ファイルの中の `${VAR}` は connections.yaml の書式として展開する
+  Dagu のワークフローはそのパスを argv に書く。ファイルの中の `${VAR}` は connections.yaml の書式として展開する
 - 場所はすべてコマンド行で渡す: `--config`（設定）・`--connections`（接続設定）・`--state-dir`（状態。設定の `state_dir` より優先）。
-  環境変数では上書きしない（呼び出し側の環境に左右されず、生成した DAG の argv を見れば何を使うか分かる）
+  環境変数では上書きしない（呼び出し側の環境に左右されず、ワークフローの argv を見れば何を使うか分かる）
 
 - `status`: 取得元ごとの最後の取得（ページ数・件数・要求回数・304 のページ数）・エラー・途中の取得・待たされている時刻、
   ルールごとの判定位置と未判定の回数・判定のエラー・受け渡しの内訳、失敗している受け渡しの一覧
@@ -404,10 +420,10 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 - `test_shared.py`: command の受け渡し先（`run --rule` で取得から実行まで・失敗の再試行と打ち切り・`retry`・`dispatch` が触らないこと・
   時間切れ・設定の検査）、取得の共有（2 本のワークフローで問い合わせ 1 回・共有の設定が無ければ誤り・ずらし・取得中のプロセスを待ってその結果を使う・
-  失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、`dags` が書くルールごとのワークフロー・`--schedule`・既にある DAG を上書きしないこと、cron の解釈、予定の時刻での取得、`rate_limit.group`、
+  失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、cron の解釈、予定の時刻での取得、`rate_limit.group`、
   `refresh`（自分の書き込みで再実行しない・実行中のほかの人の変化で再実行する・たまったイベントを最新で 1 回・filter から外れた／消えたら飛ばす・
   取り直しの失敗・`forget-handled`）、`external`（`due` → `begin` → `render` → `finish`・失敗の再試行と打ち切り・ルールをまたいだ `lock`・
-  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`claim` と `finish --exit-code`、`dags` が書く 1 本のワークフローと `--handle-step`
+  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`claim` と `finish --exit-code`
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査
@@ -416,11 +432,13 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   増分の位置が失敗で進まないこと、組み立てた全体の姿での基準値の取り直し、304、再試行と長い Retry-After、認証エラーで再試行しない・
   トークンがログ・状態・DB・WAL に残らないこと、途中で失敗した取得の続きからの再開、強制終了したプロセスからの引き継ぎ、ルールの変更、
   取得元の認証の変更、API なしでの判定のやり直し、判定のエラーの隔離、順序（completion / enqueue）、同じ ID での再送と受け渡し先ごとの隔離、
-  受け渡し直後の停止からの復旧、ack / retry、REST API での受け渡し・完了の確認・409、保持期間が未処理を消さないこと、DAG の生成、
+  受け渡し直後の停止からの復旧、ack / retry、REST API での受け渡し・完了の確認・409、保持期間が未処理を消さないこと、
   YAML の設定、接続設定を `--connections` からだけ読むこと（決まった場所に置いても読まない・無ければ問い合わせ前に止まる）、
   `adapter: command` での受け渡しと重複の検出、本体が `apiwatch.plugins.dagu` を import しないこと、`--plugin` を指定したときだけ Dagu プラグインを使うこと
 - `test_folder.py`: フォルダの取得元（追加・更新・削除・書き込み中のファイル・フォルダが無いときに消えたとしない・`include` / `exclude` / 隠しファイル・下のフォルダ・中身とハッシュ・`max_files`・設定の検査・`path` を変えたときの基準値の取り直し）
-- `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで取得から受け渡しまで動くこと、DAG がその `.pyz` を呼ぶこと、
+- `test_dag_examples.py`: `dags/` の例のワークフローの形（depends・fetch の再試行は終了コード 3 だけ）と、取得元・ルール・`external`・再送・整理の
+  ワークフローを `test/dagrun.py` で Dagu と同じ順に本物の api-watch へ流して動くこと（`external` は失敗を finish で記録し、次の起動でやり直す）
+- `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで取得から受け渡しまで動くこと、
   site-packages を読まない（`python -S`）ときに同梱の PyYAML で YAML の設定を読めること、インストールと削除（Windows は `.cmd`）
-- 生成した DAG と `dags/api-watch-handler.example.yaml` を Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、
-  エラー 0 件を確認した（2026-11-04、手元）。Dagu 本体での実行はまだ確かめていない
+- `dags/` の例 6 つと、gitlab-issue-agent・redmine-ticket-agent の例のワークフロー 3 つを Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、
+  エラー 0 件を確認した（2026-11-05、手元）。Dagu 本体での実行はまだ確かめていない

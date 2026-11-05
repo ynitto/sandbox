@@ -9,7 +9,7 @@ Redmine の「自分が担当する未完了のチケットのうち、タイト
 | 受け持ち | どこ | 何を |
 |---|---|---|
 | 取得・変化の検知・実行待ち・再試行・処理し終えた状態 | api-watch | 取得元（offset のページング・予定・ずらし・失敗の待ち）、ルールの `filter` と `watch`、`command` の受け渡し先（`work`・`refresh`・`skip_if`） |
-| 起動・ログと実行履歴 | Dagu | ワークフロー 1 本（`fetch` → `evaluate` → `work`）。`dags` が雛形を書く |
+| 起動・ログと実行履歴 | Dagu | ワークフロー 1 本（`fetch` → `evaluate` → `work`）。例（`api-watch-auto-close.yaml.example`）をコピーして置く |
 | Redmine に固有のこと | `redmine_issue.py` | チェック `redmine.not_mine`（プラグイン）と、コメントとステータスを変える `close`（`command` から呼ぶ CLI） |
 
 gitlab-issue-agent との違い: 処理がエージェント CLI ではなく決まった 1 回の HTTP 更新なので、`external`（Dagu の `harness.run` に処理を任せる形）
@@ -61,7 +61,7 @@ Dagu: api-watch-auto-close（毎分）
 
 - 取得・取り直し・チェックは api-watch の接続（`connections.yaml` の `redmine`。値は `${REDMINE_URL}`・`${REDMINE_API_KEY}`）で送り、
   `X-Redmine-API-Key` ヘッダーは api-watch がログで伏せ字にする
-- `close` は別プロセスなので接続設定を読まず、環境変数 `REDMINE_URL`・`REDMINE_API_KEY` を読む。Dagu の `dotenv`（`dags --dotenv`）が
+- `close` は別プロセスなので接続設定を読まず、環境変数 `REDMINE_URL`・`REDMINE_API_KEY` を読む。Dagu のワークフローの `dotenv` が
   ワークフローの環境に入れ、`work` が子プロセスに引き継ぐ。argv に API キーを書かない（`ps` やログに出ないように）
 
 ### 2.4 Redmine への負荷
@@ -84,7 +84,7 @@ offset、`include=allowed_statuses`、選べない `status_id` を黙って無�
 - 選べないステータスのときは何も書かずに失敗し、直したあとの再試行で完了になる
 - 文字列を変えると、変えたあとの文字列を含む今あるチケットも完了になる
 - 前の試行でコメントだけが残っていたら、やり直しでコメントを重ねない
-- `dags` がワークフロー 1 本と整理のワークフローを書き、プラグインと `.env` のパスが入る
+- 例のワークフローを Dagu と同じ順で流すと、当たったチケットが完了になる
 
 ## 4. 限界
 

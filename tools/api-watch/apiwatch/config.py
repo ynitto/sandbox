@@ -167,7 +167,7 @@ class TargetSpec:
     refresh: RefreshSpec | None = None   # 実行の前後に 1 件取り直す（流し終えた状態の記録・自分の書き込みの吸収）
     external: bool = False          # api-watch は実行せず、外のワークフローが begin → 処理 → finish を呼ぶ
     lock: str | None = None         # この名前の排他を持つ受け渡し先は、ルール・取得元をまたいで同時に 1 件だけ実行する
-    input_template: str | None = None   # external: 処理に渡す文章のテンプレート（render の既定。dags が render のステップを足す）
+    input_template: str | None = None   # external: 処理に渡す文章のテンプレート（render の既定）
     skip_if: list = None            # 実行の前に呼ぶチェック。どれかが真なら実行しない（list[CheckRef]）
     handled_before_if: list = None  # 実行のあとに呼ぶチェック。どれかが真なら、処理し終えたのは実行前の状態まで
 
@@ -252,7 +252,7 @@ class Config:
         return [r for r in self.rules.values() if r.source == source]
 
     def fetching_workflows(self, source: str) -> list[str]:
-        """この取得元を取得するワークフロー（dags が書くもの）の名前。
+        """この取得元を取得するワークフロー（取得元のワークフローと、ルールごとのワークフロー）の名前。
 
         command の受け渡し先を持つルールは自分のワークフローで取得する。それ以外のルール（と、ルールの無い取得元）は
         取得元のワークフローで取得する。"""
