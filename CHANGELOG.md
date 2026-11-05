@@ -46,6 +46,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   名前が `gitlab-idd-` で始まらないフォルダは消さない。GitLab の API もトークンも使わない
 - gitlab-issue-agent の gitlab-idd の設定の例（`gitlab-issue-agent.env.example`・`examples/gitlab-idd/`）と README に、`GITLAB_IDD_LOCAL_REPO` と Windows の注意を足す
 - CI: gitlab-idd の作業用フォルダの試験を Linux と Windows で、redmine-ticket-agent・gitlab-mr-review-agent の試験を Windows でも回す
+- redmine-ticket-agent: Windows で `close` の失敗の文が `\u5909…` のように崩れて api-watch・Dagu のログに出ていたのを直す（標準出力・標準エラーを UTF-8 にする）
 
 ### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
 

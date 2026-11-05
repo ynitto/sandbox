@@ -336,9 +336,11 @@ class FlowTest(unittest.TestCase):
                            env=self.env, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["api-watch-auto-close.yaml", "api-watch-maintenance.yaml"])
-        dag = (out / "api-watch-auto-close.yaml").read_text(encoding="utf-8")
-        self.assertIn(str(PLUGIN), dag)
-        self.assertIn("redmine-ticket-agent.env", dag)
+        dag = yaml.safe_load((out / "api-watch-auto-close.yaml").read_text(encoding="utf-8"))
+        self.assertEqual([s["name"] for s in dag["steps"]], ["fetch", "evaluate", "work"])
+        for step in dag["steps"]:                                    # Windows のパスは YAML の中で \\ になるので、読んでから比べる
+            self.assertIn(str(PLUGIN), step["with"]["args"])
+        self.assertEqual(dag["dotenv"], ["/home/you/.config/dagu/redmine-ticket-agent.env"])
 
 
 if __name__ == "__main__":
