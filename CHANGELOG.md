@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### api-watch: フォルダの取得元（0.3.0）
+
+- 取得元に `request` の代わりに `folder` を書くと、フォルダの中のファイルを 1 件ずつのレコードにする。ファイルの追加は `appeared`、
+  更新は `changed`、削除は `removed`。ルール・受け渡し先・Dagu のワークフローは API の取得元と同じ
+- 対象は `include` / `exclude` の glob（`**` で下のフォルダも）で選ぶ。更新時刻から `settle_sec`（既定 5 秒）たっていないファイルは書き込み中とみなして拾わない
+- `hash: true` で中身の SHA-256、`content: text` / `json` で中身もレコードに入れる
+- フォルダが無い・読めないときは一時的な失敗（終了コード 3）にし、全部のファイルが消えたとはみなさない
+- `dags`: フォルダの取得元は `schedule` も `min_interval_sec` も無くても毎分起動の DAG を書く
+
 ### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
 
 - 受け渡し先に `command` を書くと、別のワークフローへ渡さず、新しいコマンド `work` がその場で 1 件ずつ実行する。

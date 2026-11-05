@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import adapters, cron, jpath, template
+from . import adapters, cron, folder as foldermod, jpath, template
 from .connections import Connections, load_yaml_or_json, parse_ref
 from .util import ConfigError, canonical, sha
 
@@ -121,6 +121,7 @@ class SourceSpec:
     resume: bool
     resume_max_age_sec: float
     lease_sec: float
+    folder: foldermod.FolderSpec | None = None   # フォルダの取得元（request の代わり）。レコードはファイル 1 件ずつ
 
     def fingerprint(self, conn: dict | None) -> str:
         """取得条件・認証の指紋。変わったら別のデータとして扱い、過去の取得結果や位置を使わない。"""
@@ -329,16 +330,24 @@ def _incremental(d: Any, where: str) -> Incremental | None:
     return inc
 
 
-def _source(name: str, d: Any) -> SourceSpec:
+def _source(name: str, d: Any, base: Path | None = None) -> SourceSpec:
     where = f"sources.{name}"
     _expect(NAME_RE.match(name) is not None, f"{where}: 名前は英数字・- _ . で 64 文字以内にしてください")
     _expect(isinstance(d, dict), f"{where}: 辞書で書いてください")
-    _known(d, {"description", "connection", "request", "records", "key", "pagination", "incremental", "schedule",
+    _known(d, {"description", "connection", "request", "folder", "records", "key", "pagination", "incremental", "schedule",
                "min_interval_sec", "jitter_sec", "busy_wait_sec", "failure_backoff_sec", "failure_max_backoff_sec",
                "rate_limit", "retry", "conditional", "resume",
                "resume_max_age_sec", "lease_sec"}, where)
+    fold = None
+    if "folder" in d:
+        _expect("request" not in d, f"{where}: request（API）と folder（フォルダ）はどちらか一方にしてください")
+        for k in ("connection", "records", "key", "pagination", "incremental", "conditional", "rate_limit", "retry"):
+            _expect(k not in d, f"{where}.{k}: folder の取得元には書けません")
+        fold = foldermod.parse(d["folder"], f"{where}.folder", base or Path.cwd())
+        d = dict(d, request={"method": "LIST", "url": str(fold.path)}, key=foldermod.KEY)
     req = d.get("request")
-    _expect(isinstance(req, dict) and isinstance(req.get("url"), str), f"{where}.request.url を書いてください")
+    _expect(isinstance(req, dict) and isinstance(req.get("url"), str),
+            f"{where}.request.url（API）か folder.path（フォルダ）を書いてください")
     _known(req, {"method", "url", "headers", "query", "body", "body_form", "timeout_sec"}, f"{where}.request")
     method = str(req.get("method", "GET")).upper()
     headers = req.get("headers") or {}
@@ -395,6 +404,7 @@ def _source(name: str, d: Any) -> SourceSpec:
         resume=bool(d.get("resume", True)),
         resume_max_age_sec=_num(d, "resume_max_age_sec", 3600, where),
         lease_sec=_num(d, "lease_sec", 300, where, 10),
+        folder=fold,
     )
 
 
@@ -594,8 +604,13 @@ def load(path: str | Path | None = None, connections: str | Path | None = None,
     rd = d.get("rules") or {}
     _expect(isinstance(sd, dict) and sd, "sources: 取得元を 1 つ以上書いてください")
     _expect(isinstance(rd, dict), "rules: 辞書で書いてください")
-    sources = {str(k): _source(str(k), v) for k, v in sd.items()}
+    sources = {str(k): _source(str(k), v, p.parent) for k, v in sd.items()}
     rules = {str(k): _rule(str(k), v, sources) for k, v in rd.items()}
+    for r in rules.values():
+        if sources[r.source].folder is not None:
+            for t in r.targets:
+                _expect(t.refresh is None, f"rules.{r.name}.targets.{t.name}.refresh: フォルダの取得元のルールには書けません"
+                                           "（API からレコードを取り直すための項目です）")
     delivery = _delivery(d.get("delivery"))
     for name, src in sources.items():
         _check_shared(name, src, rules)

@@ -45,8 +45,14 @@ def cmd_check(cfg, store, a) -> int:
         try:
             cfg.resolve_connection(src.connection)
             conn = "なし" if src.connection is None else f"{src.connection[0]}/{src.connection[1]}"
-            log(f"  取得元 {name}: {src.method} {REDACT(src.url)}（接続 {conn}・ページング {src.pagination.type}・"
-                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本・"
+            what = (f"フォルダ {src.folder.path}（{'・'.join(src.folder.include)}）" if src.folder is not None else
+                    f"{src.method} {REDACT(src.url)}（接続 {conn}・ページング {src.pagination.type}・"
+                    f"増分 {src.incremental.type if src.incremental else 'なし'}・")
+            if src.folder is not None:
+                what += "（"
+                if not src.folder.path.is_dir():
+                    log(f"    注意: フォルダがまだありません: {src.folder.path}（取得は一時的な失敗になります）")
+            log(f"  取得元 {name}: {what}ルール {len(cfg.rules_for(name))} 本・"
                 + (f"予定 {src.schedule}（起動されても予定の時刻まで取得しない）" if src.schedule
                    else "予定なし（起動されるたびに取得）")
                 + (f"・間隔 {src.min_interval_sec:.0f} 秒以上" if src.min_interval_sec else "")

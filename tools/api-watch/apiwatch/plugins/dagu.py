@@ -324,7 +324,7 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
         # 設定の schedule は書き写さない。Dagu の起動間隔は --schedule（既定は毎分。取得するかは api-watch が決める）
         if opts.schedule:
             return opts.schedule
-        if src.cron is None and not src.min_interval_sec:
+        if src.cron is None and not src.min_interval_sec and src.folder is None:   # フォルダは毎分見てよい
             raise ConfigError(f"取得元 {src.name} には schedule も min_interval_sec も無いので、毎分起動すると毎分問い合わせます。"
                               "api-watch の設定に schedule（取得の予定）か min_interval_sec を書くか、"
                               "dags --schedule で Dagu の起動間隔を指定してください")
