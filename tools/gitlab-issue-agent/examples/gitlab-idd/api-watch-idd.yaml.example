@@ -112,7 +112,9 @@ steps:
     # dags の --handle-step idd.run=<このファイル> で差し込む。Dagu v2 の harness.run でエージェント CLI を動かす。
     #
     # エージェント CLI から gitlab-idd スキルが使えるようにしておく（例: Claude Code なら ~/.claude/skills/gitlab-idd）。
-    # working_dir はプロジェクトの作業コピー（gitlab-idd はそこから git remote を読み、作業用のクローンを自分で作る）。
+    # working_dir はプロジェクトの作業コピー（既にあるものでよい。gitlab-idd はそこから git remote を読む）。
+    # gitlab-issue-agent.env の GITLAB_IDD_LOCAL_REPO に同じフォルダを書くと、gitlab-idd はイシューごとにクローンせず、
+    # そのリポジトリに git worktree を足して作業する（作業コピーのブランチ・書きかけの変更には触らない）。
     action: harness.run
     working_dir: /home/you/work/project
     with:

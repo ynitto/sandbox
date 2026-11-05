@@ -478,8 +478,10 @@ class LocalRepoTest(_GitLabBase):
         self.head = self.commit("def f(x):\n    y = x * 2\n    return y\n\n", "mr")
         self.gl.put(make_mr(1, sha=self.head, diff_refs={"base_sha": self.base, "start_sha": self.base,
                                                           "head_sha": self.head}))
-        self.work = self.tmp / "work"
-        self.env.update(MR_REVIEW_REPO_DIR=str(self.work), MR_REVIEW_GIT_URL=str(self.origin))
+        self.work = self.tmp / "work"                                    # リポジトリ（無ければ取ってくる）
+        self.review = self.tmp / "review"                                # レビュー用の作業ツリー
+        self.env.update(MR_REVIEW_REPO_DIR=str(self.work), MR_REVIEW_WORKTREE=str(self.review),
+                        MR_REVIEW_GIT_URL=str(self.origin))
 
     def commit(self, text, msg, ref="refs/merge-requests/1/head") -> str:
         (self.src / "app.py").write_text(text, encoding="utf-8")
@@ -497,12 +499,14 @@ class LocalRepoTest(_GitLabBase):
         self.assertEqual(code, 0, out)
         self.assertIn("diff --git a/app.py b/app.py", out)              # 差分は git で
         self.assertIn("+    y = x * 2", out)
-        self.assertIn(f"作業フォルダ（{self.work}）を今のコミットにしてあります", out)
-        self.assertEqual((self.work / "app.py").read_text(encoding="utf-8"), "def f(x):\n    y = x * 2\n    return y\n\n")
-        self.assertEqual(git(self.work, "rev-parse", "HEAD"), self.head)
+        self.assertIn(f"作業フォルダ（{self.review}）を今のコミットにしてあります", out)
+        self.assertEqual((self.review / "app.py").read_text(encoding="utf-8"), "def f(x):\n    y = x * 2\n    return y\n\n")
+        self.assertEqual(git(self.review, "rev-parse", "HEAD"), self.head)
         reqs = self.api()
         self.assertFalse([r for r in reqs if "/repository/" in r], reqs)  # compare・ファイルは API に問い合わせない
         self.assertNotIn(TOKEN, (self.work / ".git" / "config").read_text(encoding="utf-8"))
+        self.assertEqual(git(self.work, "for-each-ref", "--format=%(refname)", "refs/mr-review"),
+                         f"refs/mr-review/heads/main\nrefs/mr-review/mr/1")
 
     def test_show_comment_summary_reuse_local_and_cache(self):
         self.cli("context", 1)
@@ -530,7 +534,7 @@ class LocalRepoTest(_GitLabBase):
         self.assertIn(f"前回レビューしたコミット（{self.head[:8]}）からの変更", out)
         self.assertIn("-    y = x * 2\n+    y = (x or 0) * 2", out)
         self.assertNotIn("other.py", out)
-        self.assertEqual(git(self.work, "rev-parse", "HEAD"), new)
+        self.assertEqual(git(self.review, "rev-parse", "HEAD"), new)
 
     def test_since_survives_force_push(self):
         self.cli("context", 1)
@@ -557,17 +561,60 @@ class LocalRepoTest(_GitLabBase):
         self.gl.project["http_url_to_repo"] = str(self.origin)          # URL は API の http_url_to_repo から
         code, out = self.cli("prepare")
         self.assertEqual(code, 0, out)
-        self.assertEqual((self.work / "app.py").read_text(encoding="utf-8"), "def f(x):\n    return x\n\n")
-        self.assertEqual(self.cli("prepare")[1].strip(), f"{self.work} には既にあります。そのまま使います")
+        self.assertIn("取ってきました", out)
+        self.assertEqual((self.review / "app.py").read_text(encoding="utf-8"), "def f(x):\n    return x\n\n")
+        code, out = self.cli("prepare")
+        self.assertIn("既にあるものを使います", out)
 
-    def test_token_goes_to_env_not_args(self):
-        repo = gm.LocalRepo(self.work, TOKEN, url="https://gitlab.example/g/p.git")
-        env = repo._env()
-        i = int(env["GIT_CONFIG_COUNT"]) - 1
-        self.assertEqual(env[f"GIT_CONFIG_KEY_{i}"], "http.extraHeader")
-        self.assertIn("Basic ", env[f"GIT_CONFIG_VALUE_{i}"])
-        self.assertNotIn("GIT_CONFIG_COUNT", gm.LocalRepo(self.work, TOKEN, url="git@gitlab.example:g/p.git")._env()
-                         if "GIT_CONFIG_COUNT" not in os.environ else {})
+    def test_existing_working_copy_is_left_alone(self):
+        # 自分の作業コピー（ブランチで作業中・書きかけの変更あり）をそのまま MR_REVIEW_REPO_DIR にする
+        mine = self.tmp / "mine"
+        git(self.tmp, "clone", "-q", str(self.origin), str(mine))
+        git(mine, "checkout", "-qb", "my-work")
+        (mine / "other.py").write_text("a = 2  # 書きかけ\n", encoding="utf-8")
+        (mine / "notes.txt").write_text("メモ\n", encoding="utf-8")
+        del self.env["MR_REVIEW_GIT_URL"]                               # リモート origin から取る
+        self.env["MR_REVIEW_REPO_DIR"] = str(mine)
+        refs = git(mine, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes")
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, 0, out)
+        self.assertIn("+    y = x * 2", out)
+        self.assertEqual(git(mine, "rev-parse", "--abbrev-ref", "HEAD"), "my-work")           # ブランチはそのまま
+        self.assertEqual((mine / "other.py").read_text(encoding="utf-8"), "a = 2  # 書きかけ\n")  # 書きかけも
+        self.assertTrue((mine / "notes.txt").exists())
+        self.assertEqual(git(mine, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"),
+                         refs)                                           # ブランチ・追跡ブランチを増やさず、動かさない
+        self.assertEqual(git(self.review, "rev-parse", "HEAD"), self.head)                   # MR は別の作業ツリーに
+        self.assertFalse((self.tmp / "work").exists())                  # 取り直していない
+
+    def test_refuses_to_overwrite_other_folders(self):
+        mine = self.tmp / "mine"
+        git(self.tmp, "clone", "-q", str(self.origin), str(mine))
+        (mine / "other.py").write_text("書きかけ\n", encoding="utf-8")
+        del self.env["MR_REVIEW_GIT_URL"]
+        self.env.update(MR_REVIEW_REPO_DIR=str(mine), MR_REVIEW_WORKTREE=str(mine))   # 作業ツリーをリポジトリそのものに
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code, out = self.cli("context", 1)
+        self.assertIn("MR_REVIEW_REPO_DIR と同じにはできません", err.getvalue())
+        self.assertEqual((mine / "other.py").read_text(encoding="utf-8"), "書きかけ\n")
+        stuff = self.tmp / "stuff"
+        stuff.mkdir()
+        (stuff / "keep.txt").write_text("消さない\n", encoding="utf-8")
+        self.env["MR_REVIEW_WORKTREE"] = str(stuff)                     # 関係の無いフォルダ
+        with redirect_stderr(err):
+            self.cli("context", 1)
+        self.assertIn("空ではなく、このリポジトリの作業ツリーでもありません", err.getvalue())
+        self.assertTrue((stuff / "keep.txt").exists())
+
+    def test_token_goes_only_to_the_gitlab_host(self):
+        def header(url):
+            env = gm.LocalRepo(self.work, TOKEN, url=url, gitlab_url="https://GitLab.example")._env()
+            n = int(env.get("GIT_CONFIG_COUNT") or 0) - 1
+            return env.get(f"GIT_CONFIG_VALUE_{n}", "") if env.get(f"GIT_CONFIG_KEY_{n}") == "http.extraHeader" else ""
+        self.assertIn("Basic ", header("https://gitlab.example/g/p.git"))
+        self.assertEqual(header("https://github.com/g/p.git"), "")      # ほかのホストには渡さない
+        self.assertEqual(header("git@gitlab.example:g/p.git"), "")      # SSH はその PC の鍵で
 
 
 # ---------------------------------------------------------------------------

@@ -14,9 +14,10 @@
                                     閉じて開き直した MR）。受け渡し先の skip_if に書くと、kiro-cli を起こさずに飛ばす
 
     python3 <このファイル> <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
-        prepare                       作業フォルダ（MR_REVIEW_REPO_DIR）にリポジトリを 1 回だけ取ってくる（入れるとき）
+        prepare                       レビュー用の作業フォルダ（MR_REVIEW_WORKTREE）を作る。手元のリポジトリ
+                                      （MR_REVIEW_REPO_DIR。既にある作業コピーでよい）が無ければ 1 回だけ取ってくる
         context IID [--since SHA]     MR の概要・前回の指摘（このツールが書いた未解決のスレッド）・差分を出す。
-                                      作業フォルダを MR の今のコミットにする（無いコミットだけを git fetch で足す）。
+                                      レビュー用の作業フォルダを MR の今のコミットにする（無いコミットだけを git fetch で足す）。
                                       今の差分を既にレビューし終えていれば、そう出して終わる
         show IID PATH [--from N --to M]
                                       head の時点のファイルを行番号つきで出す（指摘が直ったかを確かめる）
@@ -29,8 +30,10 @@
                                       今の head のレビューのまとめを 1 回だけ書く（2 回目は書かない）
 
 コマンドは GitLab の URL・トークン・プロジェクトを環境変数 GITLAB_URL / GITLAB_TOKEN / GITLAB_PROJECT から読む
-（Dagu なら dags --dotenv の .env）。MR_REVIEW_REPO_DIR があれば、差分・ファイルはそこに置いたリポジトリ（1 回だけ
-取ってきて、以後は足りないコミットだけを取る）から git で読み、API には問い合わせない。git が失敗したら API に戻る。
+（Dagu なら dags --dotenv の .env）。MR_REVIEW_REPO_DIR があれば、差分・ファイルはその手元のリポジトリ（既にある作業コピーでよい。
+無ければ 1 回だけ取ってきて、以後は足りないコミットだけを取る）から git で読み、API には問い合わせない。リポジトリの作業ツリー・
+ブランチには触らず、MR のコミットは git worktree で足したレビュー用の作業フォルダ（MR_REVIEW_WORKTREE）に取り出す。
+git が失敗したら API に戻る。
 どの書き込みにも見えない印（HTML コメント）を付け、同じ指摘・同じまとめを
 二度書かない。「レビューし終えた」はコミットではなく MR の差分の中身（足した行・消した行）で見分けるので、
 リベースで head が変わっただけの MR はもう一度レビューしない。標準ライブラリだけで動く。設計は docs/designs/gitlab-mr-review-agent-design.md。
@@ -257,90 +260,188 @@ class GitError(Exception):
     pass
 
 
+# どの git にも付ける設定。core.quotepath: 日本語のパスを \343... に崩さない。core.longpaths: Windows の 260 字を超えるパス
+GIT_OPTS = ("-c", "core.quotepath=false", "-c", "core.longpaths=true")
+
+
+def _host(url: str) -> str:
+    """URL のホスト（大文字小文字を区別しない。scp 形式の git@host:path も）。"""
+    url = url.strip()
+    if "://" in url:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    m = re.match(r"^[^@/]+@([^:/]+):", url)
+    return m.group(1).lower() if m else ""
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
+    except OSError:
+        return False
+
+
 class LocalRepo:
-    """MR_REVIEW_REPO_DIR に置くリポジトリ。1 回だけ取ってきて（ファイルの中身は要るときに取る部分クローン）、以後は
-    MR の今のコミットが手元に無いときだけ、その MR と対象ブランチを git fetch する。
+    """手元のリポジトリ（MR_REVIEW_REPO_DIR）と、レビュー用の作業ツリー（MR_REVIEW_WORKTREE）。
 
-    HTTPS のときのトークンは、git を呼ぶたびに環境変数（GIT_CONFIG_*）で認証のヘッダーとして渡す。.git/config にも
-    コマンド行にも書かない。SSH の URL（MR_REVIEW_GIT_URL）なら、その PC の SSH の鍵を使う。"""
+    - リポジトリは既にあるもの（自分の作業コピーでもよい）をそのまま使う。無ければ 1 回だけ取ってくる
+      （対象ブランチだけ・ファイルの中身は要るときに取る部分クローン）
+    - リポジトリの作業ツリー・HEAD・ブランチ・リモートの追跡ブランチには触らない。取ってきたコミットは
+      refs/mr-review/ の下にだけ置き、MR のコミットの取り出しは git worktree で足した別のフォルダで行う
+    - git fetch は、MR の今のコミット（と差分の元）が手元に無いときだけ
+    - 取ってくる先は MR_REVIEW_GIT_URL、無ければリポジトリのリモート（MR_REVIEW_GIT_REMOTE。既定は origin）。
+      HTTPS で、ホストが GitLab と同じときだけ、トークンを git を呼ぶたびの環境変数（GIT_CONFIG_*）で認証のヘッダーにする
+      （.git/config にもコマンド行にも書かない。ほかのホストには渡さない）。それ以外は、その PC の git の認証
+      （資格情報マネージャー・SSH の鍵）に任せる"""
 
-    def __init__(self, path: str | Path, token: str, url: str = "", resolve_url=None):
+    def __init__(self, path: str | Path, token: str, url: str = "", resolve_url=None, worktree: str | Path = "",
+                 remote: str = "origin", gitlab_url: str = ""):
         self.path = Path(path).expanduser()
+        self.worktree = Path(worktree).expanduser() if worktree else self.path.parent / f"{self.path.name}.mr-review"
         self.token = token
-        self._url = url
+        self.remote = remote or "origin"
+        self.gitlab_host = _host(gitlab_url)
+        self._url = url                 # MR_REVIEW_GIT_URL（書いてあればリモートより優先）
         self._resolve_url = resolve_url
+        self._fetch_url = ""
 
-    @property
-    def exists(self) -> bool:
-        return (self.path / ".git").is_dir()
+    # -- 呼び出し ------------------------------------------------------------
 
-    @property
-    def cache_dir(self) -> Path:
-        return self.path / ".git" / "mr-review-cache"
-
-    def remote_url(self) -> str:
-        if self._url:
-            return self._url
-        if self.exists:
-            r = self._run(["git", "-C", str(self.path), "config", "--get", "remote.origin.url"], check=False)
-            self._url = r.stdout.strip()
-        if not self._url and self._resolve_url is not None:
-            self._url = str(self._resolve_url() or "")
-        if not self._url:
-            raise GitError("リポジトリの URL が分かりません（MR_REVIEW_GIT_URL で指定できます）")
-        return self._url
-
-    def _env(self) -> dict:
+    def _env(self, url: str = "") -> dict:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
-        url = self._url or ""
-        if url.startswith(("http://", "https://")) and self.token:
+        url = url or self._fetch_url or self._url
+        if url.startswith(("http://", "https://")) and self.token and (
+                not self.gitlab_host or _host(url) == self.gitlab_host):
             n = int(env.get("GIT_CONFIG_COUNT") or 0)
             auth = base64.b64encode(f"oauth2:{self.token}".encode("utf-8")).decode("ascii")
             env.update({"GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "http.extraHeader",
                         f"GIT_CONFIG_VALUE_{n}": f"Authorization: Basic {auth}"})
         return env
 
-    def _run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-        r = subprocess.run(cmd, env=self._env(), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=GIT_TIMEOUT)
+    def _run(self, args: list[str], cwd: Path | None = None, check: bool = True, url: str = "",
+             timeout: float = GIT_TIMEOUT) -> subprocess.CompletedProcess:
+        cmd = ["git", *GIT_OPTS, *(["-C", str(cwd)] if cwd is not None else []), *args]
+        r = subprocess.run(cmd, env=self._env(url), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, stdin=subprocess.DEVNULL)
         if check and r.returncode != 0:
-            raise GitError(f"git {cmd[3] if cmd[1] == '-C' else cmd[1]} が失敗しました: {r.stderr.strip()[-400:]}")
+            raise GitError(f"git {args[0]} が失敗しました: {r.stderr.strip()[-400:]}")
         return r
 
-    def git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return self._run(["git", "-C", str(self.path), *args], check=check)
+    def git(self, *args: str, check: bool = True, url: str = "") -> subprocess.CompletedProcess:
+        return self._run(list(args), cwd=self.path, check=check, url=url)
+
+    def wt(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return self._run(list(args), cwd=self.worktree, check=check)
+
+    # -- リポジトリ ----------------------------------------------------------
+
+    def _common_dir(self, where: Path) -> Path | None:
+        if not where.is_dir():
+            return None
+        r = self._run(["rev-parse", "--git-common-dir"], cwd=where, check=False, timeout=60)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        p = Path(r.stdout.strip())
+        return p if p.is_absolute() else (where / p)
+
+    @property
+    def exists(self) -> bool:
+        return self._common_dir(self.path) is not None
+
+    @property
+    def cache_dir(self) -> Path:
+        return (self._common_dir(self.path) or self.path / ".git") / "mr-review-cache"
+
+    def fetch_url(self) -> str:
+        """取ってくる先（MR_REVIEW_GIT_URL か、リポジトリのリモートの URL）。"""
+        if self._fetch_url:
+            return self._fetch_url
+        if self._url:
+            self._fetch_url = self._url
+        elif self.exists:
+            r = self.git("remote", "get-url", self.remote, check=False)
+            self._fetch_url = r.stdout.strip()
+            if not self._fetch_url:
+                raise GitError(f"{self.path} にリモート {self.remote} がありません（MR_REVIEW_GIT_REMOTE か MR_REVIEW_GIT_URL で指定できます）")
+        elif self._resolve_url is not None:
+            self._fetch_url = str(self._resolve_url() or "")
+        if not self._fetch_url:
+            raise GitError("リポジトリの URL が分かりません（MR_REVIEW_GIT_URL で指定できます）")
+        return self._fetch_url
+
+    def _source(self) -> str:
+        """git fetch に渡す取得先。URL を書いたならその URL、無ければリモートの名前（その PC の設定・認証をそのまま使う）。"""
+        self.fetch_url()
+        return self._url or self.remote
 
     def ensure(self, branch: str) -> bool:
-        """無ければ取ってくる（対象ブランチだけ・ファイルの中身は要るときに取る）。取ってきたら真。"""
+        """リポジトリが無ければ取ってくる（対象ブランチだけ・部分クローン）。取ってきたら真。既にあれば何もしない。"""
         if self.exists:
-            self.remote_url()
+            self.fetch_url()
             return False
-        url = self.remote_url()
+        if self.path.exists() and any(self.path.iterdir()):
+            raise GitError(f"{self.path} は git のリポジトリではなく、空でもありません")
+        url = self.fetch_url()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--no-tags", "--single-branch",
-                   "--branch", branch, url, str(self.path)])
+        self._run(["clone", "--quiet", "--filter=blob:none", "--no-checkout", "--no-tags", "--single-branch",
+                   "--branch", branch, url, str(self.path)], url=url)
+        if not self._url:
+            self._url = url
         return True
 
     def has(self, sha: str) -> bool:
         return bool(sha) and self.git("cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0
 
     def sync(self, iid: Any, head: str, target: str, base: str = "") -> bool:
-        """MR の今のコミット（と差分の元）を手元にそろえる。git fetch したら真。"""
+        """MR の今のコミット（と差分の元）を手元にそろえる。足りないときだけ git fetch し、したら真。"""
         fetched = False
-        if not self.has(head) or (base and not self.has(base)):
-            self.git("fetch", "--quiet", "--no-tags", "origin", f"+refs/merge-requests/{iid}/head:refs/mr/{iid}",
-                     f"+refs/heads/{target}:refs/remotes/origin/{target}")
+        # 手元にあるかは、前に取ってきた refs/mr-review/mr/<iid> と比べて決める（cat-file などでコミットを読むと、
+        # 部分クローンでは足りないものをその場で 1 つずつ取りに行ってしまう）
+        known = self.git("rev-parse", "--verify", "--quiet", f"refs/mr-review/mr/{iid}", check=False).stdout.strip()
+        if known != head:
+            src = self._source()
+            self.git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", src,
+                     f"+refs/merge-requests/{iid}/head:refs/mr-review/mr/{iid}",
+                     f"+refs/heads/{target}:refs/mr-review/heads/{target}")
             fetched = True
             if base and not self.has(base):            # 対象ブランチが巻き戻された。そのコミットだけを取る
-                self.git("fetch", "--quiet", "--no-tags", "origin", base, check=False)
+                self.git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", src, base, check=False)
         if not self.has(head):
             raise GitError(f"MR !{iid} のコミット {head[:8]} を取ってこられませんでした")
-        self.git("update-ref", f"refs/mr/{iid}", head)
+        self.git("update-ref", f"refs/mr-review/mr/{iid}", head)
         return fetched
 
+    def fetch_branch(self, branch: str) -> str:
+        self.git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", self._source(),
+                 f"+refs/heads/{branch}:refs/mr-review/heads/{branch}")
+        return f"refs/mr-review/heads/{branch}"
+
+    # -- レビュー用の作業ツリー ------------------------------------------------
+
     def checkout(self, sha: str) -> None:
-        self.git("checkout", "--quiet", "--detach", "--force", sha)
-        self.git("clean", "-fdq")
+        """レビュー用の作業ツリーを sha にする。無ければ git worktree で足す。
+
+        リポジトリそのものの作業ツリーや、このリポジトリの作業ツリーでないフォルダには、決して上書き・掃除をしない。"""
+        if _same_dir(self.worktree, self.path):
+            raise GitError(f"MR_REVIEW_WORKTREE（{self.worktree}）を MR_REVIEW_REPO_DIR と同じにはできません"
+                           "（リポジトリの作業ツリーを書き換えないため）")
+        mine = self._common_dir(self.worktree)
+        if mine is None:
+            if self.worktree.exists() and any(self.worktree.iterdir()):
+                raise GitError(f"{self.worktree} は空ではなく、このリポジトリの作業ツリーでもありません。別のフォルダを指定してください")
+            self.git("worktree", "prune")
+            self.git("worktree", "add", "--quiet", "--detach", "--force", str(self.worktree), sha)
+            return
+        if not _same_dir(mine, self._common_dir(self.path) or self.path):
+            raise GitError(f"{self.worktree} は別のリポジトリの作業ツリーです。別のフォルダを指定してください")
+        top = self.wt("rev-parse", "--show-toplevel").stdout.strip()
+        if not _same_dir(Path(top), self.worktree):
+            raise GitError(f"{self.worktree} はリポジトリのサブフォルダです。作業ツリーの一番上のフォルダを指定してください")
+        if _same_dir(Path(top), Path(self.git("rev-parse", "--show-toplevel", check=False).stdout.strip() or "/nonexistent")):
+            raise GitError(f"{self.worktree} はリポジトリそのものの作業ツリーです")
+        self.wt("checkout", "--quiet", "--detach", "--force", sha)
+        self.wt("clean", "-fdq")
+
+    # -- 読み取り（手元だけで、リモートには問い合わせない） ----------------------
 
     def diff(self, a: str, b: str, paths: list[str] | None = None) -> str:
         args = ["diff", "--no-color", "--no-ext-diff", "-M", a, b]
@@ -362,7 +463,10 @@ def repo_from_env(gl: "GitLab", token: str) -> LocalRepo | None:
     if not path:
         return None
     return LocalRepo(path, token, os.environ.get("MR_REVIEW_GIT_URL", "").strip(),
-                     resolve_url=lambda: gl.project_info().get("http_url_to_repo"))
+                     resolve_url=lambda: gl.project_info().get("http_url_to_repo"),
+                     worktree=os.environ.get("MR_REVIEW_WORKTREE", "").strip(),
+                     remote=os.environ.get("MR_REVIEW_GIT_REMOTE", "").strip() or "origin",
+                     gitlab_url=os.environ.get("GITLAB_URL", ""))
 
 
 def mr_diffs_cached(gl: "GitLab", repo: LocalRepo | None, iid: Any, mr: dict) -> list[dict]:
@@ -597,7 +701,7 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print, repo: LocalRepo | N
     out(f"- ブランチ: {mr.get('source_branch')} → {mr.get('target_branch')}")
     out(f"- 今のコミット: {head}")
     if local is not None:
-        out(f"- 作業フォルダ（{local.path}）を今のコミットにしてあります。周りのコードはそこのファイルを読んでください")
+        out(f"- 作業フォルダ（{local.worktree}）を今のコミットにしてあります。周りのコードはそこのファイルを読んでください")
     elif repo is not None:
         out("- 作業フォルダは今のコミットになっていません。ファイルは show で見てください")
     out("")
@@ -660,7 +764,7 @@ def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, o
     text: str | None = None
     if repo is not None and repo.exists:
         try:
-            ref = repo.rev(f"refs/mr/{iid}")              # context が取ってきたコミット（API に問い合わせない）
+            ref = repo.rev(f"refs/mr-review/mr/{iid}")              # context が取ってきたコミット（API に問い合わせない）
             if ref:
                 text = repo.show(ref, path)
                 if text is None:
@@ -748,16 +852,18 @@ def cmd_summary(gl: GitLab, iid: str, body: str, out=print, repo: LocalRepo | No
 
 
 def cmd_prepare(gl: GitLab, repo: LocalRepo | None, branch: str, out=print) -> int:
-    """作業フォルダにリポジトリを取ってきて、対象ブランチを取り出す（入れるときに 1 回）。"""
+    """リポジトリ（無ければ 1 回だけ取ってくる）と、レビュー用の作業ツリーを用意する（入れるときに 1 回）。"""
     if repo is None:
-        raise ValueError("環境変数 MR_REVIEW_REPO_DIR（作業フォルダ）を設定してください")
-    info = {} if branch and os.environ.get("MR_REVIEW_GIT_URL") else gl.project_info()
-    branch = branch or str(info.get("default_branch") or "main")
-    if repo.ensure(branch):
-        repo.checkout(f"origin/{branch}")
-        out(f"{repo.path} に取ってきました（{branch}）")
-    else:
-        out(f"{repo.path} には既にあります。そのまま使います")
+        raise ValueError("環境変数 MR_REVIEW_REPO_DIR（リポジトリのフォルダ）を設定してください")
+    if not branch:
+        branch = str(gl.project_info().get("default_branch") or "main")
+    made = repo.ensure(branch)
+    ref = repo.fetch_branch(branch) if not made else f"refs/remotes/origin/{branch}"
+    if made and not repo.rev(ref):
+        ref = repo.fetch_branch(branch)
+    repo.checkout(repo.rev(ref) or ref)
+    out(f"リポジトリ: {repo.path}（{'取ってきました' if made else '既にあるものを使います'}）")
+    out(f"レビュー用の作業フォルダ: {repo.worktree}（handle のステップの working_dir にする）")
     return OK
 
 
@@ -784,7 +890,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--project", default=os.environ.get("GITLAB_PROJECT", ""),
                    help="プロジェクト（group/project か ID。既定は環境変数 GITLAB_PROJECT）")
     sub = p.add_subparsers(dest="cmd", required=True)
-    pr = sub.add_parser("prepare", help="作業フォルダ（MR_REVIEW_REPO_DIR）にリポジトリを 1 回だけ取ってくる")
+    pr = sub.add_parser("prepare", help="レビュー用の作業フォルダを作る（リポジトリが無ければ 1 回だけ取ってくる）")
     pr.add_argument("--branch", default="", help="取り出すブランチ（既定はリポジトリの既定のブランチ）")
     c = sub.add_parser("context", help="MR の概要・前回までの指摘・差分を出す")
     c.add_argument("iid")

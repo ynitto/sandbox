@@ -121,8 +121,9 @@ steps:
     #   action: exec
     #   with: { command: kiro-cli, args: [chat, --no-interactive, --trust-all-tools, "${INPUT}"] }
     action: harness.run
-    # kiro-cli を動かすフォルダ。.env の MR_REVIEW_REPO_DIR と同じにする（context が MR の今のコミットを取り出すので、周りのコードを読める）
-    working_dir: /home/you/.local/share/gitlab-mr-review-agent/repo
+    # kiro-cli を動かすフォルダ。.env の MR_REVIEW_WORKTREE と同じにする（context が MR の今のコミットを取り出すので、周りのコードを読める）。
+    # 入れるときに prepare で作っておく（無いと Dagu がステップを始められない）。Windows では C:/Users/you/work/project.mr-review のように書く
+    working_dir: /home/you/work/project.mr-review
     with:
       provider: kiro
       prompt: "${INPUT}"

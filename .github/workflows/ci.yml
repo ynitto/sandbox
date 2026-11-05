@@ -86,6 +86,10 @@ jobs:
           # 設定の例を本物の api-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
           - package: gitlab-mr-review-agent
             suites: tools/gitlab-mr-review-agent/test
+          # gitlab-idd スキルの作業用フォルダ（gl.py workspace-create / workspace-remove）。手元の bare リポジトリで、
+          # 既にある作業コピーへの git worktree・一時フォルダへのクローン・片付けを見る（GitLab の API は呼ばない）。
+          - package: gitlab-idd
+            suites: .github/skills/gitlab-idd/tests
           # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
           # 本物の api-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
           - package: redmine-ticket-agent
@@ -150,6 +154,32 @@ jobs:
           python-version: "3.11"
       - name: unittest
         run: python -m unittest discover -s tools/gitlab-issue-agent/test
+
+  # api-watch のプラグインのほかのもの（MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
+  # （git のパス・改行・一時フォルダ・読み取り専用のファイルの削除）。
+  agent-plugins-windows:
+    name: python (${{ matrix.package }}, windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: gitlab-mr-review-agent
+            suites: tools/gitlab-mr-review-agent/test
+          - package: redmine-ticket-agent
+            suites: tools/redmine-ticket-agent/test
+          - package: gitlab-idd
+            suites: .github/skills/gitlab-idd/tests
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: 依存（YAML の設定の読み込み）
+        run: python -m pip install pyyaml
+      - name: unittest
+        run: python -m unittest discover -s ${{ matrix.suites }}
 
   # api-watch も Windows でそのまま動かす（SQLite のロック・プロセスの生存確認・強制終了からの引き継ぎ）。
   api-watch-windows:

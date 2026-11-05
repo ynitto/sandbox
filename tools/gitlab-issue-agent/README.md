@@ -207,6 +207,11 @@ GitLab への問い合わせは、api-watch の取得元の接続で送り、要
 `GITLAB_NODE_ID` も書く（`gitlab-issue-agent.env.example` の該当の行）。エージェント CLI から gitlab-idd スキルが使えるようにしておく
 （Claude Code なら `~/.claude/skills/gitlab-idd`）。
 
+既にある作業コピーを使うなら、`gitlab-issue-agent.env` の `GITLAB_IDD_LOCAL_REPO` にそのフォルダ（handle のステップの `working_dir` と同じでよい）を書く。
+gitlab-idd のワーカーは、イシューごとにリポジトリをクローンする代わりに、そのリポジトリへ `git worktree` を足して作業し、終わったら外す
+（取ってくるのは対象ブランチの新しいコミットだけ）。作業コピーのブランチ・書きかけの変更には触らない。作業コピーの `origin` は
+gitlab-idd 用のプロジェクトを指していること。書かなければ、従来どおりイシューごとに一時フォルダへクローンする。
+
 7 のワークフローは、ルール名が `idd` なので `--handle-step idd.run=~/.config/dagu/gitlab-issue-agent.handle.yaml` を付けて書き出す。
 `api-watch-idd.yaml` ができる（中身は `examples/gitlab-idd/api-watch-idd.yaml.example` と同じで、パスが自分の PC のものになる）。
 
@@ -234,7 +239,8 @@ api-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/
 
 - api-watch は `python install.py install` で入れる（`dags` はその Python と `api-watch.pyz` のフルパスでワークフローを書く）
 - Dagu の設定フォルダは `C:\Users\<名前>\.config\dagu\` で、DAG は `dags\` に置く
-- `gitlab-issue-agent.handle.yaml` の `working_dir` は `C:/Users/you/work/project` のように書く
+- `gitlab-issue-agent.handle.yaml` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
+- gitlab-idd のワーカーの作業用フォルダは、一時フォルダ（`%TEMP%`）の下に作る。git（Git for Windows 2.31 以降）が要る
 
 ## 設定の置き場所
 

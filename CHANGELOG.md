@@ -20,15 +20,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   変更を指摘させない）。未解決の指摘がある行への言い直しの指摘と、解決済みの指摘の蒸し返しも防ぐ
 - **直った指摘を閉じる**: 新しいコミットのレビューで、自分が立てた未解決のスレッドを前回のコミットからの差分と今のファイルで確かめ、
   直っていれば返信して解決にする。人のスレッドには触らず、承認・マージはしない
-- **API と git のリモートへの問い合わせを減らす**: 作業フォルダ（`MR_REVIEW_REPO_DIR`）にリポジトリを 1 回だけ取ってきて（部分クローン）、
-  以後は MR の今のコミットが無いときだけ、その MR と対象ブランチを `git fetch` する。差分・前回のコミットからの差分・ファイルの中身は
-  git で読み、API には問い合わせない。作業フォルダは MR の今のコミットに切り替え、kiro-cli が周りのコードを読める。MR の差分の一覧（API）は
-  1 回のレビューで 1 回だけ取って使い回す。git が使えなければ API に戻る。HTTPS のトークンは git に環境変数で渡し、設定ファイルに残さない
+- **API と git のリモートへの問い合わせを減らす**: 手元のリポジトリ（`MR_REVIEW_REPO_DIR`。**既にある作業コピーを指定できる**。無ければ
+  1 回だけ部分クローンで取ってくる）を使い、MR の今のコミットを前に取っていないときだけ、その MR と対象ブランチを `git fetch` する
+  （`refs/mr-review/` の下にだけ置き、作業コピーのブランチ・追跡ブランチ・書きかけの変更には触らない）。差分・前回のコミットからの差分・
+  ファイルの中身は git で読み、API には問い合わせない。MR のコミットは `git worktree` で足したレビュー用の作業フォルダ（`MR_REVIEW_WORKTREE`）に
+  取り出し、kiro-cli が周りのコードを読める。MR の差分の一覧（API）は 1 回のレビューで 1 回だけ取って使い回す。git が使えなければ API に戻る。
+  取ってくる先は既定でリポジトリのリモート `origin`（その PC の git の認証のまま）。HTTPS で GitLab と同じホストのときだけトークンを
+  git に環境変数で渡し、設定ファイルに残さず、ほかのホストには渡さない
+- **Windows**: git に `core.quotepath=false`・`core.longpaths=true` を渡し、フォルダの比較で大文字小文字・短い名前の違いを吸収する。
+  Windows の CI で試験を回す
 - `gitlab_mr.py`: api-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
   `prepare` / `context` / `show` / `comment` / `resolve` / `summary`。標準ライブラリと git だけ
 - 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`gitlab-mr-review-agent.env.example`、
   Dagu のワークフローの例 `api-watch-mr-review.yaml.example`（`dags` の出力と一致することを試験で確かめる）
 - 設計: `docs/designs/gitlab-mr-review-agent-design.md`
+
+### gitlab-idd: ワーカーの作業用フォルダを、既にある作業コピーの git worktree にできる・Windows でも動く（4.4.0）
+
+- `gl.py workspace-create <イシュー> --branch B --target T` / `workspace-remove <パス>` を足し、ワーカーの手順（ステップ 3-2・5-6）の
+  `mktemp -d /tmp/...`・`git clone`・`rm -rf` をこれに置き換える
+- `GITLAB_IDD_LOCAL_REPO`（または `skill-registry.json` の `local_repo`）に既にある作業コピーを書くと、イシューごとにクローンせず、
+  そのリポジトリへ `git worktree` を足す（`origin` から対象ブランチだけを fetch。作業コピーの作業ツリー・ブランチ・書きかけの変更には触らない）。
+  書かなければ従来どおりクローンする
+- 作業用フォルダは一時フォルダ（Linux・WSL は `/tmp`、Windows は `%TEMP%`）の下に作り、Windows の読み取り専用のファイルも消せる。
+  名前が `gitlab-idd-` で始まらないフォルダは消さない。GitLab の API もトークンも使わない
+- gitlab-issue-agent の gitlab-idd の設定の例（`gitlab-issue-agent.env.example`・`examples/gitlab-idd/`）と README に、`GITLAB_IDD_LOCAL_REPO` と Windows の注意を足す
+- CI: gitlab-idd の作業用フォルダの試験を Linux と Windows で、redmine-ticket-agent・gitlab-mr-review-agent の試験を Windows でも回す
 
 ### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
 

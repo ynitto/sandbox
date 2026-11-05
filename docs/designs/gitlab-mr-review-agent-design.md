@@ -98,27 +98,44 @@ gitlab-issue-agent の §4・§5 と同じ（Dagu の 1 起動 1 件、api-watch
 kiro-cli のコマンドは api-watch の要求の間隔・失敗の待ちを分け合わない（別プロセスで、トークンは環境変数から読む）。回数は 1 件のレビューの中に
 限られ、同時に 1 セッションなので、集中はしない。
 
-### 5.1 作業フォルダ（ローカルのリポジトリ）
+### 5.1 手元のリポジトリとレビュー用の作業ツリー
 
-`MR_REVIEW_REPO_DIR` にこのツール専用のリポジトリを置き、差分・compare・ファイルの中身を git で読む。API で読むと、差分はページごと、
-ファイルは `show` のたびに MR と中身の 2 回かかり、kiro-cli が周りのコードを読むには `show` を何度も呼ぶことになる。
+`MR_REVIEW_REPO_DIR` の手元のリポジトリ（既にある作業コピーでよい）から、差分・compare・ファイルの中身を git で読む。API で読むと、
+差分はページごと、ファイルは `show` のたびに MR と中身の 2 回かかり、kiro-cli が周りのコードを読むには `show` を何度も呼ぶことになる。
 
-- **取ってくるのは 1 回だけ**: `prepare`（入れるとき）か、最初の `context` が `git clone --filter=blob:none --no-checkout --single-branch`
+- **既にあるリポジトリをそのまま使う**: 作業ツリー・HEAD・ブランチ・追跡ブランチ（`refs/remotes/`）には触らない。取ってきたコミットは
+  `refs/mr-review/mr/<iid>` と `refs/mr-review/heads/<対象ブランチ>` にだけ置く
+- **無ければ 1 回だけ取ってくる**: `prepare`（入れるとき）か最初の `context` が `git clone --filter=blob:none --no-checkout --single-branch`
   （対象ブランチだけ・ファイルの中身は要るときに取る部分クローン）で作る。以後は取り直さない
-- **fetch は足りないときだけ**: `context` は MR の head（と差分の元 `base_sha`）が手元に無いときだけ、
-  `+refs/merge-requests/<iid>/head:refs/mr/<iid>` と対象ブランチを `git fetch` する。同じコミットのやり直し・`show`・`comment` では fetch しない。
+- **fetch は足りないときだけ**: `context` は、`refs/mr-review/mr/<iid>` が MR の今の head と違うときだけ、その MR の head
+  （`+refs/merge-requests/<iid>/head`）と対象ブランチを `git fetch` する。手元にあるかを `cat-file` で調べないのは、部分クローンでは
+  足りないコミットをその場で 1 つずつ取りに行ってしまうため。同じコミットのやり直し・`show`・`comment` では fetch しない。
   `base_sha` が対象ブランチの巻き戻しで届かなければ、そのコミットだけを取る
-- **取り出す**: `context` が `checkout --detach --force <head>` と `clean -fd` で作業フォルダを今のコミットにする。kiro-cli の `working_dir` を
-  同じフォルダにするので、周りのコードはファイルとして読める。専用のフォルダなので、取り出したもの以外は消してよい
+- **取り出しは別の作業ツリー**: `MR_REVIEW_WORKTREE`（既定は `<リポジトリ>.mr-review`）に `git worktree add --detach` で足し、
+  レビューのたびに `checkout --detach --force <head>` と `clean -fd` で今のコミットにする。kiro-cli の `working_dir` をこのフォルダにするので、
+  周りのコードはファイルとして読める。上書き・掃除をするのは、このリポジトリに足した作業ツリーだと確かめられたときだけ:
+  リポジトリそのもの・別のリポジトリの作業ツリー・空でない関係の無いフォルダ・作業ツリーのサブフォルダなら断る
 - **前のコミットからの差分**: 前回レビューしたコミットは前回の `context` で手元に入っているので、force push で GitLab から消えても
   `git diff <前> <今> -- <MR のファイル>` で読める（API の compare は消えたコミットで失敗する）
-- **認証**: HTTPS のときは `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0=http.extraHeader` / `GIT_CONFIG_VALUE_0=Authorization: Basic …`（`oauth2:<トークン>`）を
-  git を呼ぶたびの環境変数で渡す。`.git/config` にもコマンド行にも残さない。`MR_REVIEW_GIT_URL` に SSH の URL を書けば、その PC の鍵を使う。
-  URL の既定は API の `http_url_to_repo`（作るときに 1 回だけ問い合わせる）。`GIT_TERMINAL_PROMPT=0` で、認証に失敗しても入力待ちで止まらない
+- **取ってくる先と認証**: 既定はリポジトリのリモート（`MR_REVIEW_GIT_REMOTE`、既定 `origin`）の名前で fetch し、その PC の git の認証
+  （資格情報マネージャー・SSH の鍵）をそのまま使う。`MR_REVIEW_GIT_URL` を書けばその URL から取る。リポジトリが無いときの URL の既定は
+  API の `http_url_to_repo`（作るときに 1 回だけ問い合わせる）。取ってくる先が HTTPS で、ホストが `GITLAB_URL` と同じときだけ、
+  `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n=http.extraHeader` / `GIT_CONFIG_VALUE_n=Authorization: Basic …`（`oauth2:<トークン>`）を
+  git を呼ぶたびの環境変数で渡す。`.git/config` にもコマンド行にも残さず、ほかのホスト（フォークの取得元など）には渡さない。
+  `GIT_TERMINAL_PROMPT=0` と標準入力を閉じて、認証に失敗しても入力待ちで止まらない
 - **差分の一覧（API）の保存**: 差分の指紋は `skip_if`（api-watch の中のチェック）と同じ値にしたいので、いつも API の差分から求める
   （git の差分は名前の変更の見分け方・大きなファイルの扱いが GitLab と食い違いうる）。1 回のレビューで 1 回だけ取り、
-  `.git/mr-review-cache/<iid>-<head>-<base>.json` に置いて `comment`（行の位置）と `summary`（指紋）が使い回す。head か差分の元が変われば取り直す
+  `<git の共通フォルダ>/mr-review-cache/<iid>-<head>-<base>.json` に置いて `comment`（行の位置）と `summary`（指紋）が使い回す。
+  head か差分の元が変われば取り直す
 - **戻り道**: `MR_REVIEW_REPO_DIR` が空・git が無い・fetch に失敗したときは、差分もファイルも API から読む（レビューは止めない）
+
+### 5.2 Windows
+
+- git はどの呼び出しにも `-c core.quotepath=false`（日本語のパスを `\343…` に崩さない）と `-c core.longpaths=true`（260 字を超えるパス）を付ける。
+  出力は UTF-8 で読み、標準出力・標準エラーも UTF-8 にする（cp932 の端末でも日本語を出す）
+- フォルダの比較は `resolve()` と `normcase` で行う（大文字小文字・8.3 形式の短い名前・`/` と `\` の違いを吸収する）
+- `core.autocrlf` が有効でも、差分・`show` は git のオブジェクトから読むので改行は変わらない（取り出した作業ツリーのファイルだけが CRLF になる）
+- 試験は Windows の CI でも回す（偽の GitLab・手元の bare リポジトリ・本物の api-watch）
 
 ## 6. 採らなかった案
 
@@ -132,5 +149,6 @@ kiro-cli のコマンドは api-watch の要求の間隔・失敗の待ちを分
 - **全部直ったら MR を承認する**: 頼まれていない。承認・マージは人が行う
 - **レビューのたびに clone する / 浅いクローン（`--depth`）**: 毎回リポジトリ全体を転送することになる。浅いクローンは `base_sha` や
   前回のコミットが範囲の外に出ると差分が取れない。部分クローンを 1 つ持ち、足りない分だけ fetch する
-- **利用者の作業コピーを `working_dir` にする**: レビューのたびに MR のコミットへ切り替え、取り出したもの以外を消すので、作業中の変更を壊す。専用のフォルダにした
+- **利用者の作業コピーで MR のコミットを取り出す**: 作業中のブランチ・書きかけの変更を壊す。作業コピーはオブジェクトの置き場として使い、
+  取り出しは `git worktree` で足した別のフォルダで行う（クローンし直さずに済み、作業コピーにも触らない）
 - **指摘の一覧をこちらでも持つ**: GitLab のスレッドの解決状態と二重になり、人が手で解決・再開したときにずれる
