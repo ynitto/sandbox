@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: api-watch を change-watch に名前を改め、Windows の設定例を足す（0.4.0）
+
+- フォルダも見るようになったので、api-watch を **change-watch** に改める。取得元が API でもフォルダでも、変化を見て渡す道具として名乗る。
+  フォルダは `tools/change-watch/`、コマンドは `change-watch`、パッケージは `changewatch`、入口は `change_watch.py`、
+  受け渡し先へ渡す環境変数・引数は `CHANGEWATCH_*`（`CHANGEWATCH_EVENT_FILE` など）、Dagu のワークフローの例は `dags/change-watch-*.example.yaml`、
+  キューの例は `change-watch-handlers`、設定と状態の既定の場所は `~/.config/change-watch/change-watch.yaml`・`~/.local/state/change-watch`
+- 乗り換え: `python3 tools/change-watch/install.py install` で入れ直し（古い `api-watch` は前の版の `install.py uninstall` か手で消す）、
+  設定と状態のフォルダを `api-watch` から `change-watch` へ移す（中身はそのまま使える）。Dagu のワークフローと受け渡し先の DAG は、
+  コマンドのパスと `APIWATCH_*` を `CHANGEWATCH_*` に書き換える。受け渡しの ID（`aw_…`）は変わらない
+- `change-watch.windows.yaml.example` と README の「Windows のとき」に、Windows（ネイティブ）でフォルダと GitLab の issue を見る設定・
+  Dagu のワークフロー・`ack` の例を足す
+- gitlab-issue-agent・redmine-ticket-agent: プラグインと設定・ワークフローの例を change-watch の名前に合わせる
+  （`change-watch-issue-agent.yaml.example`・`examples/gitlab-idd/change-watch-idd.yaml.example`・`change-watch-auto-close.yaml.example` など）
+
 ### obsidian-use: Obsidian の LLM wiki のつなぎ込みと点検を、Obsidian が閉じていても回せるようにする（1.2.0）
 
 - `vault.py links "<題>"` を足す。出ていくリンク・入ってくるリンクと、題や別名を書いているのにリンクしていないノート

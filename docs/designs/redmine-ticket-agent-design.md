@@ -1,15 +1,15 @@
 # redmine-ticket-agent 設計
 
 Redmine の「自分が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むもの」に、決めた文をコメントしてステータスを
-完了にする。gitlab-issue-agent と同じく、Dagu の定期実行と api-watch の上に組み、ここには Redmine に固有の部分だけを置く。
+完了にする。gitlab-issue-agent と同じく、Dagu の定期実行と change-watch の上に組み、ここには Redmine に固有の部分だけを置く。
 実装は `tools/redmine-ticket-agent/`（`redmine_issue.py` と設定の例）、使い方は同フォルダの README。
 
 ## 1. 位置づけと分担
 
 | 受け持ち | どこ | 何を |
 |---|---|---|
-| 取得・変化の検知・実行待ち・再試行・処理し終えた状態 | api-watch | 取得元（offset のページング・予定・ずらし・失敗の待ち）、ルールの `filter` と `watch`、`command` の受け渡し先（`work`・`refresh`・`skip_if`） |
-| 起動・ログと実行履歴 | Dagu | ワークフロー 1 本（`fetch` → `evaluate` → `work`）。例（`api-watch-auto-close.yaml.example`）をコピーして置く |
+| 取得・変化の検知・実行待ち・再試行・処理し終えた状態 | change-watch | 取得元（offset のページング・予定・ずらし・失敗の待ち）、ルールの `filter` と `watch`、`command` の受け渡し先（`work`・`refresh`・`skip_if`） |
+| 起動・ログと実行履歴 | Dagu | ワークフロー 1 本（`fetch` → `evaluate` → `work`）。例（`change-watch-auto-close.yaml.example`）をコピーして置く |
 | Redmine に固有のこと | `redmine_issue.py` | チェック `redmine.not_mine`（プラグイン）と、コメントとステータスを変える `close`（`command` から呼ぶ CLI） |
 
 gitlab-issue-agent との違い: 処理がエージェント CLI ではなく決まった 1 回の HTTP 更新なので、`external`（Dagu の `harness.run` に処理を任せる形）
@@ -18,7 +18,7 @@ gitlab-issue-agent との違い: 処理がエージェント CLI ではなく決
 ## 2. 構成
 
 ```
-Dagu: api-watch-auto-close（毎分）
+Dagu: change-watch-auto-close（毎分）
   fetch --source redmine-my-issues   schedule（*/15）の時刻のあとに未取得なら、jitter 0〜300 秒で
                                      GET /issues.json?assigned_to_id=me&status_id=open&sort=id を offset で全ページ
   evaluate --rule auto-close         filter（subject か description が文字列を含み、status.is_closed が偽）に当たり、
@@ -26,7 +26,7 @@ Dagu: api-watch-auto-close（毎分）
   work --rule auto-close             受け渡しごとに:
                                        begin   refresh（GET /issues/{id}.json の issue）で取り直し、filter を当て直す。
                                                skip_if の redmine.not_mine が真なら飛ばす
-                                       command python3 redmine_issue.py close --status S --note N（APIWATCH_EVENT_FILE）
+                                       command python3 redmine_issue.py close --status S --note N（CHANGEWATCH_EVENT_FILE）
                                        finish  終了コード 0 なら取り直した状態を処理し終えた状態にする。それ以外は retry_backoff_sec 後に再試行
 ```
 
@@ -34,7 +34,7 @@ Dagu: api-watch-auto-close（毎分）
 
 - 「自分が担当」は取得の `assigned_to_id=me` で絞る（API キーの持ち主）。待つ間の担当替えは、`refresh` の取り直しと `redmine.not_mine` で止める。
   担当がグループのチケットは `assigned_to_id=me` に含まれる版もあるが、`redmine.not_mine` は自分の ID と一致しないので飛ばす（意図した担当に限る）
-- 「文字列を含む」はルールの `filter`（`contains` / `regex`）で書く。プラグインに持たせず設定に置くのは、取り直したレコードに api-watch が
+- 「文字列を含む」はルールの `filter`（`contains` / `regex`）で書く。プラグインに持たせず設定に置くのは、取り直したレコードに change-watch が
   同じ条件を当て直してくれるため（プラグインで判定すると、取り直し後の確認を別に書くことになる）
 - 未完了の確認は取得の `status_id=open` と `filter` の `status.is_closed`（Redmine 5.1 以降。無い版では `falsy` が欠落を真とみなし、
   `close` が「既に目的のステータス」を見て何もしない）
@@ -59,8 +59,8 @@ Dagu: api-watch-auto-close（毎分）
 
 ### 2.3 認証情報の流れ
 
-- 取得・取り直し・チェックは api-watch の接続（`connections.yaml` の `redmine`。値は `${REDMINE_URL}`・`${REDMINE_API_KEY}`）で送り、
-  `X-Redmine-API-Key` ヘッダーは api-watch がログで伏せ字にする
+- 取得・取り直し・チェックは change-watch の接続（`connections.yaml` の `redmine`。値は `${REDMINE_URL}`・`${REDMINE_API_KEY}`）で送り、
+  `X-Redmine-API-Key` ヘッダーは change-watch がログで伏せ字にする
 - `close` は別プロセスなので接続設定を読まず、環境変数 `REDMINE_URL`・`REDMINE_API_KEY` を読む。Dagu のワークフローの `dotenv` が
   ワークフローの環境に入れ、`work` が子プロセスに引き継ぐ。argv に API キーを書かない（`ps` やログに出ないように）
 
@@ -76,7 +76,7 @@ Dagu: api-watch-auto-close（毎分）
 ## 3. 試験
 
 `tools/redmine-ticket-agent/test/test_redmine_issue.py`。Redmine は手元の HTTP サーバで偽装し（一覧の `assigned_to_id=me`・`status_id=open`・
-offset、`include=allowed_statuses`、選べない `status_id` を黙って無視する PUT）、設定の例をそのまま本物の api-watch で回す。
+offset、`include=allowed_statuses`、選べない `status_id` を黙って無視する PUT）、設定の例をそのまま本物の change-watch で回す。
 
 - 自分が担当し、タイトルか説明に文字列を含むものだけが 1 回だけ完了になる。ほかの人の担当・当たらないものはそのまま
 - あとから文字列を足したチケットも完了になる

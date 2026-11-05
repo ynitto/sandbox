@@ -1,0 +1,116 @@
+# change-watch の設定の例。~/.config/change-watch/change-watch.yaml などにコピーして使う。
+# 認証情報はここに書かず、connections.yaml（スキル共通の接続設定）に書き、そのパスを実行時に渡す:
+#   change-watch --plugin dagu --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run
+
+version: 1
+state_dir: ~/.local/state/change-watch     # 状態（SQLite）とイベントのファイルの置き場所
+
+retention:
+  fetches_keep: 3        # 取得結果を最低何回分残すか（判定のやり直し用）
+  fetch_days: 7          # これより古い取得結果は消す（未判定のものは消さない）
+  events_days: 30        # 後続処理まで終わったイベントを残す日数（未完了のものは消さない）
+
+# 受け渡しのアダプタ。dagu は Dagu プラグイン（実行時に --plugin dagu を付ける）、command は任意のコマンド（Dagu を使わないとき）
+delivery:
+  adapter: dagu
+  mode: cli              # cli: dagu enqueue / api: Dagu の REST API
+  executable: dagu       # Windows なら dagu.exe のパスでもよい
+  # mode: api のとき:
+  # connection: dagu     # connections.yaml の dagu（url と token、または user と password）
+
+# Dagu を使わないときの例:
+# delivery:
+#   adapter: command
+#   command: [python3, /path/to/handoff.py, "{{ workflow }}", "{{ run_id }}"]
+
+sources:
+  # GitLab の issue（ページ番号のページング・更新日時による増分取得）
+  gitlab-issues:
+    connection: gitlab               # connections.yaml の gitlab / default
+    request:
+      url: "{{ conn.url }}/api/v4/projects/123/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query:
+        state: all
+        order_by: updated_at
+        sort: asc
+    records: "$"
+    key: iid                         # 増分取得の取得元では書いておく（基準値の取り直しに全体の姿を使う）
+    pagination:
+      type: page
+      param: page
+      size_param: per_page
+      size: 100
+    incremental:
+      type: max_value
+      field: updated_at              # 取得したレコードの updated_at の最大を覚え、
+      param: updated_after           # 次回は updated_after=<その値> を付けて取る
+    schedule: "*/10 * * * *"
+    rate_limit:
+      min_interval_sec: 0.5
+    retry:
+      attempts: 4
+      backoff_sec: 2
+
+  # 一般的な JSON API（カーソルのページング・POST の検索）
+  tickets:
+    connection: myapi:default
+    request:
+      method: POST
+      url: "{{ conn.url }}/v1/tickets/search"
+      headers:
+        Authorization: "Bearer {{ conn.api_key }}"
+      body:
+        filter: { project: "OPS" }
+        limit: 50
+    records: results
+    pagination:
+      type: cursor
+      in: body                       # カーソルを body の cursor に入れる
+      param: cursor
+      cursor_path: next_cursor
+      has_more_path: has_more
+    schedule: "*/5 * * * *"
+    min_interval_sec: 60
+
+rules:
+  # 新しい issue と、状態・ラベル・担当の変化
+  issue-changed:
+    source: gitlab-issues
+    id: iid
+    watch: [state, labels, "assignees[*].username", title]
+    unordered: [labels, "assignees[*].username"]
+    on: [appeared, changed]
+    initial: baseline                # 初回は今ある issue を基準値にするだけ
+    targets:
+      - workflow: issue-handler
+        params:
+          ISSUE_TITLE: "{{ event.after.title | default: '' }}"
+
+  # 「bug」ラベルが付いた（不一致 → 一致）ときだけ、別の DAG へ
+  bug-labeled:
+    source: gitlab-issues
+    id: iid
+    condition: { path: labels, op: contains, value: bug }
+    on: [entered]
+    targets:
+      - workflow: bug-triage
+        order: completion            # 同じ issue は前の実行が終わってから次を渡す（既定）
+
+  # 優先度が高いチケット（一致している間は観測のたび / 外れたとき）
+  urgent-tickets:
+    source: tickets
+    id: id
+    filter: { path: status, op: ne, value: archived }
+    condition:
+      all:
+        - { path: priority, op: in, value: [P0, P1] }
+        - { path: status, op: ne, value: closed }
+    watch: [priority, status, assignee]
+    on: [entered, exited, changed]
+    targets:
+      - workflow: page-oncall
+      - name: ticket-audit           # 同じワークフローを 2 回使うときなどは name で区別する
+        workflow: audit-log
+        order: none

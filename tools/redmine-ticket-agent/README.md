@@ -3,13 +3,13 @@
 Redmine のチケットを定期的に見に行き、**自分が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むもの**に、
 決めた文をコメントしてステータスを完了にする。コメントとステータスの変更は 1 回の更新で行い、同じチケットを 2 回処理しない。
 
-チケットの取得・変化の検知・実行待ち・再試行は [api-watch](../api-watch/README.md) が、定期起動は
+チケットの取得・変化の検知・実行待ち・再試行は [change-watch](../change-watch/README.md) が、定期起動は
 [Dagu](https://github.com/dagu-org/dagu) が受け持つ（Dagu を使わず cron などから動かしてもよい）。このフォルダには、Redmine に固有の部分を
-足す `redmine_issue.py`（api-watch のプラグインで、チケットを完了にするコマンドも兼ねる）と、設定の例がある。
+足す `redmine_issue.py`（change-watch のプラグインで、チケットを完了にするコマンドも兼ねる）と、設定の例がある。
 [gitlab-issue-agent](../gitlab-issue-agent/README.md) と同じ作りで、エージェント CLI の代わりに決まった処理を動かす。
 
 ```
- Dagu: api-watch-auto-close（毎分起動。Redmine への問い合わせは 15 分ごと）
+ Dagu: change-watch-auto-close（毎分起動。Redmine への問い合わせは 15 分ごと）
    fetch      自分が担当する未完了のチケットを全ページ取得
    evaluate   タイトルか説明に文字列を含むチケットを拾う（新しく当たったもの・内容が変わったもの）
    work       チケットを取り直し、まだ当たっていて担当が自分なら、コメントしてステータスを完了にする
@@ -35,20 +35,20 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
    cp tools/redmine-ticket-agent/redmine-ticket-agent.env.example ~/.config/dagu/redmine-ticket-agent.env
    ```
 
-3. api-watch を入れる。
+3. change-watch を入れる。
 
    ```bash
-   python3 tools/api-watch/install.py install
+   python3 tools/change-watch/install.py install
    ```
 
-4. api-watch の設定を置き、**対象の文字列・コメントする文・完了のステータス**を自分のものに直す（下の「決めること」）。
+4. change-watch の設定を置き、**対象の文字列・コメントする文・完了のステータス**を自分のものに直す（下の「決めること」）。
 
    ```bash
-   mkdir -p ~/.config/api-watch
+   mkdir -p ~/.config/change-watch
    ```
 
    ```bash
-   cp tools/redmine-ticket-agent/api-watch.yaml.example ~/.config/api-watch/api-watch.yaml
+   cp tools/redmine-ticket-agent/change-watch.yaml.example ~/.config/change-watch/change-watch.yaml
    ```
 
 5. 接続設定（例: `~/.github/connections.yaml`）に Redmine を書く。値は `redmine-ticket-agent.env` から取るので、API キーを 2 か所に書かなくてよい。
@@ -60,8 +60,8 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
        token: ${REDMINE_API_KEY}
    ```
 
-6. 環境変数を読み込んで設定を確かめ、Dagu のワークフローを置く。`api-watch-auto-close.yaml.example`（取得から完了まで）を
-   `~/.config/dagu/dags/api-watch-auto-close.yaml` にコピーして `/home/you` を自分の場所に直し、毎日の整理のワークフローは api-watch の例を
+6. 環境変数を読み込んで設定を確かめ、Dagu のワークフローを置く。`change-watch-auto-close.yaml.example`（取得から完了まで）を
+   `~/.config/dagu/dags/change-watch-auto-close.yaml` にコピーして `/home/you` を自分の場所に直し、毎日の整理のワークフローは change-watch の例を
    そのまま置く。Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
@@ -69,15 +69,15 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
    ```
 
    ```bash
-   api-watch --plugin dagu --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
+   change-watch --plugin dagu --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
    ```bash
-   cp tools/redmine-ticket-agent/api-watch-auto-close.yaml.example ~/.config/dagu/dags/api-watch-auto-close.yaml
+   cp tools/redmine-ticket-agent/change-watch-auto-close.yaml.example ~/.config/dagu/dags/change-watch-auto-close.yaml
    ```
 
    ```bash
-   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
+   cp tools/change-watch/dags/change-watch-maintenance.example.yaml ~/.config/dagu/dags/change-watch-maintenance.yaml
    ```
 
 7. Dagu のスケジューラを動かす（`dagu start-all` など）。設定の例は `initial: emit` なので、**最初の取得で、いま当たっているチケットも完了にする**。
@@ -86,12 +86,12 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
 Dagu を使わないなら、6 のワークフローの代わりに cron などから次を定期的に呼ぶ（環境変数は先に読み込んでおく）。
 
 ```bash
-api-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule auto-close
+change-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run --rule auto-close
 ```
 
 ## 決めること
 
-どれも `~/.config/api-watch/api-watch.yaml` に書く。
+どれも `~/.config/change-watch/change-watch.yaml` に書く。
 
 | 決めること | 書く場所 | 例 |
 |---|---|---|
@@ -130,8 +130,8 @@ api-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config
 
 | したいこと | コマンド |
 |---|---|
-| 失敗している・打ち切ったものを見る | `api-watch --config ~/.config/api-watch/api-watch.yaml events --rule auto-close --status send_failed,dead` |
-| 打ち切ったものをすぐやり直す | `api-watch --config ~/.config/api-watch/api-watch.yaml retry <受け渡しの ID>` |
+| 失敗している・打ち切ったものを見る | `change-watch --config ~/.config/change-watch/change-watch.yaml events --rule auto-close --status send_failed,dead` |
+| 打ち切ったものをすぐやり直す | `change-watch --config ~/.config/change-watch/change-watch.yaml retry <受け渡しの ID>` |
 
 ## 設定の置き場所
 
@@ -139,7 +139,7 @@ api-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config
 |---|---|
 | `~/.config/dagu/redmine-ticket-agent.env` | Redmine の URL・API キー |
 | `~/.github/connections.yaml` | Redmine の接続（値は上の環境変数から取る） |
-| `~/.config/api-watch/api-watch.yaml` | 対象の文字列・コメントする文・ステータス・問い合わせの間隔・再試行 |
+| `~/.config/change-watch/change-watch.yaml` | 対象の文字列・コメントする文・ステータス・問い合わせの間隔・再試行 |
 
 ## テスト
 
