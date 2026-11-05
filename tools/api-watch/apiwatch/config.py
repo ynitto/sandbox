@@ -133,6 +133,17 @@ class SourceSpec:
 
 
 @dataclass
+class RefreshSpec:
+    """実行の前後にレコードを 1 件取り直す要求（command の受け渡し先だけ）。headers が無ければ取得元のものを使う。"""
+    method: str
+    url: str
+    headers: dict | None
+    query: dict
+    records: str
+    timeout_sec: float | None
+
+
+@dataclass
 class TargetSpec:
     name: str
     workflow: str | None            # 受け渡し先のワークフロー（アダプタで渡す）
@@ -145,6 +156,7 @@ class TargetSpec:
     inline_payload: bool
     command: list | None = None     # その場で実行するコマンド（work が実行する。アダプタを使わない）
     timeout_sec: float = 3600
+    refresh: RefreshSpec | None = None   # 実行の前後に 1 件取り直す（流し終えた状態の記録・自分の書き込みの吸収）
 
     @property
     def runs_here(self) -> bool:
@@ -379,13 +391,14 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
     if isinstance(d, str):
         d = {"workflow": d}
     _expect(isinstance(d, dict), f"{where}: 辞書か、ワークフローの名前を書いてください")
-    _known(d, {"name", "workflow", "command", "timeout_sec", "params", "queue", "order", "max_attempts",
+    _known(d, {"name", "workflow", "command", "timeout_sec", "refresh", "params", "queue", "order", "max_attempts",
                "retry_backoff_sec", "retry_max_backoff_sec", "inline_payload"}, where)
     command = d.get("command")
     if command is None:
         _expect(isinstance(d.get("workflow"), str),
                 f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）か、その場で実行する command を書いてください")
         _expect("timeout_sec" not in d, f"{where}.timeout_sec: command を書いたときだけ使えます")
+        _expect("refresh" not in d, f"{where}.refresh: command を書いたときだけ使えます")
     else:
         _expect("workflow" not in d and "queue" not in d,
                 f"{where}: command（その場で実行）と workflow / queue（受け渡し先へ渡す）はどちらか一方にしてください")
@@ -408,7 +421,28 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
         inline_payload=bool(d.get("inline_payload", False)),
         command=list(command) if command is not None else None,
         timeout_sec=_num(d, "timeout_sec", 3600, where, 1),
+        refresh=_refresh(d.get("refresh"), f"{where}.refresh"),
     )
+
+
+def _refresh(d: Any, where: str) -> RefreshSpec | None:
+    if d is None:
+        return None
+    _expect(isinstance(d, dict) and isinstance(d.get("url"), str),
+            f"{where}.url: レコードを 1 件取り直す URL を書いてください（例 \"{{{{ conn.url }}}}/items/{{{{ event.record_id }}}}\"）")
+    _known(d, {"method", "url", "headers", "query", "records", "timeout_sec"}, where)
+    headers = d.get("headers")
+    query = d.get("query") or {}
+    _expect(headers is None or isinstance(headers, dict), f"{where}.headers: 辞書で書いてください")
+    _expect(isinstance(query, dict), f"{where}.query: 辞書で書いてください")
+    records = d.get("records", "$")
+    jpath.parse(records)
+    for ref in template.references([d["url"], headers or {}, query]):
+        _expect(ref.split(".")[0] in ("event", "conn", "env"),
+                f"{where}: 使えるのは event.* / conn.* / env.* です: {ref}")
+    t = d.get("timeout_sec")
+    return RefreshSpec(method=str(d.get("method", "GET")).upper(), url=d["url"], headers=headers, query=query,
+                       records=records, timeout_sec=None if t is None else _num(d, "timeout_sec", 30, where, 1))
 
 
 def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:

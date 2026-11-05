@@ -395,8 +395,34 @@ rules:
         timeout_sec: 120
 ```
 
-コマンドには「受け渡し先の DAG」と同じ `APIWATCH_*` が環境変数で渡る（変化の中身は `APIWATCH_EVENT_FILE` の JSON）。
+コマンドには「受け渡し先の DAG」と同じ `APIWATCH_*` が環境変数で渡る（変化の中身は `APIWATCH_EVENT_FILE` の JSON）。加えて
+`APIWATCH_ATTEMPT`（何回目の実行か）と `APIWATCH_RESULT_FILE`（コマンドから api-watch へ結果を返すファイル。下の「実行の前後に取り直す」）が渡る。
 `max_attempts`・`retry_backoff_sec`・`order` は受け渡し先の表のとおりで、失敗したものはワークフローの次の起動で同じ ID のまま実行し直す。
+
+### 実行の前後に取り直す（`refresh`）
+
+取得してから実行するまでの間にレコードが変わることや、コマンド自身がレコードを書き換えること（コメントを付ける・ラベルを変える）がある。
+受け渡し先に `refresh` を書くと、`work` はレコードを 1 件取り直して次のように扱う。
+
+```yaml
+targets:
+  - name: agent
+    command: [python3, /home/you/bin/agent.py]
+    refresh:
+      url: "{{ conn.url }}/api/v4/projects/123/issues/{{ event.record_id }}"   # ヘッダーは取得元のもの
+```
+
+| いつ | すること |
+|---|---|
+| 実行の前 | イベントの値が「処理し終えた状態」と同じなら、取り直さずに飛ばす。取り直したレコードが見つからない・ルールの `filter` から外れた・処理し終えた状態と同じなら飛ばす。実行するなら、取り直したレコードをイベントの `record` に入れ、`refreshed.last_handled`（前回処理し終えたときの監視する値）を添える |
+| 実行が成功したあと | もう一度取り直し、その監視する値を「処理し終えた状態」にする。コマンド自身の書き込みで出た次のイベントは、処理し終えた状態と同じなので飛ばす |
+
+- 「処理し終えた状態」は受け渡し先 × レコードごとに覚える。同じレコードのイベントがたまっていても、先の実行が最新のレコードで処理し、後ろは飛ばす
+- 実行中にコマンド以外の誰かがレコードを変えたと分かったときは、コマンドが `APIWATCH_RESULT_FILE` に `{"handled": "before"}` を書く。
+  処理し終えたのは実行前の状態までになり、その変化は次の取得でもう一度実行される
+- 取り直しは取得元の接続・要求の間隔・1 分あたりの上限・失敗の待ち（`failure_backoff_sec`）を分け合う。取り直しの失敗は実行の失敗と同じに数え、
+  実行はしない
+- `forget-handled --rule R <レコード>` で処理し終えた状態を忘れさせると、次に変化を受け取ったとき必ず実行する
 
 ### Dagu のワークフロー
 
@@ -568,6 +594,7 @@ Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `sche
 | `workflow` | （`command` が無ければ必須） | 受け渡し先のワークフロー。Dagu なら DAG の名前（`mode: cli` ならファイルのパスでもよい） |
 | `command` | — | 別のワークフローへ渡さず、`work` がその場で実行する argv（下の「1 つのワークフローで取得から処理まで」）。書くときは `name` も書く。`workflow`・`queue` とはどちらか一方 |
 | `timeout_sec` | 3600 | `command` の 1 回の実行の上限。過ぎたら止めて失敗として数える |
+| `refresh` | — | `command` の実行の前後にレコードを 1 件取り直す要求（`url`・`method`・`headers`・`query`・`records`・`timeout_sec`。`headers` を書かなければ取得元のもの）。下の「実行の前後に取り直す」 |
 | `name` | `workflow` と同じ | 受け渡し先の名前（同じワークフローに 2 回渡すときに区別する） |
 | `params` | — | 追加の引数。`{{ event.after.title }}`・`{{ event.record_id }}`・`{{ delivery.id }}`・`{{ env.X }}` を埋められる |
 | `queue` | — | 受け渡し先のキューを上書きする（Dagu のキュー） |
@@ -678,6 +705,7 @@ Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `sche
 | `rebaseline --rule R` / `--source S` | 最新の取得結果を基準値にし直す（その間の変化では発火しない）。`--refetch` で次の取得を全件に、`--now` でいま取り直す |
 | `replay --rule R [--from-fetch N] [--dry-run]` | 保存済みの取得結果で判定をやり直す。API には問い合わせない。既にあるイベントは同じ ID なので積み直さない |
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
+| `forget-handled --rule R [--target T] レコード...` | `refresh` のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる） |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
 | `dags --out DIR` | Dagu の DAG の雛形を書き出す（`--plugin dagu` のときだけ）。`command` の受け渡し先を持つルールごとに、取得から実行までのワークフローも書く。既にあるファイルは `--force` のときだけ上書きする。起動間隔は `--schedule`（既定は毎分） |

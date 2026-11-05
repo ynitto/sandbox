@@ -12,6 +12,7 @@
     source_records  取得元の key ごとの最新のレコード（増分取得の取得元で、全体を組み立てた姿）
     rules           ルールごとの判定状態（どの取得まで判定したか・指紋・最後のエラー）
     rule_records    ルール × レコードの前回の観測値
+    handled_records 受け渡し先（refresh のある command）× レコードの、最後に処理し終えた状態
     events          検知した変更（ルール × レコード × 取得 で 1 件）
     deliveries      イベント × 受け渡し先 ごとの受け渡し状態
     leases          取得・判定の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
@@ -23,9 +24,9 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
-from .util import hostname, now, pid_alive
+from .util import hostname, now, pack, pid_alive
 
 SCHEMA_VERSION = 1
 
@@ -46,6 +47,15 @@ CREATE TABLE IF NOT EXISTS sources (
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     retry_not_before REAL,      -- 取得が失敗したあと、どのプロセスもこの時刻までは問い合わせない
     recent_requests TEXT        -- 直近 60 秒に送った要求の時刻（JSON。rate_limit.per_minute をプロセスをまたいで数える）
+);
+CREATE TABLE IF NOT EXISTS handled_records (   -- refresh のある受け渡し先が、最後に処理し終えたレコードの状態
+    rule TEXT NOT NULL,
+    target TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    vhash TEXT NOT NULL,        -- 監視する値（ルールの watch）のハッシュ。イベントや取り直した値と比べる
+    value BLOB,                 -- 監視する値そのもの（次の実行に「前回処理したときの値」として渡す）
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (rule, target, rkey)
 );
 CREATE TABLE IF NOT EXISTS rate_groups (   -- rate_limit.group ごとに共有する要求の記録と失敗の待ち
     name TEXT PRIMARY KEY,
@@ -286,8 +296,17 @@ class Store:
         assert row is not None
         return row
 
-    def event_file(self, event_id: str) -> Path:
-        return self.dir / "events" / f"{event_id}.json"
+    def event_file(self, event_id: str, target: str | None = None) -> Path:
+        """イベントの JSON。受け渡し先が取り直したレコードを入れたものは `<イベント ID>--<受け渡し先>.json`。"""
+        return self.dir / "events" / (f"{event_id}--{target}.json" if target else f"{event_id}.json")
+
+    def handled(self, rule: str, target: str, rkey: str) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM handled_records WHERE rule=? AND target=? AND rkey=?", (rule, target, rkey))
+
+    def set_handled(self, rule: str, target: str, rkey: str, vhash: str, value: Any) -> None:
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO handled_records(rule, target, rkey, vhash, value, updated_at) "
+                       "VALUES(?,?,?,?,?,?)", (rule, target, rkey, vhash, pack(value), now()))
 
     # -- 容量 -----------------------------------------------------------------
 

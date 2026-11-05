@@ -29,7 +29,7 @@ sources:
       url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues"
       headers:
         PRIVATE-TOKEN: "{{ conn.token }}"
-      # ISSUE_LOOP_ISSUE_STATE / LABELS / ASSIGNEE と同じ絞り込みにする（handle は実行前に取り直し、外れた issue は流さない）
+      # 取得する issue を絞る（labels: agent や assignee_username: bot-user も足せる）。実行の直前の確かめは下のルールの filter
       query: { state: opened, scope: all, order_by: updated_at, sort: asc }
     key: iid
     pagination: { type: page, size_param: per_page, size: 100 }
@@ -51,10 +51,18 @@ rules:
     unordered: [labels]
     on: [appeared, changed]
     initial: baseline          # 初回は今ある issue を覚えるだけ
+    # 対象の issue。実行の直前に取り直したときにもう一度当てはめ、待つ間に閉じた・ラベルが外れた issue は流さない
+    filter: { path: state, value: opened }
+    # filter: { all: [{ path: state, value: opened }, { path: labels, op: contains, value: agent }] }
     targets:
       - name: agent
         # その場で実行する。環境変数は Dagu が issue-loop.env から渡す
         command: ["{{ env.ISSUE_LOOP_PYTHON }}", "{{ env.ISSUE_LOOP_HOME }}/issue_loop.py", "handle"]
+        # 実行の前後に issue を 1 件取り直す（ヘッダーは取得元のものを使う）:
+        #   - 前: 最新の内容で流す。filter から外れた・前回処理し終えた状態と同じ（自分の書き込みだけ・まとめて処理済み）なら流さない
+        #   - 後: その状態を「処理し終えた状態」にする（エージェント自身のコメントでもう一度起きない）
+        refresh:
+          url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ event.record_id }}"
         timeout_sec: 4200      # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長く
         max_attempts: 3        # ISSUE_LOOP_MAX_ATTEMPTS の代わり。尽きたら次の変化で拾い直す
         retry_backoff_sec: 300 # ISSUE_LOOP_RETRY_BACKOFF の代わり（毎分の起動のうち、この秒数を過ぎたもので再試行）

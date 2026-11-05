@@ -186,17 +186,30 @@ class Base(unittest.TestCase):
 
 
 
-    def event(self, iid: int, updated: str, kinds=("changed",), before=None, name="ev.json") -> Path:
-        """api-watch が書くイベントのファイル（handle が使う項目だけ）。"""
+    def event(self, iid: int, updated: str = "2026-11-01T05:00:00Z", kinds=("changed",), before=None,
+              last_handled=None, refreshed=True, name="ev.json") -> Path:
+        """api-watch が書くイベントのファイル（handle が使う項目だけ）。refreshed は受け渡し先の refresh が足すもの。"""
         path = self.tmp / name
         rec = next((i for i in json.loads(self.world.read_text(encoding="utf-8"))["issues"] if i["iid"] == iid),
                    make_issue(iid, updated))
-        path.write_text(json.dumps({"record": {**rec, "updated_at": updated}, "kinds": list(kinds),
-                                    "before": before}), encoding="utf-8")
+        ev = {"record": {**rec, "updated_at": updated}, "kinds": list(kinds), "before": before}
+        if refreshed:
+            ev["refreshed"] = {"after": None, "last_handled": last_handled}
+        path.write_text(json.dumps(ev), encoding="utf-8")
         return path
 
+    @property
+    def result_file(self) -> Path:
+        return self.tmp / "result.json"
+
     def handle(self, event: Path, *args, env=None, wait=True):
-        return self.cli("handle", "--event-file", str(event), *args, env=env, wait=wait)
+        self.result_file.unlink(missing_ok=True)
+        e = {"APIWATCH_RESULT_FILE": str(self.result_file), **(env or {})}
+        return self.cli("handle", "--event-file", str(event), *args, env=e, wait=wait)
+
+    def result(self):
+        """api-watch への結果（無ければ、実行のあとの状態までを処理し終えた状態にしてよい）。"""
+        return json.loads(self.result_file.read_text(encoding="utf-8")) if self.result_file.exists() else None
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +224,11 @@ class PromptTest(unittest.TestCase):
         out = il.render_prompt('#{iid} {title} {"k": {unknown}} {changes}', cfg, item)
         self.assertEqual(out, '#7 T {"k": {unknown}} - 新しい issue')
 
-    def test_old_state_file_is_read(self):
-        # 以前の版（poll / run）の state.json は、流し終えた版だけを引き継ぐ
-        st = il.normalize_state({"baseline_done": True, "seen": {"1": {"version": "v"}}, "queue": {"2": {}},
-                                 "dead": {}, "inflight": None})
-        self.assertEqual(st["seen"], {"1": {"version": "v"}})
-        self.assertNotIn("queue", st)
+    def test_issue_before_overlays_watched_values(self):
+        cur = make_issue(1, "x", title="new", labels=["a", "b"], assignees=[{"username": "u"}])
+        before = il.issue_before({"title": "old", "labels": ["a"], "assignees[*].username": []}, cur)
+        _, lines = il.describe_changes(il.snapshot(before), il.snapshot(cur))
+        self.assertEqual(lines, ["- タイトル: old → new", "- ラベル追加: b", "- 担当: u"])
 
 
 # ---------------------------------------------------------------------------
@@ -229,34 +241,60 @@ class HandleTest(Base):
         self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"], title="a"),
                         make_issue(2, "2026-11-01T05:00:00Z", title="b")])
 
-    def test_runs_agent_and_marks_seen(self):
-        ev = self.event(1, "2026-11-01T05:00:00Z", before={"labels": []})
-        r = self.handle(ev)
+    def test_runs_agent_with_changes_since_last_handled(self):
+        r = self.handle(self.event(1, last_handled={"title": "a", "labels": []}))
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.agent_calls()
         self.assertEqual(len(calls), 1)
         self.assertIn("#1 a", calls[0]["prompt"])
         self.assertIn("ラベル追加: todo", calls[0]["prompt"])
-        self.assertEqual(self.status()["seen"], {"1": "2026-11-01T05:00:00Z"})
-        self.assertEqual(self.handle(ev).returncode, 0)            # 同じ変化をもう一度渡されても流さない
-        self.assertEqual(len(self.agent_calls()), 1)
+        self.assertIsNone(self.result())                           # 実行のあとの状態までを処理済みにしてよい
+
+    def test_falls_back_to_event_before_and_warns_without_refresh(self):
+        r = self.handle(self.event(1, before={"labels": []}, refreshed=False))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("refresh がありません", r.stderr)
+        self.assertIn("ラベル追加: todo", self.agent_calls()[0]["prompt"])
+
+    def test_attempt_comes_from_api_watch(self):
+        tpl = self.tmp / "prompt.md"
+        tpl.write_text("#{iid} {attempt} 回目", encoding="utf-8")
+        self.handle(self.event(1), env={"APIWATCH_ATTEMPT": "3", "ISSUE_LOOP_PROMPT_TEMPLATE": str(tpl)})
+        self.assertEqual(self.agent_calls()[0]["prompt"], "#1 3 回目")
 
     def test_requests_are_bounded(self):
         self.gl.requests.clear()
-        self.handle(self.event(1, "2026-11-01T05:00:00Z"))
-        # 実行前の取り直し・自分の名前・実行後の取り直し・notes の 4 回
-        self.assertEqual(len(self.gl.requests), 4, self.gl.requests)
+        self.handle(self.event(1))
+        # issue の取得・取り直しは api-watch。ここは自分の名前・notes の 2 回だけ
+        self.assertEqual(len(self.gl.requests), 2, self.gl.requests)
 
-    def test_forget_makes_it_run_again(self):
-        ev = self.event(1, "2026-11-01T05:00:00Z")
-        self.handle(ev)
-        self.cli("forget", "1")
-        self.handle(ev)
-        self.assertEqual(len(self.agent_calls()), 2)
+    def test_someone_else_during_run_keeps_state_before_run(self):
+        r = self.handle(self.event(1), env={"FAKE_MODE": "other"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.result(), {"handled": "before"})     # 次の取得でもう一度流させる
+
+    def test_own_comment_lets_api_watch_take_state_after_run(self):
+        self.handle(self.event(1), env={"FAKE_MODE": "comment"})
+        self.assertIsNone(self.result())
+
+    def test_unknown_self_username_does_not_loop(self):
+        w = json.loads(self.world.read_text(encoding="utf-8"))
+        w["self"] = ""                                           # /user からユーザー名が取れない
+        self.world.write_text(json.dumps(w), encoding="utf-8")
+        self.handle(self.event(1), env={"FAKE_MODE": "comment"})
+        # 自分の書き込みと区別できないので、ほかの人の動きとはみなさない（同じ issue を流し続けない）
+        self.assertIsNone(self.result())
+
+    def test_notes_check_failure_keeps_state_before_run(self):
+        # 自分の名前は分かっているが、notes を読めない
+        r = self.handle(self.event(1), env={"GITLAB_TOKEN": "wrong", "ISSUE_LOOP_SELF_USERNAME": "bot"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.agent_calls()), 1)
+        self.assertEqual(self.result(), {"handled": "before"})     # 確かめられなければ取りこぼさない側
 
     def test_concurrent_handles_start_only_one_session(self):
-        procs = [self.handle(self.event(i % 2 + 1, "2026-11-01T05:00:00Z", name=f"ev{i}.json"),
-                             env={"FAKE_SLEEP": "2"}, wait=False) for i in range(4)]
+        procs = [self.handle(self.event(i % 2 + 1, name=f"ev{i}.json"), env={"FAKE_SLEEP": "2"}, wait=False)
+                 for i in range(4)]
         outs = [p.communicate(timeout=60) for p in procs]
         codes = sorted(p.returncode for p in procs)
         self.assertEqual(codes, [0, 4, 4, 4], outs)              # 残りは「あとで再試行」で終わる
@@ -264,16 +302,16 @@ class HandleTest(Base):
         self.assertEqual(sum("別のセッションが実行中" in err for _, err in outs), 3)
 
     def test_projects_share_one_session_lock_by_default(self):
-        a = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_SLEEP": "2"}, wait=False)
+        a = self.handle(self.event(1), env={"FAKE_SLEEP": "2"}, wait=False)
         time.sleep(0.8)
-        b = self.handle(self.event(2, "2026-11-01T05:00:00Z", name="ev2.json"), env={"GITLAB_PROJECT": "g/other"})
+        b = self.cli("handle", "--event-file", str(self.event(2, name="ev2.json")), env={"GITLAB_PROJECT": "g/other"})
         a.communicate(timeout=60)
         self.assertEqual(b.returncode, 4)
         self.assertIn("別のセッションが実行中", b.stderr)
 
     def test_orphan_agent_blocks_next_session(self):
         orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        ev = self.event(1, "2026-11-01T05:00:00Z")
+        ev = self.event(1)
         try:
             lock = Path(self.env["ISSUE_LOOP_STATE_DIR"]) / "session.json"
             lock.parent.mkdir(parents=True, exist_ok=True)
@@ -290,18 +328,14 @@ class HandleTest(Base):
 
     def test_timeout_kills_agent(self):
         t0 = time.time()
-        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), "--delivery-id", "aw_1",
-                        env={"FAKE_SLEEP": "30", "ISSUE_LOOP_AGENT_TIMEOUT": "1"})
+        r = self.handle(self.event(1), env={"FAKE_SLEEP": "30", "ISSUE_LOOP_AGENT_TIMEOUT": "1"})
         self.assertLess(time.time() - t0, 20)
         self.assertEqual(r.returncode, 1)
         self.assertIn("タイムアウト", r.stderr)
-        st = self.status()
-        self.assertEqual(st["seen"], {})                           # 流し終えていない
-        self.assertEqual(st["failing"], {"aw_1": 1})               # 次のプロンプトは 2 回目
 
     def test_stop_signal_stops_agent(self):
         # POSIX は SIGTERM（Dagu の停止）、Windows は Ctrl+Break で「止めて」と頼む
-        p = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_SLEEP": "30"}, wait=False)
+        p = self.handle(self.event(1), env={"FAKE_SLEEP": "30"}, wait=False)
         for _ in range(50):
             if self.agent_calls():
                 break
@@ -313,31 +347,22 @@ class HandleTest(Base):
         _, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 1)
         self.assertIn("中止された", err)
-        st = self.status()
-        self.assertEqual(st["seen"], {})
-        self.assertNotIn("session", st)                          # ロック情報も片付いている
+        self.assertNotIn("session", self.status())               # ロック情報も片付いている
 
     def test_unlaunchable_agent_is_config_error(self):
-        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"ISSUE_LOOP_AGENT_CMD": "/nonexistent/agent-bin"})
+        r = self.handle(self.event(1), env={"ISSUE_LOOP_AGENT_CMD": "/nonexistent/agent-bin"})
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertNotIn("session", self.status())
 
-    def test_auth_error_exit_code(self):
-        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"GITLAB_TOKEN": "wrong"})
-        self.assertEqual(r.returncode, 3)
-
     def test_missing_config_exit_code(self):
-        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"GITLAB_PROJECT": ""})
+        r = self.handle(self.event(1), env={"GITLAB_PROJECT": ""})
         self.assertEqual(r.returncode, 2)
         self.assertIn("GITLAB_PROJECT", r.stderr)
 
-    def test_unknown_self_username_does_not_loop(self):
-        w = json.loads(self.world.read_text(encoding="utf-8"))
-        w["self"] = ""                                           # /user からユーザー名が取れない
-        self.world.write_text(json.dumps(w), encoding="utf-8")
-        self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_MODE": "comment"})
-        # エージェント自身のコメントで進んだ版を既読にする（同じ issue を流し続けない）
-        self.assertEqual(self.status()["seen"], {"1": "2026-11-01T10:00:00Z"})
+    def test_missing_record_is_config_error(self):
+        event = self.tmp / "bad.json"
+        event.write_text(json.dumps({"kinds": ["changed"]}), encoding="utf-8")
+        self.assertEqual(self.handle(event).returncode, 2)
 
 
 class AgentProfileTest(unittest.TestCase):
@@ -429,18 +454,21 @@ class ApiWatchHandleTest(Base):
                 "watch": ["title", "state", "labels", "assignees[*].username", "milestone.title", "due_date",
                           "user_notes_count", "description"],
                 "unordered": ["labels"], "on": ["appeared", "changed"],
+                "filter": {"path": "state", "value": "opened"},
                 "targets": [{"name": "agent", "command": ["{{ env.ISSUE_LOOP_PYTHON }}", str(SCRIPT), "handle"],
-                             "timeout_sec": 60, "order": "none", "retry_backoff_sec": 0}]}},
+                             "timeout_sec": 60, "order": "none", "retry_backoff_sec": 0,
+                             "refresh": {"url": "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}"
+                                                "/issues/{{ event.record_id }}"}}]}},
         }), encoding="utf-8")
         self.env["GITLAB_URL"] = self.gl.url
         self.env["ISSUE_LOOP_PYTHON"] = sys.executable
 
-    def watch(self, env=None):
+    def watch(self, *args, env=None):
         e = {**self.env, **(env or {})}
-        r = subprocess.run([sys.executable, str(API_WATCH), "--config", str(self.cfg), "--connections",
-                            str(self.conn), "run", "--rule", "issue-agent"], env=e, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120)
-        return r
+        args = args or ("run", "--rule", "issue-agent")
+        return subprocess.run([sys.executable, str(API_WATCH), "--config", str(self.cfg), "--connections",
+                               str(self.conn), *args], env=e, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120)
 
     def test_new_issue_runs_agent_once(self):
         r = self.watch()
@@ -481,47 +509,26 @@ class ApiWatchHandleTest(Base):
         self.assertEqual(len(calls), 2)
         self.assertIn("コメント +1", calls[1]["prompt"])
 
-    def test_failure_then_retry_runs_once_more_only(self):
+    def test_failure_is_retried_by_api_watch(self):
         self.watch()
         self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
-        event = self.tmp / "ev.json"
-        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"]),
-                                     "kinds": ["changed"], "before": {"labels": []}}), encoding="utf-8")
-        args = ("handle", "--event-file", str(event), "--delivery-id", "aw_1")
-        self.assertEqual(self.cli(*args, env={"FAKE_MODE": "fail"}).returncode, 1)
-        r = self.cli(*args)
+        r = self.watch(env={"FAKE_MODE": "fail"})
+        self.assertEqual(r.returncode, 4, r.stderr)               # 一部が失敗した。あとでやり直す
+        r = self.watch()
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.agent_calls()
         self.assertEqual(len(calls), 2)
         self.assertIn("ラベル追加: todo", calls[1]["prompt"])
-        self.assertEqual(self.cli(*args).returncode, 0)              # 同じ変化をもう一度渡されても流さない
-        self.assertEqual(len(self.agent_calls()), 2)
+        self.watch()
+        self.assertEqual(len(self.agent_calls()), 2)              # 流し終えたらもう流さない
 
     def test_issue_closed_while_waiting_is_skipped(self):
-        event = self.tmp / "ev.json"
-        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z"), "kinds": ["appeared"]}),
-                         encoding="utf-8")
-        self.set_world([make_issue(1, "2026-11-01T06:00:00Z", state="closed")])
-        r = self.cli("handle", "--event-file", str(event))
+        self.watch()
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
+        self.watch("fetch")
+        self.watch("evaluate")
+        self.set_world([make_issue(1, "2026-11-01T06:00:00Z", labels=["todo"], state="closed")])
+        r = self.watch("work")                                    # 実行の直前の取り直しで filter から外れる
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("filter から外れた", r.stderr + r.stdout)
         self.assertEqual(self.agent_calls(), [])
-
-    def test_busy_session_asks_for_retry(self):
-        event = self.tmp / "ev.json"
-        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z"), "kinds": ["appeared"]}),
-                         encoding="utf-8")
-        lock = self.tmp / "state" / "session.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock, "a+") as f:
-            il.lock_file(f, blocking=False)
-            try:
-                r = self.cli("handle", "--event-file", str(event))
-            finally:
-                il.unlock_file(f)
-        self.assertEqual(r.returncode, 4, r.stderr)
-        self.assertEqual(self.agent_calls(), [])
-
-    def test_missing_record_is_config_error(self):
-        event = self.tmp / "ev.json"
-        event.write_text(json.dumps({"kinds": ["changed"]}), encoding="utf-8")
-        self.assertEqual(self.cli("handle", "--event-file", str(event)).returncode, 2)

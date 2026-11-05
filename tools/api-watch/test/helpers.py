@@ -160,6 +160,13 @@ class FakeAPI:
             since = int(q.get("since_rev") or 0)
             got = [x for x in items if x["rev"] > since]
             return self._send(h, 200, {"items": got, "sync_token": max([since] + [x["rev"] for x in items])})
+        if p.startswith("/item/"):                      # 1 件だけ返す（受け渡し先の refresh 用）
+            with self.lock:
+                it = self.items.get(int(p.split("/")[2]))
+            return self._send(h, 200, it) if it is not None else self._send(h, 404, {"message": "not found"})
+        if p == "/_put":                                # 試験のコマンドが API 側のレコードを書き換える（書き込みの代わり）
+            self.put(int(q.pop("id")), **q)
+            return self._send(h, 200, {})
         return self._send(h, 404, {"message": "not found"})
 
 

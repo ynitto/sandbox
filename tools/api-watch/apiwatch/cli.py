@@ -121,7 +121,8 @@ def cmd_work(cfg, store, a) -> int:
     rules = _rules_of_sources(cfg, a)
     targets = a.target or None
     o = Dispatcher(cfg, store).work(rules, targets, a.limit)
-    log(f"実行: 完了 {o.done}・失敗（あとでやり直す） {o.failed}・打ち切り {o.dead}・前のイベントの完了待ち {o.waiting}"
+    log(f"実行: 完了 {o.done}・処理することが無く飛ばした {o.skipped}・失敗（あとでやり直す） {o.failed}・打ち切り {o.dead}・"
+        f"待ち {o.waiting}"
         + ("・中止されました" if o.stopped else ""))
     if o.stopped:
         return EXIT_ERROR
@@ -327,6 +328,24 @@ def cmd_gc(cfg, store, a) -> int:
     return EXIT_OK
 
 
+def cmd_forget_handled(cfg, store, a) -> int:
+    rule = cfg.rules.get(a.rule)
+    if rule is None:
+        raise ConfigError(f"設定に無いルールです: {a.rule}")
+    names = [t.name for t in rule.targets if t.refresh is not None and (not a.target or t.name in a.target)]
+    if not names:
+        log(f"ルール {a.rule} に refresh のある受け渡し先がありません")
+        return EXIT_USAGE
+    n = 0
+    with store.tx() as db:
+        for rec in a.records:
+            for t in names:
+                n += db.execute("DELETE FROM handled_records WHERE rule=? AND target=? AND rkey=?",
+                                (a.rule, t, rec)).rowcount
+    log(f"処理し終えた状態を {n} 件忘れました（次に変化を受け取ったとき、必ず実行します）")
+    return EXIT_OK
+
+
 def cmd_forget_rule(cfg, store, a) -> int:
     if a.rule in cfg.rules:
         log(f"{a.rule} は設定にあります。設定から消してから実行してください（基準値の取り直しなら rebaseline）")
@@ -418,6 +437,11 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp = add("gc", cmd_gc, "保持期間を過ぎたものを消してファイルを縮める（未判定・未完了のものは消さない）")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--vacuum", action="store_true", help="VACUUM で DB を作り直す（時間がかかる。古い DB を自動で縮む形にする）")
+    sp = add("forget-handled", cmd_forget_handled,
+             "refresh のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる）")
+    sp.add_argument("--rule", required=True)
+    sp.add_argument("--target", action="append")
+    sp.add_argument("records", nargs="+", help="レコードのキー（events の「レコード」の値）")
     sp = add("forget-rule", cmd_forget_rule, "設定から消したルールの判定状態を消す")
     sp.add_argument("rule")
     plugins.load(plugin_specs or [], add)

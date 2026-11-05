@@ -23,11 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import template
+from . import jpath, template
 from .adapters import DONE as A_DONE, FAILED as A_FAILED, SendError
 from .config import Config, TargetSpec
 from .store import DEAD, DISPATCHED, DONE, FAILED, PENDING, SEND_FAILED, SENDING, SKIPPED, Store
-from .util import REDACT, ConfigError, atomic_write, log, now, unpack
+from .util import REDACT, ConfigError, atomic_write, canonical, log, now, sha, unpack
 
 
 @dataclass
@@ -43,6 +43,7 @@ class DispatchOutcome:
 @dataclass
 class WorkOutcome:
     done: int = 0
+    skipped: int = 0            # refresh で、処理し終えた状態と同じ・対象外・見つからないと分かって実行しなかった
     failed: int = 0
     dead: int = 0
     waiting: int = 0
@@ -209,7 +210,7 @@ class Dispatcher:
                     pass
         try:
             while not stop:
-                if limit is not None and out.done + out.failed + out.dead >= limit:
+                if limit is not None and out.done + out.skipped + out.failed + out.dead >= limit:
                     break
                 t = now()
                 rows = self.store.q(
@@ -230,7 +231,7 @@ class Dispatcher:
                         continue
                     picked = (d, tgt)
                     break
-                out.waiting = waiting
+                out.waiting = max(out.waiting, waiting)
                 if picked is None:
                     break
                 tried.add(picked[0]["id"])
@@ -244,7 +245,46 @@ class Dispatcher:
         out.stopped = bool(stop)
         return out
 
+    def _finish(self, d: Any, attempts: int, note: str | None = None) -> None:
+        with self.store.tx() as db:
+            db.execute("UPDATE deliveries SET status=?, attempts=?, dispatched_at=?, completed_at=?, last_error=?, "
+                       "lease_until=NULL, updated_at=? WHERE id=? AND owner=?",
+                       (DONE, attempts, now(), now(), note, now(), d["id"], self.store.owner))
+
+    def _fail(self, d: Any, tgt: TargetSpec, attempts: int, error: str, out: WorkOutcome) -> None:
+        if attempts >= tgt.max_attempts:
+            status, nxt = DEAD, 0.0
+            out.dead += 1
+        else:
+            status = SEND_FAILED
+            nxt = now() + min(tgt.retry_max_backoff_sec, tgt.retry_backoff_sec * (2 ** (attempts - 1)))
+            out.failed += 1
+        with self.store.tx() as db:
+            db.execute("UPDATE deliveries SET status=?, attempts=?, next_attempt_at=?, last_error=?, lease_until=NULL, "
+                       "updated_at=? WHERE id=? AND owner=?",
+                       (status, attempts, nxt, REDACT(error), now(), d["id"], self.store.owner))
+        log(f"[{d['rule']} → {tgt.name}] {d['id']} 失敗（{error}・{attempts}/{tgt.max_attempts} 回目）→ "
+            + ("打ち切り（retry で再開）" if status == DEAD else "あとでやり直す"))
+
+    def _watched_of(self, rule, rec: Any) -> tuple[Any, str]:
+        """レコードの監視する値（イベントの after と同じ形）とそのハッシュ。"""
+        from .detect import normalize, present_value, watched
+        w = watched(rule, normalize(rule, rec))
+        return present_value(rule, w), sha(canonical(w), 40)
+
+    def _hash_of_after(self, rule, after: Any) -> str:
+        from .detect import WHOLE
+        w = {WHOLE: after} if rule.watch is None else (after or {})
+        return sha(canonical(w), 40)
+
+    def _refresh(self, d: Any, tgt: TargetSpec, payload: dict) -> Any:
+        from .fetch import Fetcher
+        src = self.cfg.sources[self.cfg.rules[d["rule"]].source]
+        return Fetcher(self.cfg, self.store).refresh_one(src, tgt.refresh, payload)
+
     def _work_one(self, d: Any, tgt: TargetSpec, out: WorkOutcome, stop: list, child: list) -> None:
+        from .fetch import Deferred
+        from .util import PermanentError, TransientError
         t = now()
         with self.store.tx() as db:
             cur = db.execute("UPDATE deliveries SET status=?, lease_until=?, owner=?, updated_at=? WHERE id=? AND "
@@ -254,14 +294,67 @@ class Dispatcher:
             if cur.rowcount != 1:
                 return   # 別のプロセスが先に取った
         payload = self.event_payload(d["event_id"])
-        path = self.write_event_file(payload)
+        attempts = int(d["attempts"]) + 1
+        rule = self.cfg.rules[d["rule"]]
+        label = f"[{d['rule']} → {tgt.name}] {d['id']}"
+        before_hash = None
+        if tgt.refresh is not None:
+            # 実行の前に、最後に処理し終えた状態と比べる。同じなら処理することが無い
+            # （自分の書き込みで出たイベント・まとめて処理し終えた古いイベント）
+            done = self.store.handled(d["rule"], tgt.name, d["rkey"])
+            if done is not None and self._hash_of_after(rule, payload.get("after")) == done["vhash"]:
+                self._finish(d, int(d["attempts"]), "処理し終えた状態と同じなので実行しなかった")
+                out.skipped += 1
+                log(f"{label} は処理し終えた状態と同じなので飛ばします")
+                return
+            try:
+                fresh = self._refresh(d, tgt, payload)
+            except Deferred as e:
+                with self.store.tx() as db:      # 試行に数えず、待ちが明けてから
+                    db.execute("UPDATE deliveries SET status=?, lease_until=NULL, next_attempt_at=?, updated_at=? "
+                               "WHERE id=? AND owner=?", (d["status"] if d["status"] != SENDING else PENDING,
+                                                          now() + 60, now(), d["id"], self.store.owner))
+                out.waiting += 1
+                log(f"{label} は取り直せないのであとで: {e}")
+                return
+            except (TransientError, PermanentError) as e:
+                self._fail(d, tgt, attempts, f"実行の前の取り直しに失敗: {REDACT(str(e))}", out)
+                return
+            if fresh is None:
+                self._finish(d, attempts, "取り直したらレコードが見つからなかった")
+                out.skipped += 1
+                log(f"{label} はレコードが見つからないので飛ばします")
+                return
+            if rule.filter is not None and not jpath.check(rule.filter, fresh):
+                self._finish(d, attempts, "取り直したら filter から外れていた")
+                out.skipped += 1
+                log(f"{label} は filter から外れたので飛ばします")
+                return
+            after_value, before_hash = self._watched_of(rule, fresh)
+            if done is not None and before_hash == done["vhash"]:
+                self._finish(d, attempts, "処理し終えた状態と同じなので実行しなかった")
+                out.skipped += 1
+                log(f"{label} は処理し終えた状態と同じなので飛ばします")
+                return
+            payload = dict(payload)
+            payload["record"] = fresh
+            payload["refreshed"] = {"after": after_value,
+                                    "last_handled": unpack(done["value"]) if done is not None else None}
+            path = self.store.event_file(payload["event_id"], tgt.name)
+            atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            path = self.write_event_file(payload)
         params = self.params_for(d, tgt, payload, path)
         ctx = {"event": payload, "delivery": {"id": d["id"], "target": tgt.name, "workflow": ""},
                "env": dict(os.environ)}
         argv = [str(x) for x in template.render(tgt.command, ctx)]
+        result_file = self.store.dir / "events" / f"{d['id']}.result.json"
+        result_file.unlink(missing_ok=True)
         env = dict(os.environ)
         env.update(params)
-        log(f"[{d['rule']} → {tgt.name}] {d['id']}（レコード {d['rkey']}・{payload['kinds']}）を実行します")
+        env["APIWATCH_ATTEMPT"] = str(attempts)
+        env["APIWATCH_RESULT_FILE"] = str(result_file)
+        log(f"{label}（レコード {d['rkey']}・{payload['kinds']}・{attempts} 回目）を実行します")
         error = None
         try:
             proc = subprocess.Popen(argv, env=env)
@@ -287,28 +380,32 @@ class Dispatcher:
                 error = f"{tgt.timeout_sec:.0f} 秒で打ち切った"
             elif rc != 0:
                 error = f"終了コード {rc}"
-        attempts = int(d["attempts"]) + 1
-        if error is None:
-            with self.store.tx() as db:
-                db.execute("UPDATE deliveries SET status=?, attempts=?, dispatched_at=?, completed_at=?, last_error=NULL, "
-                           "lease_until=NULL, updated_at=? WHERE id=? AND owner=?",
-                           (DONE, attempts, now(), now(), now(), d["id"], self.store.owner))
-            out.done += 1
-            log(f"[{d['rule']} → {tgt.name}] {d['id']} 完了")
+        result: dict = {}
+        try:
+            loaded = json.loads(result_file.read_text(encoding="utf-8"))
+            result = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            pass
+        result_file.unlink(missing_ok=True)
+        if error is not None:
+            self._fail(d, tgt, attempts, error, out)
             return
-        if attempts >= tgt.max_attempts:
-            status, nxt = DEAD, 0.0
-            out.dead += 1
-        else:
-            status = SEND_FAILED
-            nxt = now() + min(tgt.retry_max_backoff_sec, tgt.retry_backoff_sec * (2 ** (attempts - 1)))
-            out.failed += 1
-        with self.store.tx() as db:
-            db.execute("UPDATE deliveries SET status=?, attempts=?, next_attempt_at=?, last_error=?, lease_until=NULL, "
-                       "updated_at=? WHERE id=? AND owner=?",
-                       (status, attempts, nxt, REDACT(error), now(), d["id"], self.store.owner))
-        log(f"[{d['rule']} → {tgt.name}] {d['id']} 失敗（{error}・{attempts}/{tgt.max_attempts} 回目）→ "
-            + ("打ち切り（retry で再開）" if status == DEAD else "あとでやり直す"))
+        if tgt.refresh is not None:
+            # 実行のあとで取り直し、その状態を処理し終えた状態にする（自分の書き込みでもう一度起きない）。
+            # コマンドが {"handled": "before"} を書いたら（実行中にほかの人が動いたなど）、実行前の状態までにとどめる
+            value, vhash = after_value, before_hash
+            if result.get("handled") != "before":
+                try:
+                    later = self._refresh(d, tgt, payload)
+                except (Deferred, TransientError, PermanentError) as e:
+                    log(f"{label} 実行のあとの取り直しに失敗したので、実行前の状態までを処理済みにします: {REDACT(str(e))}")
+                    later = None
+                if later is not None:
+                    value, vhash = self._watched_of(rule, later)
+            self.store.set_handled(d["rule"], tgt.name, d["rkey"], vhash, value)
+        self._finish(d, attempts)
+        out.done += 1
+        log(f"{label} 完了")
 
     # -- 完了の記録・再実行 -----------------------------------------------------
 

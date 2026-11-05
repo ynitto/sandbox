@@ -299,6 +299,143 @@ class SharedFetchTest(Base):
         self.assertEqual(f.run(cfg.sources["items"]).status, "busy")
 
 
+REFRESH_HANDLER = """\
+import json, os, sys, urllib.request
+log = sys.argv[1]
+ev = json.load(open(os.environ["APIWATCH_EVENT_FILE"], encoding="utf-8"))
+mode = os.environ.get("FAKE_MODE", "")
+with open(log, "a", encoding="utf-8") as f:
+    f.write(json.dumps({"record": ev["record"], "refreshed": ev.get("refreshed"),
+                        "attempt": os.environ["APIWATCH_ATTEMPT"]}) + "\\n")
+def put(**kw):
+    req = urllib.request.Request(os.environ["FAKE_URL"] + "/_put", data=json.dumps({"id": ev["record"]["id"], **kw}).encode(),
+                                 headers={"Authorization": "Bearer " + os.environ["FAKE_TOKEN"],
+                                          "Content-Type": "application/json"}, method="POST")
+    urllib.request.urlopen(req).read()
+if mode == "write":            # 自分で書き込む
+    put(note="by-me")
+if mode == "other":            # 実行中にほかの人が書き込んだ体。処理し終えたのは実行前の状態まで
+    put(note="by-alice")
+    json.dump({"handled": "before"}, open(os.environ["APIWATCH_RESULT_FILE"], "w"))
+if mode == "fail":
+    sys.exit(3)
+"""
+
+
+class RefreshTest(Base):
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        from helpers import TOKEN
+        self.handler.write_text(REFRESH_HANDLER, encoding="utf-8")
+        patcher = mock.patch.dict("os.environ", {"FAKE_URL": self.env.api.url, "FAKE_TOKEN": TOKEN})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def setup_rule(self, **rule):
+        t = {"name": "job", "command": [sys.executable, str(self.handler), str(self.log)], "timeout_sec": 30,
+             "retry_backoff_sec": 0, "refresh": {"url": "{{ conn.url }}/item/{{ event.record_id }}"}}
+        self.write({"r": {**self.rule(t), "watch": ["status", "note"], **rule}})
+        self.env.api.put(1, status="a")
+        self.env.ok(self, "run", "--rule", "r")                     # 基準値
+
+    def mode(self, m: str):
+        import os
+        os.environ["FAKE_MODE"] = m
+
+    def tearDown(self):
+        import os
+        os.environ.pop("FAKE_MODE", None)
+
+    def test_own_write_does_not_run_again(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b")
+        self.mode("write")
+        self.env.ok(self, "run", "--rule", "r")
+        h = self.handled()
+        self.assertEqual(len(h), 1)
+        self.assertEqual(h[0]["record"]["status"], "b")               # 取り直したレコードが渡る
+        self.assertIsNone(h[0]["refreshed"]["last_handled"])
+        self.assertEqual(self.env.api.count("/item/1"), 2)            # 実行の前と後
+        self.mode("")
+        out = self.env.ok(self, "run", "--rule", "r")               # 自分の書き込み（note）を検知するが、実行しない
+        self.assertIn("処理し終えた状態と同じ", out)
+        self.assertEqual(len(self.handled()), 1)
+        self.assertEqual(self.env.api.count("/item/1"), 2)            # 取り直しもしない
+
+    def test_change_by_someone_else_during_run_runs_again(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b")
+        self.mode("other")
+        self.env.ok(self, "run", "--rule", "r")
+        self.mode("")
+        self.env.ok(self, "run", "--rule", "r")
+        h = self.handled()
+        self.assertEqual(len(h), 2)
+        self.assertEqual(h[1]["refreshed"]["last_handled"], {"status": "b"})   # 前回処理し終えたのは実行前の状態
+        self.assertEqual(h[1]["record"]["note"], "by-alice")
+
+    def test_events_piled_up_run_once_with_latest(self):
+        self.setup_rule()
+        for st in ("b", "c"):
+            self.env.api.put(1, status=st)
+            self.env.ok(self, "fetch")
+            self.env.ok(self, "evaluate")
+        self.env.ok(self, "work")
+        h = self.handled()
+        self.assertEqual([x["record"]["status"] for x in h], ["c"])  # 最新で 1 回だけ。後ろのイベントは飛ばす
+        self.assertEqual([d["status"] for d in self.env.deliveries()], ["done", "done"])
+
+    def test_left_filter_or_gone_while_waiting_is_skipped(self):
+        self.setup_rule(filter={"path": "status", "op": "ne", "value": "closed"})
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "fetch")
+        self.env.ok(self, "evaluate")
+        self.env.api.put(1, status="closed")                       # 実行を待つ間に閉じた
+        out = self.env.ok(self, "work")
+        self.assertIn("filter から外れた", out)
+        self.env.api.put(2, status="a")
+        self.env.ok(self, "run", "--rule", "r")
+        self.env.api.put(2, status="b")
+        self.env.ok(self, "fetch")
+        self.env.ok(self, "evaluate")
+        self.env.api.drop(2)                                       # 実行を待つ間に消えた
+        out = self.env.ok(self, "work")
+        self.assertIn("見つからない", out)
+        # 実行したのは 2 が初めて現れたときの 1 回だけ（閉じた 1・消えた 2 の変化では実行しない）
+        self.assertEqual([(x["record"]["id"], x["record"]["status"]) for x in self.handled()], [(2, "a")])
+
+    def test_refresh_failure_does_not_run_and_is_retried(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b")
+        self.env.api.fail("/item/1", 503, count=3)
+        code, out = self.env.run("run", "--rule", "r")
+        self.assertEqual(code, 4, out)
+        self.assertEqual(self.handled(), [])
+        self.assertIn("取り直しに失敗", self.env.deliveries()[-1]["last_error"])
+        self.env.ok(self, "work")
+        self.assertEqual([x["attempt"] for x in self.handled()], ["2"])   # 何回目かも渡る
+
+    def test_forget_handled_runs_again(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b")
+        self.mode("write")
+        self.env.ok(self, "run", "--rule", "r")
+        self.mode("")
+        self.env.ok(self, "forget-handled", "--rule", "r", "1")
+        self.env.ok(self, "run", "--rule", "r")                     # 自分の書き込みのイベントでも、忘れたので実行する
+        self.assertEqual(len(self.handled()), 2)
+
+    def test_config_checks(self):
+        for t, msg in (({"workflow": "w", "refresh": {"url": "x"}}, "command を書いたときだけ"),
+                       ({"name": "a", "command": ["x"], "refresh": {}}, "refresh.url"),
+                       ({"name": "a", "command": ["x"], "refresh": {"url": "{{ delivery.id }}"}}, "event.*")):
+            self.write({"r": self.rule(t)})
+            with self.assertRaises(ConfigError) as cm:
+                configmod.load(self.env.config_path, self.env.conn_file)
+            self.assertIn(msg, str(cm.exception))
+
+
 class CronTest(unittest.TestCase):
     def test_previous_and_next(self):
         from datetime import datetime
