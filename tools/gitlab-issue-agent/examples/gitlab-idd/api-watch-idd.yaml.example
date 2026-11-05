@@ -1,4 +1,4 @@
-# api-watch 0.2.0 の dags が作った雛形。作ったあとは自由に直してよい（dags は既にあるファイルを上書きしない）。
+# api-watch 0.3.0 の dags が作った雛形。作ったあとは自由に直してよい（dags は既にあるファイルを上書きしない）。
 # 設定: /home/you/.config/api-watch/api-watch.yaml
 # schedule は Dagu がこのワークフローを起動する間隔。取得元に schedule があれば、起動されても予定の時刻までは
 # api-watch が取得しない（取得の予定は api-watch の設定にある）。無ければ起動されるたびに取得する
