@@ -47,26 +47,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - テンプレートの `{{ x | json: 2 }}`（整形）。フィルタの引数の `'...'`（単引用符）を外す（`| default: ''` が `''` になっていたのを直す）
 - ログを標準エラーに出す（標準出力は結果だけ。`due`・`begin`・`render`・`status --json` などを Dagu の `output:` で受け取れるように）
 
-### dagu-issue-loop: api-watch と Dagu の上に載せ替え、`issue_loop.py` をやめる
-
-- **`issue_loop.py` と `gitlab-issue-poll.yaml` / `gitlab-issue-agent.yaml` をやめる**。issue の取得・変化の検知・実行待ち・再試行・打ち切り・
-  実行の前後の取り直し（処理し終えた状態の記録）・1 セッションの排他は api-watch が、起動とエージェント CLI の実行（`harness.run`）は Dagu が受け持つ
-- `gitlab_issue.py`（api-watch のプラグイン）: フィルタ `gitlab_issue_changes`（前回処理し終えたときからの変化の箇条書き）・`gitlab_issue_kind`（新規 / 更新）と、
-  チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。約 170 行
-- 設定の例: `api-watch.yaml.example`（`external` の受け渡し先・`refresh`・`lock`・`handled_before_if`・毎時 0 分の予定・0〜15 分のずらし）、
-  `prompt.md.example`（api-watch のテンプレートで書いたプロンプト）、`handle-step.yaml.example`（`harness.run` でエージェント CLI を動かすステップ）。
-  Dagu のワークフロー（取得から処理までの 1 本。毎分起動し、1 回の起動で 1 件を処理する）は api-watch の `dags` で雛形を作る
-- `ISSUE_LOOP_*` の環境変数は使わない（取得・再試行・絞り込みは api-watch の設定、エージェント CLI の種類とフラグは handle のステップ、
-  プロンプトはテンプレートに書く）。`issue_loop.py forget` は `api-watch forget-handled` に代わる
-- 移るとき: README の「入れ方」で入れ直し、Dagu の DAG フォルダから以前の DAG を消す
-
-### dagu-issue-loop: stdin でプロンプトを渡す CLI が読まないとき、打ち切りが効かなくなるのを直す
-
-- プロンプトを別スレッドで流し、パイプが埋まっても run のタイムアウトと中止の判定に進めるようにする。
-
 ### agent-app: ファイルのプレビューと実行ログの末尾で、バイト数の切り口の文字化けを直す（agent-app 0.49.2）
 
 - 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
+
+### dagu-issue-loop: GitLab の issue の変化をエージェント CLI に 1 件ずつ渡す（0.1.0）
+
+- `tools/dagu-issue-loop/` を足す。issue の取得・変化の検知・実行待ち・再試行・処理し終えた状態の記録・1 セッションの排他は api-watch、
+  起動とエージェント CLI の実行は Dagu（v2.25 以降の `harness.run`）が受け持ち、ここには GitLab に固有の部分と設定の例を置く
+- `gitlab_issue.py`（api-watch のプラグイン）: フィルタ `gitlab_issue_changes`（前回処理し終えたときからの変化の箇条書き）・`gitlab_issue_kind`（新規 / 更新）と、
+  チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。標準ライブラリだけ
+- Dagu のワークフローは 1 本（毎分起動、1 回の起動で 1 件）: fetch → evaluate → claim → render → handle（`harness.run`）→ finish。api-watch の `dags` で雛形を作る
+- GitLab の負荷: 一覧の取得は毎時 0 分の予定のあと 0〜15 分ずらして 1 回。予定の時刻のあとに取得済みなら問い合わせない。取得が失敗したらしばらく問い合わせない
+- 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ流す。初回は今ある issue を覚えるだけ。
+  実行の直前に取り直し、閉じた・絞り込みから外れた・処理し終えた状態と同じなら流さない。エージェント自身のコメントでは起きず、実行中に他人が動いたときだけもう一度流す
+- エージェント CLI は同時に 1 つ（api-watch の `lock`。プロジェクトをまたいでも 1 つ）。失敗は指数バックオフで再試行し、上限で打ち切る
+- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`issue-loop.env.example`
+- 設計: `docs/designs/dagu-issue-loop-design.md`
 
 ### api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
 
@@ -109,24 +106,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （スクリプトだけで組めず、使えば組めるときは、そのアクションを名指しして止まる）。スキルにしない手元の宣言は `--actions <ファイル>` で足す
 - api-designer（`validate`: openapi → openapi-report）と dependency-auditor（`audit`: project-dir → dependency-audit）に `chain.json` を足した
 - 設計: `docs/designs/dagu-workflow-builder-design.md`
-
-### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
-
-- `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本
-  （`gitlab-issue-poll` 1 時間ごと / `gitlab-issue-agent` 毎分）で動く
-- GitLab の負荷を抑える: 取得は毎時 0 分に起動して 0〜15 分ランダムにずらす（`--jitter`）。エージェントの DAG は
-  待ち行列が空なら GitLab に問い合わせない
-- 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ積む。
-  初回は今ある issue を既読にするだけ。同じ issue の変化は待ち行列で 1 件にまとめる
-- 実行後に issue を取り直して既読にし、エージェント自身のコメントで再発火しない。実行中に他人が動いたときだけもう一度流す
-- 1 セッションの保証: Dagu の重複起動抑止に加え、全プロジェクト共通のロックファイルと実行中の pid で排他する。
-  停止・タイムアウトでは CLI を子プロセスごと止めて失敗として記録し、指数バックオフで再試行、上限で打ち切る
-- エージェント CLI は `agents/<name>.json` の名前でもコマンド行でも指定できる
-- Windows（ネイティブ）でも動く。ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル・コマンド行の分割を OS ごとに切り替え、
-  DAG の Python は `ISSUE_LOOP_PYTHON` で渡す。CI に Windows でのテストを足した
-- 設計: `docs/designs/dagu-issue-loop-design.md`
-- 直し: 自分のユーザー名が分からないとき、成功のたびに同じ issue を流し直し続けていたのを、既読にして止める（警告を 1 行出す）。
-  エージェント CLI を起動できない設定の誤りで、実行中の印が残り試行回数が減っていたのを直す
 
 ### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
 

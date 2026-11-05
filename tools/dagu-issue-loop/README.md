@@ -94,8 +94,6 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
    api-watch --plugin ~/.local/share/dagu-issue-loop/gitlab_issue.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
    ```
 
-以前の版の `gitlab-issue-poll.yaml` / `gitlab-issue-agent.yaml` や `issue_loop.py` を置いていたら消す。
-
 ## GitLab への問い合わせの回数
 
 - issue の一覧の取得は **1 時間に 1 回**。予定の時刻（毎時 0 分）から 0〜15 分のあいだでランダムにずらして問い合わせる。
