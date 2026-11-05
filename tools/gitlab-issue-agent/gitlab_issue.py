@@ -1,6 +1,6 @@
-"""gitlab-issue-agent — GitLab の issue のための api-watch のプラグイン（`api-watch --plugin <このファイル>` で読み込む）。
+"""gitlab-issue-agent — GitLab の issue のための change-watch のプラグイン（`change-watch --plugin <このファイル>` で読み込む）。
 
-issue の取得・変化の検知・実行待ち・再試行・実行の前後の取り直し・1 セッションの排他は api-watch が、エージェント CLI の
+issue の取得・変化の検知・実行待ち・再試行・実行の前後の取り直し・1 セッションの排他は change-watch が、エージェント CLI の
 起動と停止は Dagu（harness.run）が受け持つ。ここで足すのは GitLab の issue に固有の 3 つだけ:
 
     フィルタ gitlab_issue_changes   {{ event | gitlab_issue_changes }}  前回処理し終えたときからの変化の箇条書き
@@ -11,7 +11,7 @@ issue の取得・変化の検知・実行待ち・再試行・実行の前後�
     チェック gitlab_idd.role_changed 実行のあいだに gitlab-idd のロールが変わったか（ワーカーが status:review-ready に
                                     した・レビュアーが差し戻した）。handled_before_if に書くと、次のロールでもう一度流れる
 
-標準ライブラリだけで動く。api-watch の本体の内部には触らず、プラグインの口（register(api)）と、チェックに渡る
+標準ライブラリだけで動く。change-watch の本体の内部には触らず、プラグインの口（register(api)）と、チェックに渡る
 CheckContext（GitLab への問い合わせは取得元の接続で、要求の間隔・失敗の待ちを分け合う）だけを使う。
 設計は docs/designs/gitlab-issue-agent-design.md。
 """
@@ -21,7 +21,7 @@ import hashlib
 from datetime import datetime
 from typing import Any
 
-# 変化として扱う項目（api-watch の設定のルールの watch と同じにする）
+# 変化として扱う項目（change-watch の設定のルールの watch と同じにする）
 WATCHED = ("title", "state", "labels", "assignees", "milestone", "due_date", "user_notes_count", "description")
 
 
@@ -74,7 +74,7 @@ def describe_changes(prev: dict[str, Any] | None, cur: dict[str, Any]) -> list[s
 
 
 def issue_before(before: Any, current: dict[str, Any]) -> dict[str, Any]:
-    """api-watch の監視する値（ルールの watch の項目だけ）を、今の issue に重ねて変化前の issue にする。
+    """change-watch の監視する値（ルールの watch の項目だけ）を、今の issue に重ねて変化前の issue にする。
     監視していない項目は今と同じとみなす（変化の箇条書きに余計な行を出さない）。"""
     out = dict(current)
     if not isinstance(before, dict):
@@ -133,7 +133,7 @@ def _idd_role(issue: Any) -> str | None:
 def gitlab_idd_role(issue: Any, _arg: Any = None) -> str:
     """status:review-ready ならレビュアー、status:open / needs-rework / needs-clarification ならワーカー。
 
-    どれでもなければ例外（api-watch のルールの filter で、これらのラベルの issue だけに絞っておく）。"""
+    どれでもなければ例外（change-watch のルールの filter で、これらのラベルの issue だけに絞っておく）。"""
     role = _idd_role(issue)
     if role:
         return role
@@ -156,7 +156,7 @@ def others_acted(ctx) -> bool:
     """実行を始めてから、自分（トークンの持ち主か options.self_username）以外の人が issue の notes を書いたか。
 
     notes にはシステムノート（ラベル変更など）も含まれ、作者で判定する。自分が分からないときは、自分の書き込みと
-    区別できないので偽（同じ issue を流し続けない）。GitLab に届かなければ例外のまま返し、api-watch が
+    区別できないので偽（同じ issue を流し続けない）。GitLab に届かなければ例外のまま返し、change-watch が
     handled_before_if を真とみなす（取りこぼさない側）。
 
     options:

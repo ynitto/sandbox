@@ -1,9 +1,9 @@
-"""gitlab-mr-review-agent — GitLab の MR をエージェント CLI（kiro-cli など）にレビューさせるための、api-watch のプラグインと
+"""gitlab-mr-review-agent — GitLab の MR をエージェント CLI（kiro-cli など）にレビューさせるための、change-watch のプラグインと
 エージェントが使うコマンド。
 
 1 つのファイルを 2 つの使い方で使う:
 
-    api-watch --plugin <このファイル> ...     プラグインとして読み込む（register(api)）
+    change-watch --plugin <このファイル> ...     プラグインとして読み込む（register(api)）
         フィルタ gitlab_mr_since    {{ event | gitlab_mr_since }}  前回レビューし終えたときの head の SHA（初めてなら空）
         フィルタ gitlab_mr_kind     {{ event | gitlab_mr_kind }}   初めて / 再レビュー
         チェック gitlab_mr.changed_during_review
@@ -67,12 +67,12 @@ MAX_DIFF_CHARS = 150_000     # context が出す差分の上限（超えたフ�
 MAX_SHOW_LINES = 2000
 GIT_TIMEOUT = 900            # 1 回の git の上限（初めて取ってくるときは長い）
 
-# 変化として扱う MR の項目（api-watch の設定のルールの watch と同じにする）
+# 変化として扱う MR の項目（change-watch の設定のルールの watch と同じにする）
 WATCHED = ("sha", "draft", "target_branch")
 
 
 # ---------------------------------------------------------------------------
-# プラグイン（api-watch --plugin で読み込む）
+# プラグイン（change-watch --plugin で読み込む）
 # ---------------------------------------------------------------------------
 
 def _last_sha(event: Any) -> str:
@@ -98,8 +98,8 @@ def changed_during_review(ctx) -> bool:
     """実行の前（取り直したレコード）と今とで、MR の head・ドラフト・対象ブランチが違えば真。
 
     エージェントはコメントしか書かないので、これらが変わったのは人の操作（コミットの追加・force push など）。
-    真なら api-watch は実行前の状態までを処理済みにし、次の取得で新しいコミットをもう一度レビューさせる。
-    GitLab に届かなければ例外のまま返し、api-watch が真とみなす（取りこぼさない側。そのときは同じ head を
+    真なら change-watch は実行前の状態までを処理済みにし、次の取得で新しいコミットをもう一度レビューさせる。
+    GitLab に届かなければ例外のまま返し、change-watch が真とみなす（取りこぼさない側。そのときは同じ head を
     もう一度流すが、context が「レビューし終えています」と出すので、指摘は重ならない）。"""
     url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
     mr = ctx.event.get("record") or {}
@@ -131,10 +131,10 @@ def _pages(ctx, url: str, query: dict | None = None, limit: int = 50) -> list | 
 def already_reviewed(ctx) -> bool:
     """今の MR の差分の中身を、既にレビューし終えていれば真（skip_if に書く）。
 
-    リベース・中身の同じ force push では head のコミットが変わるので、api-watch はイベントにして流そうとする。
+    リベース・中身の同じ force push では head のコミットが変わるので、change-watch はイベントにして流そうとする。
     MR の差分（足した行・消した行）の指紋が、これまでに書いたまとめのどれかと同じなら、kiro-cli を起こさずに飛ばす。
     閉じて開き直した MR・ルールの名前を変えたあとの MR も、まとめが残っていれば同じく飛ばす。
-    GitLab に届かなければ例外のまま返し、api-watch が偽とみなす（kiro-cli を起こすが、context が同じ判定で止める）。"""
+    GitLab に届かなければ例外のまま返し、change-watch が偽とみなす（kiro-cli を起こすが、context が同じ判定で止める）。"""
     url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
     mr = ctx.event.get("record") or {}
     if not url or mr.get("project_id") is None or mr.get("iid") is None:
@@ -471,7 +471,7 @@ def repo_from_env(gl: "GitLab", token: str) -> LocalRepo | None:
 
 def mr_diffs_cached(gl: "GitLab", repo: LocalRepo | None, iid: Any, mr: dict) -> list[dict]:
     """MR の差分（API）。作業フォルダがあれば、同じ MR・head・差分の元のあいだは保存したものを使う
-    （context・comment・summary で取り直さない）。差分の指紋は api-watch のチェックと同じく、いつも API の差分から求める。"""
+    （context・comment・summary で取り直さない）。差分の指紋は change-watch のチェックと同じく、いつも API の差分から求める。"""
     path = _cache_path(repo, iid, mr)
     if path is not None and path.is_file():
         try:

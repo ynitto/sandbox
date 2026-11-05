@@ -7,10 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: api-watch を change-watch に名前を改め、Windows の設定例を足す（0.4.0）
+
+- フォルダも見るようになったので、api-watch を **change-watch** に改める。取得元が API でもフォルダでも、変化を見て渡す道具として名乗る。
+  フォルダは `tools/change-watch/`、コマンドは `change-watch`、パッケージは `changewatch`、入口は `change_watch.py`、
+  受け渡し先へ渡す環境変数・引数は `CHANGEWATCH_*`（`CHANGEWATCH_EVENT_FILE` など）、Dagu のワークフローの例は `dags/change-watch-*.example.yaml`、
+  キューの例は `change-watch-handlers`、設定と状態の既定の場所は `~/.config/change-watch/change-watch.yaml`・`~/.local/state/change-watch`
+- 乗り換え: `python3 tools/change-watch/install.py install` で入れ直し（古い `api-watch` は前の版の `install.py uninstall` か手で消す）、
+  設定と状態のフォルダを `api-watch` から `change-watch` へ移す（中身はそのまま使える）。Dagu のワークフローと受け渡し先の DAG は、
+  コマンドのパスと `APIWATCH_*` を `CHANGEWATCH_*` に書き換える。受け渡しの ID（`aw_…`）は変わらない
+- `change-watch.windows.yaml.example` と README の「Windows のとき」に、Windows（ネイティブ）でフォルダと GitLab の issue を見る設定・
+  Dagu のワークフロー・`ack` の例を足す
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: プラグインと設定・ワークフローの例を change-watch の名前に合わせる
+  （`change-watch-issue-agent.yaml.example`・`examples/gitlab-idd/change-watch-idd.yaml.example`・`change-watch-auto-close.yaml.example` など）
 ### gitlab-mr-review-agent: 決めたリポジトリの MR を kiro-cli にレビューさせ、直った指摘を閉じる（0.1.0）
 
 - `tools/gitlab-mr-review-agent/` を足す。gitlab-issue-agent と同じく、MR の取得・変化の検知・実行待ち・再試行・処理し終えた状態・
-  1 セッションの排他は api-watch、起動と kiro-cli の実行は Dagu（`harness.run`、provider: kiro）が受け持つ
+  1 セッションの排他は change-watch、起動と kiro-cli の実行は Dagu（`harness.run`、provider: kiro）が受け持つ
 - **重ねてレビューしない**: head のコミット・ドラフト・対象ブランチが変わったときだけレビューし、コメント・返信・ラベルでは起こさない。
   レビューし終えたコミットを覚え、同じコミットは流さない。レビュー中に積まれたコミットは次の取得でレビューする（チェック
   `gitlab_mr.changed_during_review`）。指摘とまとめに見えない印を付け、やり直しでも同じ指摘・同じ差分のまとめを書かない
@@ -29,10 +42,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   git に環境変数で渡し、設定ファイルに残さず、ほかのホストには渡さない
 - **Windows**: git に `core.quotepath=false`・`core.longpaths=true` を渡し、フォルダの比較で大文字小文字・短い名前の違いを吸収する。
   Windows の CI で試験を回す
-- `gitlab_mr.py`: api-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
+- `gitlab_mr.py`: change-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
   `prepare` / `context` / `show` / `comment` / `resolve` / `summary`。標準ライブラリと git だけ
-- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`gitlab-mr-review-agent.env.example`、
-  Dagu のワークフローの例 `api-watch-mr-review.yaml.example`（`handle` で kiro-cli を動かす。試験で Dagu と同じ順に本物の api-watch へ流す）
+- 設定の例: `change-watch.yaml.example`・`prompt.md.example`・`gitlab-mr-review-agent.env.example`、
+  Dagu のワークフローの例 `change-watch-mr-review.yaml.example`（`handle` で kiro-cli を動かす。試験で Dagu と同じ順に本物の change-watch へ流す）
 - 設計: `docs/designs/gitlab-mr-review-agent-design.md`
 
 ### gitlab-idd: ワーカーの作業用フォルダを、既にある作業コピーの git worktree にできる・Windows でも動く（4.4.0）

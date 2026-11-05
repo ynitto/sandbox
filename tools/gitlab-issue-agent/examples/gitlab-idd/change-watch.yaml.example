@@ -1,0 +1,64 @@
+# gitlab-idd スキルでイシューを処理させる change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+#
+# gitlab-idd のラベル（status:*）が付いたイシューが変わったら、エージェント CLI に gitlab-idd スキルでそのイシューを処理させる:
+#   status:open / status:needs-rework / status:needs-clarification   → ワーカーロール（実装・ブランチ・MR・報告）
+#   status:review-ready                                             → レビュアーロール（受け入れ条件の評価・承認か差し戻し）
+# ロールはプロンプトの {{ event.record | gitlab_idd_role }} がラベルから選ぶので、ルールもワークフローも 1 つで済む。
+# ワーカーが status:review-ready にするとレビュアーが、レビュアーが差し戻す（status:needs-rework）とワーカーがもう一度起きる。
+# status:in-progress / status:approved / status:done などは filter で外れるので流さない（マージは人が行う）。
+#
+# Dagu のワークフロー（change-watch-idd）は change-watch-idd.yaml.example をコピーして置く（README の「gitlab-idd スキルと繋ぐ」）。
+version: 1
+state_dir: ~/.local/state/change-watch
+
+sources:
+  gitlab-issues:
+    # change-watch は GitLab の URL（https://gitlab.example.com）の接続を使う。gitlab-idd は同じ connections.yaml の
+    # default（プロジェクトの URL）を使うので、ラベルを分ける（connections.yaml.example）
+    connection: gitlab:watch
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, scope: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "*/15 * * * *"   # 15 分ごとの予定（ワークフローは毎分起動。予定の時刻のあとに取得済みなら問い合わせない）
+    jitter_sec: 120
+    busy_wait_sec: 600
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+
+rules:
+  idd:
+    source: gitlab-issues
+    id: iid
+    # ラベル（ロールの切り替わり）・コメント（clarification への回答・差し戻しの理由）・本文の変化で起こす
+    watch: [title, labels, "assignees[*].username", user_notes_count, description]
+    unordered: [labels]
+    on: [appeared, changed]
+    initial: baseline          # 初回は今あるイシューを覚えるだけ（既存の status:open を一斉に流したいなら emit）
+    filter:
+      any:
+        - { path: labels, op: contains, value: "status:open" }
+        - { path: labels, op: contains, value: "status:needs-rework" }
+        - { path: labels, op: contains, value: "status:needs-clarification" }
+        - { path: labels, op: contains, value: "status:review-ready" }
+    targets:
+      - name: run
+        external: true
+        input_template: idd.prompt.md        # この設定ファイルからの相対パス（~/.config/change-watch/idd.prompt.md）
+        refresh:
+          url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ event.record_id }}"
+        # 実行のあとで次のどちらかなら、処理し終えたのは実行前の状態までにして、次の取得でもう一度流す:
+        #   - 実行中に自分以外の人が書き込んだ
+        #   - エージェントがロールを変えた（ワーカーが status:review-ready に → レビュアーへ、差し戻し → ワーカーへ）
+        # それ以外のエージェント自身の書き込み（コメント・status:needs-clarification への変更など）では流さない
+        handled_before_if:
+          - check: gitlab.others_acted
+          - check: gitlab_idd.role_changed
+        lock: agent-session
+        timeout_sec: 4200      # gitlab-idd のワーカーは実装ループ（最大 5 回）を回すので長めに
+        max_attempts: 3
+        retry_backoff_sec: 300
+        order: none

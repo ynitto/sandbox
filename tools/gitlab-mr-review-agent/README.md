@@ -4,13 +4,13 @@
 kiro-cli は差分の行に指摘のスレッドを立て、次のコミットで直っていればそのスレッドに返信して**解決にする**。
 **コミットが変わっていない MR は二度レビューしない**（コメント・返信・ラベルの変更では起こさない）。
 
-MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-watch/README.md) が、起動と kiro-cli の実行は
+MR の取得・変化の検知・実行待ち・再試行は [change-watch](../change-watch/README.md) が、起動と kiro-cli の実行は
 [Dagu](https://github.com/dagu-org/dagu)（v2.25 以降。`harness.run` を使う）が受け持つ。[gitlab-issue-agent](../gitlab-issue-agent/README.md) と
-同じ作りで、このフォルダには、MR に固有の部分を足す `gitlab_mr.py`（api-watch のプラグインで、kiro-cli が GitLab に読み書きする
+同じ作りで、このフォルダには、MR に固有の部分を足す `gitlab_mr.py`（change-watch のプラグインで、kiro-cli が GitLab に読み書きする
 コマンドも兼ねる）と、設定の例がある。
 
 ```
- Dagu: api-watch-mr-review（毎分起動。1 回の起動で 1 件をレビューする。GitLab への問い合わせは 15 分ごと）
+ Dagu: change-watch-mr-review（毎分起動。1 回の起動で 1 件をレビューする。GitLab への問い合わせは 15 分ごと）
    fetch      開いている MR を全ページ取得
    evaluate   前回と比べて、head のコミット・ドラフト・対象ブランチが変わった MR を拾う
    claim      MR を 1 件取り直す。レビューし終えたコミットと同じ・差分の中身が前にレビューしたときと同じ（リベースなど）・
@@ -47,21 +47,21 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
    cp tools/gitlab-mr-review-agent/gitlab-mr-review-agent.env.example ~/.config/dagu/gitlab-mr-review-agent.env
    ```
 
-3. api-watch を入れる。
+3. change-watch を入れる。
 
    ```bash
-   python3 tools/api-watch/install.py install
+   python3 tools/change-watch/install.py install
    ```
 
-4. api-watch の設定を置く。レビューする MR を絞るなら、設定の取得元の `query`（例: `target_branch: main`）とルールの `filter` に書く。
+4. change-watch の設定を置く。レビューする MR を絞るなら、設定の取得元の `query`（例: `target_branch: main`）とルールの `filter` に書く。
    gitlab-issue-agent と同じ PC で動かすなら、両方の `sources` と `rules` を 1 つの設定ファイルにまとめる。
 
    ```bash
-   mkdir -p ~/.config/api-watch
+   mkdir -p ~/.config/change-watch
    ```
 
    ```bash
-   cp tools/gitlab-mr-review-agent/api-watch.yaml.example ~/.config/api-watch/api-watch.yaml
+   cp tools/gitlab-mr-review-agent/change-watch.yaml.example ~/.config/change-watch/change-watch.yaml
    ```
 
 5. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-mr-review-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
@@ -73,17 +73,17 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
        token: ${GITLAB_TOKEN}
    ```
 
-6. Dagu のワークフローを置く。`api-watch-mr-review.yaml.example` を `~/.config/dagu/dags/api-watch-mr-review.yaml` にコピーし、
+6. Dagu のワークフローを置く。`change-watch-mr-review.yaml.example` を `~/.config/dagu/dags/change-watch-mr-review.yaml` にコピーし、
    `handle` の作業フォルダ（`working_dir`）を 2 の `MR_REVIEW_WORKTREE` と同じにして、`/home/you` を自分のものに直す。
-   kiro-cli はこの PC に入れて、ログインしておく。毎日の整理のワークフローは api-watch の例をそのまま置く。
+   kiro-cli はこの PC に入れて、ログインしておく。毎日の整理のワークフローは change-watch の例をそのまま置く。
    Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
-   cp tools/gitlab-mr-review-agent/api-watch-mr-review.yaml.example ~/.config/dagu/dags/api-watch-mr-review.yaml
+   cp tools/gitlab-mr-review-agent/change-watch-mr-review.yaml.example ~/.config/dagu/dags/change-watch-mr-review.yaml
    ```
 
    ```bash
-   cp tools/api-watch/dags/api-watch-maintenance.example.yaml ~/.config/dagu/dags/api-watch-maintenance.yaml
+   cp tools/change-watch/dags/change-watch-maintenance.example.yaml ~/.config/dagu/dags/change-watch-maintenance.yaml
    ```
 
 7. 環境変数を読み込んで、`prepare` でレビュー用の作業フォルダを作る（リポジトリが無ければ、ここで 1 回だけ取ってくる。ファイルの中身は
@@ -114,7 +114,7 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 | kiro-cli 自身の指摘・解決 | しない |
 | マージ・クローズされた | しない（待つあいだにマージされたものも取り直して飛ばす） |
 
-- レビューし終えたコミットは api-watch が覚える。同じコミットのあいだは、何度取得しても流さない
+- レビューし終えたコミットは change-watch が覚える。同じコミットのあいだは、何度取得しても流さない
 - 「レビューし終えたか」は、MR の差分の中身（ファイルの名前と、足した行・消した行）でも見る。中身が同じなら、head のコミットが
   変わっていても（リベース・マージトレイン）、kiro-cli を起こさずに飛ばす。GitLab が中身を返さないほど大きなファイルがある MR は、
   中身を比べられないので、リベースでもレビューする
@@ -138,7 +138,7 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 
 - MR の一覧は **15 分に 1 回**（予定の時刻から 0〜5 分ずらす）。100 件ごとに 1 リクエスト
 - 1 件を流す前に、差分の中身をレビューし終えているかを確かめる（差分とノートを読む。100 件ごとに 1 リクエスト）
-- 1 件をレビューするたびに、api-watch が実行の前後に MR を取り直す 2 回と、レビュー中のコミットの追加を確かめる 1 回。
+- 1 件をレビューするたびに、change-watch が実行の前後に MR を取り直す 2 回と、レビュー中のコミットの追加を確かめる 1 回。
   ほかに kiro-cli が使うコマンドが、MR・スレッド・ノートを読み、指摘・返信・まとめを書く
 - 差分・前回のコミットからの差分・ファイルの中身は、作業フォルダから git で読み、API には問い合わせない。MR の差分の一覧（API）は
   1 回のレビューで 1 回だけ取り、`comment`・`summary` は取ったものを使い回す
@@ -148,11 +148,11 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 - 作業フォルダが使えない（`MR_REVIEW_REPO_DIR` が空・git が無い・取ってこられない）ときは、差分もファイルも API から読む
 - 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）は問い合わせない
 
-予定は api-watch の設定の取得元の `schedule`、ずらす幅は `jitter_sec` で変えられる。
+予定は change-watch の設定の取得元の `schedule`、ずらす幅は `jitter_sec` で変えられる。
 
 ## 1 セッションだけにする仕組み
 
-kiro-cli は同時に 1 つだけ動く。api-watch の設定の `lock`（例は `agent-session`）が同じ受け渡し先どうしは、gitlab-issue-agent のワークフローと
+kiro-cli は同時に 1 つだけ動く。change-watch の設定の `lock`（例は `agent-session`）が同じ受け渡し先どうしは、gitlab-issue-agent のワークフローと
 またいでも同時に 1 つだけ実行し、空いていなければ次の起動でもう一度試す。1 件の上限は `timeout_sec`（例は 1800 秒）。
 
 ## 失敗したとき
@@ -162,16 +162,16 @@ kiro-cli が 0 以外で終わる・時間切れ・止められると失敗に�
 
 | したいこと | コマンド |
 |---|---|
-| 失敗している・打ち切ったレビューを見る | `api-watch --config ~/.config/api-watch/api-watch.yaml events --rule mr-review --status send_failed,dead` |
-| 打ち切ったレビューをすぐやり直す | `api-watch --config ~/.config/api-watch/api-watch.yaml retry <受け渡しの ID>` |
-| レビューし終えた MR をもう一度レビューさせる | `api-watch --config ~/.config/api-watch/api-watch.yaml forget-handled --rule mr-review 12` と、MR のまとめのコメントを消す |
+| 失敗している・打ち切ったレビューを見る | `change-watch --config ~/.config/change-watch/change-watch.yaml events --rule mr-review --status send_failed,dead` |
+| 打ち切ったレビューをすぐやり直す | `change-watch --config ~/.config/change-watch/change-watch.yaml retry <受け渡しの ID>` |
+| レビューし終えた MR をもう一度レビューさせる | `change-watch --config ~/.config/change-watch/change-watch.yaml forget-handled --rule mr-review 12` と、MR のまとめのコメントを消す |
 
 ## kiro-cli とプロンプト
 
 - kiro-cli は Dagu の `harness.run` で動かす（ワークフローの `handle`）。プロンプトは引数で渡し（`prompt: "${INPUT}"`）、
   `trust_all_tools: true`（`--trust-all-tools`）で確認なしにコマンドを実行させる。Dagu の `harness.run` が使えない版なら、
   `handle` のコメントにある `action: exec` で kiro-cli を直接呼ぶ
-- プロンプトは `~/.config/dagu/gitlab-mr-review-agent.prompt.md`（api-watch の設定の `input_template`）。何を指摘するか・まとめに何を書くかは
+- プロンプトは `~/.config/dagu/gitlab-mr-review-agent.prompt.md`（change-watch の設定の `input_template`）。何を指摘するか・まとめに何を書くかは
   ここで変える。`{{ event.record.iid }}`・`{{ event.record.title }}`・`{{ event.record.web_url }}`・`{{ delivery.attempt }}`（何回目か）と、
   プラグインの `{{ event | gitlab_mr_since }}`（前回レビューしたコミット）・`{{ event | gitlab_mr_kind }}`（初めて / 再レビュー）が使える
 - GitLab への読み書きは、プロンプトに書いた `gitlab_mr.py` のコマンドだけで行わせる
@@ -206,7 +206,7 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 ## Windows で使うとき
 
 - `gitlab-mr-review-agent.env` の `MR_REVIEW_CLI` は `python C:/Users/<名前>/.local/share/gitlab-mr-review-agent/gitlab_mr.py` のように書く
-- api-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `api-watch.pyz` のフルパスにする
+- change-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `change-watch.pyz` のフルパスにする
 - `MR_REVIEW_REPO_DIR`・`MR_REVIEW_WORKTREE` と、ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く
 - git は Git for Windows（2.31 以降）。長いパス（260 字を超える）と日本語のファイル名は、このツールが git に設定を渡して扱う。
   HTTPS のリモートは、その PC の資格情報マネージャーか、GitLab と同じホストならトークンで取る
@@ -217,9 +217,9 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 |---|---|
 | `~/.config/dagu/gitlab-mr-review-agent.env` | GitLab の URL・リポジトリ・トークン・`gitlab_mr.py` の呼び方・手元のリポジトリ・レビュー用の作業フォルダ |
 | `~/.github/connections.yaml` | GitLab の接続（値は上の環境変数から取る） |
-| `~/.config/api-watch/api-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
+| `~/.config/change-watch/change-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
 | `~/.config/dagu/gitlab-mr-review-agent.prompt.md` | プロンプト（レビューの観点） |
-| `~/.config/dagu/dags/api-watch-mr-review.yaml` | Dagu のワークフロー（kiro-cli のフラグ・作業フォルダは `handle`） |
+| `~/.config/dagu/dags/change-watch-mr-review.yaml` | Dagu のワークフロー（kiro-cli のフラグ・作業フォルダは `handle`） |
 
 ## テスト
 

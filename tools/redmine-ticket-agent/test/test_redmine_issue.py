@@ -1,6 +1,6 @@
 """redmine-ticket-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-redmine_issue.py のチェック（redmine.not_mine）と close、設定の例（api-watch.yaml.example）をそのまま本物の api-watch で
+redmine_issue.py のチェック（redmine.not_mine）と close、設定の例（change-watch.yaml.example）をそのまま本物の change-watch で
 Dagu のワークフローと同じ順（fetch → evaluate → work）に回したときの流れを確かめる。Redmine は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -24,8 +24,8 @@ except ImportError:      # pragma: no cover
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "redmine_issue.py"
-EXAMPLE = HERE.parent / "api-watch.yaml.example"
-API_WATCH = HERE.parent.parent / "api-watch" / "api_watch.py"
+EXAMPLE = HERE.parent / "change-watch.yaml.example"
+CHANGE_WATCH = HERE.parent.parent / "change-watch" / "change_watch.py"
 spec = importlib.util.spec_from_file_location("redmine_issue", PLUGIN)
 ri = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ri)
@@ -225,7 +225,7 @@ class CloseTest(unittest.TestCase):
         self.rm.put(make_issue(3, description="本文に自動完了"))
         ev = Path(tempfile.mkdtemp()) / "ev.json"
         ev.write_text(json.dumps({"record": self.rm.issues[3]}), encoding="utf-8")
-        env = {**os.environ, "REDMINE_URL": self.rm.url, "REDMINE_API_KEY": KEY, "APIWATCH_EVENT_FILE": str(ev)}
+        env = {**os.environ, "REDMINE_URL": self.rm.url, "REDMINE_API_KEY": KEY, "CHANGEWATCH_EVENT_FILE": str(ev)}
         r = subprocess.run([sys.executable, str(PLUGIN), "close", "--status", "完了", "--note", "済み"],
                            env=env, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -237,10 +237,10 @@ class CloseTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 設定の例をそのまま本物の api-watch で回す
+# 設定の例をそのまま本物の change-watch で回す
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(API_WATCH.is_file() and yaml is not None, "api-watch か PyYAML が無い")
+@unittest.skipUnless(CHANGE_WATCH.is_file() and yaml is not None, "change-watch か PyYAML が無い")
 class FlowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -255,7 +255,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(target["command"][1], "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py")
         target["command"][0:2] = [sys.executable, str(PLUGIN)]
         target["retry_backoff_sec"] = 0
-        self.cfg = self.tmp / "api-watch.yaml"
+        self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.yaml"
         self.conn.write_text("redmine:\n  - label: default\n    url: ${REDMINE_URL}\n    token: ${REDMINE_API_KEY}\n",
@@ -263,7 +263,7 @@ class FlowTest(unittest.TestCase):
         self.env = {**os.environ, "REDMINE_URL": self.rm.url, "REDMINE_API_KEY": KEY}
 
     def aw(self, *args) -> str:
-        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
+        r = subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
                             "--connections", str(self.conn), *args],
                            env=self.env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         self.assertIn(r.returncode, (0, 4), r.stdout + r.stderr)
@@ -329,11 +329,11 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(self.rm.notes[1], ["自動で完了にしました。"])
 
     def test_example_dag_runs(self):
-        sys.path.insert(0, str(API_WATCH.parent / "test"))
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
-        dag = HERE.parent / "api-watch-auto-close.yaml.example"
-        r = dagrun.run(dag, aw=[sys.executable, str(API_WATCH)], head=["--config", str(self.cfg)],
+        dag = HERE.parent / "change-watch-auto-close.yaml.example"
+        r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
                        paths={"/home/you/.local/share/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
                               "/home/you/.github/connections.yaml": str(self.conn)}, env=self.env)
         self.assertEqual(r, {"fetch": 0, "evaluate": 0, "work": 0})

@@ -1,17 +1,17 @@
-"""redmine-ticket-agent — Redmine のチケットのための api-watch のプラグインと、チケットを完了にするコマンド。
+"""redmine-ticket-agent — Redmine のチケットのための change-watch のプラグインと、チケットを完了にするコマンド。
 
 1 つのファイルを 2 つの使い方で使う:
 
-    api-watch --plugin <このファイル> ...      プラグインとして読み込む（register(api)）
+    change-watch --plugin <このファイル> ...      プラグインとして読み込む（register(api)）
         チェック redmine.not_mine            実行の直前に取り直したチケットの担当が自分（API キーの持ち主）でなければ真。
                                              受け渡し先の skip_if に書くと、待つ間に担当が替わったチケットを完了にしない
 
     python3 <このファイル> close --status 完了 --note "..."
-                                             api-watch の command の受け渡し先から呼ぶ。APIWATCH_EVENT_FILE のチケットに
+                                             change-watch の command の受け渡し先から呼ぶ。CHANGEWATCH_EVENT_FILE のチケットに
                                              コメントを書き、ステータスを変える（1 回の PUT）
 
-取得・変化の検知・実行待ち・再試行・実行の前後の取り直しは api-watch が受け持つ。どのチケットを対象にするか
-（自分が担当・タイトルや説明の文字列）は api-watch の設定（取得元の query とルールの filter）に書く。
+取得・変化の検知・実行待ち・再試行・実行の前後の取り直しは change-watch が受け持つ。どのチケットを対象にするか
+（自分が担当・タイトルや説明の文字列）は change-watch の設定（取得元の query とルールの filter）に書く。
 close は Redmine の URL と API キーを環境変数 REDMINE_URL / REDMINE_API_KEY から読む（Dagu ならワークフローの dotenv に書いた .env）。
 標準ライブラリだけで動く。設計は docs/designs/redmine-ticket-agent-design.md。
 """
@@ -25,14 +25,14 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-# 終了コード（api-watch の work は 0 を完了、それ以外を失敗として、あとでやり直す）
+# 終了コード（change-watch の work は 0 を完了、それ以外を失敗として、あとでやり直す）
 OK = 0
 FAILED = 1
 USAGE = 2
 
 
 # ---------------------------------------------------------------------------
-# プラグイン（api-watch --plugin で読み込む）
+# プラグイン（change-watch --plugin で読み込む）
 # ---------------------------------------------------------------------------
 
 def _base_url(ctx) -> str:
@@ -46,7 +46,7 @@ def not_mine(ctx) -> bool:
     """取り直したチケットの担当（assigned_to.id）が自分でなければ真（skip_if に書く）。
 
     自分は options.user_id、無ければ GET {url}/users/current.json（API キーの持ち主）。担当がグループのときも、
-    自分の ID と違うので真（完了にしない）。Redmine に届かなければ例外のまま返し、api-watch が skip_if を
+    自分の ID と違うので真（完了にしない）。Redmine に届かなければ例外のまま返し、change-watch が skip_if を
     偽とみなす（取得の query で自分の担当に絞っているので、実行する側に倒してよい）。
 
     options:
@@ -73,7 +73,7 @@ def register(api) -> None:
 
 
 # ---------------------------------------------------------------------------
-# close（api-watch の command の受け渡し先から呼ぶ）
+# close（change-watch の command の受け渡し先から呼ぶ）
 # ---------------------------------------------------------------------------
 
 class RedmineError(Exception):
@@ -166,18 +166,18 @@ def _read_note(args) -> str:
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8")     # Windows の cp932 / cp1252 でも日本語のまま出す（api-watch は UTF-8 で読む）
+            stream.reconfigure(encoding="utf-8")     # Windows の cp932 / cp1252 でも日本語のまま出す（change-watch は UTF-8 で読む）
         except (AttributeError, ValueError):
             pass
     p = argparse.ArgumentParser(prog="redmine_issue.py", description="Redmine のチケットにコメントしてステータスを変える")
     sub = p.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("close", help="APIWATCH_EVENT_FILE のチケットにコメントし、ステータスを変える")
+    c = sub.add_parser("close", help="CHANGEWATCH_EVENT_FILE のチケットにコメントし、ステータスを変える")
     c.add_argument("--status", required=True, help="変えるステータスの名前か ID（例: 完了・5）")
     g = c.add_mutually_exclusive_group(required=True)
     g.add_argument("--note", help="コメントする文")
     g.add_argument("--note-file", help="コメントする文のファイル（UTF-8）")
-    c.add_argument("--event-file", default=os.environ.get("APIWATCH_EVENT_FILE"),
-                   help="イベントの JSON（既定は環境変数 APIWATCH_EVENT_FILE）")
+    c.add_argument("--event-file", default=os.environ.get("CHANGEWATCH_EVENT_FILE"),
+                   help="イベントの JSON（既定は環境変数 CHANGEWATCH_EVENT_FILE）")
     args = p.parse_args(argv)
 
     url, key = os.environ.get("REDMINE_URL", ""), os.environ.get("REDMINE_API_KEY", "")
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         print("環境変数 REDMINE_URL と REDMINE_API_KEY を設定してください", file=sys.stderr)
         return USAGE
     if not args.event_file:
-        print("イベントの JSON がありません（api-watch から呼ぶか、--event-file を付けてください）", file=sys.stderr)
+        print("イベントの JSON がありません（change-watch から呼ぶか、--event-file を付けてください）", file=sys.stderr)
         return USAGE
     try:
         note = _read_note(args)

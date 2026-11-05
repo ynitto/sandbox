@@ -1,0 +1,68 @@
+# redmine-ticket-agent の Dagu のワークフロー（~/.config/dagu/dags/change-watch-auto-close.yaml にコピーして使う）。
+# 毎分起動する: fetch → evaluate（filter に当たるチケットを拾う）→ work（取り直し、まだ当たれば redmine_issue.py close）。
+# Redmine にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
+# command は install.py install が置いた change-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
+# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+description: "redmine-my-issues を取得し、ルール auto-close で判定して、当たったチケットを完了にする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/dagu/redmine-ticket-agent.env"
+steps:
+  - name: fetch
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "fetch"
+        - "--source"
+        - "redmine-my-issues"
+    timeout_sec: 1020            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec（300）
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      backoff: true
+      max_interval_sec: 600
+      exit_code: [3]
+  - name: evaluate
+    depends: [fetch]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "evaluate"
+        - "--rule"
+        - "auto-close"
+    timeout_sec: 600
+    retry_policy:
+      limit: 2
+      interval_sec: 10
+  - name: work
+    depends: [evaluate]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "work"
+        - "--rule"
+        - "auto-close"
+    # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない

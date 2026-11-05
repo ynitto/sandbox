@@ -1,7 +1,7 @@
 # gitlab-mr-review-agent 設計
 
 決めた GitLab のリポジトリの MR を、エージェント CLI（kiro-cli）に **同時に 1 セッションだけ**レビューさせる。gitlab-issue-agent と同じく
-Dagu の定期実行と api-watch の上に組み、MR に固有の部分だけを足す。実装は `tools/gitlab-mr-review-agent/`（`gitlab_mr.py` と設定の例）、
+Dagu の定期実行と change-watch の上に組み、MR に固有の部分だけを足す。実装は `tools/gitlab-mr-review-agent/`（`gitlab_mr.py` と設定の例）、
 使い方は同フォルダの README。
 
 要件:
@@ -13,8 +13,8 @@ Dagu の定期実行と api-watch の上に組み、MR に固有の部分だけ�
 
 | 受け持ち | どこ | 何を |
 |---|---|---|
-| 取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他 | api-watch | 取得元 `gitlab-mrs`、ルール `mr-review`（`watch: [sha, draft, target_branch]`）、`external` の受け渡し先（`refresh`・`lock`・`handled_before_if`） |
-| 起動・kiro-cli の実行と停止・ログと実行履歴 | Dagu | ワークフロー `api-watch-mr-review`（`claim` → `render` → `harness.run`（provider: kiro）→ `finish`） |
+| 取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他 | change-watch | 取得元 `gitlab-mrs`、ルール `mr-review`（`watch: [sha, draft, target_branch]`）、`external` の受け渡し先（`refresh`・`lock`・`handled_before_if`） |
+| 起動・kiro-cli の実行と停止・ログと実行履歴 | Dagu | ワークフロー `change-watch-mr-review`（`claim` → `render` → `harness.run`（provider: kiro）→ `finish`） |
 | プロンプトの材料・レビュー中のコミットの追加 | `gitlab_mr.py`（プラグイン） | フィルタ `gitlab_mr_since` / `gitlab_mr_kind`、チェック `gitlab_mr.changed_during_review` |
 | GitLab への読み書き（レビューの中身） | `gitlab_mr.py`（コマンド） | `context` / `show` / `comment` / `resolve` / `summary`。kiro-cli がプロンプトの指示で呼ぶ |
 
@@ -34,7 +34,7 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 
 - **レビュー中のコミットの追加**: 実行のあとの取り直しをそのまま「処理し終えた」にすると、レビュー中に積まれたコミット B を見ないまま
   B を処理済みにしてしまう。`gitlab_mr.changed_during_review`（`handled_before_if`）が MR を取り直し、`sha` / `draft` / `target_branch` の
-  どれかが実行前と違えば真を返す。api-watch は実行前のコミット A までを処理済みにし、次の取得で B がイベントになる。kiro-cli はコメントしか
+  どれかが実行前と違えば真を返す。change-watch は実行前のコミット A までを処理済みにし、次の取得で B がイベントになる。kiro-cli はコメントしか
   書かないので、これらが変わるのは人の操作に限られ、自分の書き込みで真にはならない
 - `filter`（`state: opened` かつ `draft` が偽）は取り直したレコードにも当てる。待つ間にマージ・クローズ・ドラフトに戻した MR は流さない。
   ドラフトを外すと `draft` の変化でイベントになり、処理し終えた状態が無い（または違う）のでレビューする
@@ -50,7 +50,7 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 - GitLab が中身を返さないファイル（`too_large` / `collapsed`）があれば比べられないので、head のコミットから求めた値にする
   （黙って見落とすより、リベースのたびにレビューするほうに倒す）
 - まとめの印は `sha=<head> diff=<指紋>`。指紋の無い古い印は、head が同じときだけ当てる
-- `skip_if` で飛ばしたとき、api-watch は処理し終えた状態を書き換えない（前にレビューしたコミットのまま）。次に中身が変わったときの
+- `skip_if` で飛ばしたとき、change-watch は処理し終えた状態を書き換えない（前にレビューしたコミットのまま）。次に中身が変わったときの
   `--since` はそのコミットになり、リベースで入った対象ブランチの変更は、次の絞り込みで落とす
 - 前回のコミットからの差分（compare）は、リベースしていると対象ブランチの変更が混ざる。`context` は MR の差分に出てくるファイルだけに絞る
   （MR が触っていて、対象ブランチでも変わったファイルの変更は残る）
@@ -64,7 +64,7 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 | `skip_if` のチェックが GitLab に届かない | 偽とみなして kiro-cli を起こすが、`context` が同じ判定で止める |
 | ドラフトにしてから戻す | 戻した時点の監視値が処理し終えた状態と同じなら飛ばす（違っても、中身が同じなら `skip_if` が飛ばす） |
 | コミットを続けて積む | 取得（15 分ごと）のあいだの変化は、最新のコミットで 1 回にまとまる |
-| kiro-cli が `summary` を書き忘れる | 処理し終えた状態は api-watch が持つので、同じコミットでは流れない。印による止めが効かないのは、処理し終えた状態が消えたときだけ |
+| kiro-cli が `summary` を書き忘れる | 処理し終えた状態は change-watch が持つので、同じコミットでは流れない。印による止めが効かないのは、処理し終えた状態が消えたときだけ |
 | 一覧から消えた MR | 観測値と処理し終えた状態は `removed_days`（既定 30 日）のあいだ残り、それまでに開き直せば同じ値として飛ばす。過ぎたら `skip_if` が止める |
 
 ## 3. 直った指摘を閉じる（要件 2）
@@ -81,21 +81,21 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 
 ## 4. 1 セッションの保証・失敗と再試行
 
-gitlab-issue-agent の §4・§5 と同じ（Dagu の 1 起動 1 件、api-watch の `lock`、期限切れでの取り直し、`retry_backoff_sec` の倍々、`max_attempts` で打ち切り）。
+gitlab-issue-agent の §4・§5 と同じ（Dagu の 1 起動 1 件、change-watch の `lock`、期限切れでの取り直し、`retry_backoff_sec` の倍々、`max_attempts` で打ち切り）。
 `lock` の名前を gitlab-issue-agent と同じ `agent-session` にすると、issue の処理と MR のレビューが同時に動かない。
 
 ## 5. GitLab への負荷
 
 | 呼び出し | 頻度 | リクエスト数 |
 |---|---|---|
-| MR の一覧（api-watch） | 15 分ごとの予定のあと 1 回。0〜300 秒ずらす | MR 100 件ごとに 1 |
+| MR の一覧（change-watch） | 15 分ごとの予定のあと 1 回。0〜300 秒ずらす | MR 100 件ごとに 1 |
 | 同じコミットのイベント | 来るたび | 0（`claim` が取り直さずに飛ばす） |
 | コミットが変わったイベント（`skip_if`） | 来るたび | 取り直し 1 と、差分・ノートの読み取り（それぞれ 100 件ごとに 1）。中身が同じなら kiro-cli は起きない |
-| 1 件のレビュー（api-watch） | 流すたび | 3（実行の前後の取り直しと、`changed_during_review`） |
+| 1 件のレビュー（change-watch） | 流すたび | 3（実行の前後の取り直しと、`changed_during_review`） |
 | 1 件のレビュー（kiro-cli のコマンド） | 流すたび | `context` で 4（MR・差分の一覧・ノート・スレッド。それぞれ 100 件ごとに 1）、`comment` 1 件ごとに 3、`resolve` 1 件ごとに 3、`summary` 3、`show` 0 |
 | git のリモート | MR の今のコミットが作業フォルダに無いときだけ | `git fetch` 1 回（その MR の head と対象ブランチ。足りないオブジェクトだけ）＋ファイルの中身を取り出すときの部分クローンの取り寄せ |
 
-kiro-cli のコマンドは api-watch の要求の間隔・失敗の待ちを分け合わない（別プロセスで、トークンは環境変数から読む）。回数は 1 件のレビューの中に
+kiro-cli のコマンドは change-watch の要求の間隔・失敗の待ちを分け合わない（別プロセスで、トークンは環境変数から読む）。回数は 1 件のレビューの中に
 限られ、同時に 1 セッションなので、集中はしない。
 
 ### 5.1 手元のリポジトリとレビュー用の作業ツリー
@@ -123,7 +123,7 @@ kiro-cli のコマンドは api-watch の要求の間隔・失敗の待ちを分
   `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n=http.extraHeader` / `GIT_CONFIG_VALUE_n=Authorization: Basic …`（`oauth2:<トークン>`）を
   git を呼ぶたびの環境変数で渡す。`.git/config` にもコマンド行にも残さず、ほかのホスト（フォークの取得元など）には渡さない。
   `GIT_TERMINAL_PROMPT=0` と標準入力を閉じて、認証に失敗しても入力待ちで止まらない
-- **差分の一覧（API）の保存**: 差分の指紋は `skip_if`（api-watch の中のチェック）と同じ値にしたいので、いつも API の差分から求める
+- **差分の一覧（API）の保存**: 差分の指紋は `skip_if`（change-watch の中のチェック）と同じ値にしたいので、いつも API の差分から求める
   （git の差分は名前の変更の見分け方・大きなファイルの扱いが GitLab と食い違いうる）。1 回のレビューで 1 回だけ取り、
   `<git の共通フォルダ>/mr-review-cache/<iid>-<head>-<base>.json` に置いて `comment`（行の位置）と `summary`（指紋）が使い回す。
   head か差分の元が変われば取り直す
@@ -135,7 +135,7 @@ kiro-cli のコマンドは api-watch の要求の間隔・失敗の待ちを分
   出力は UTF-8 で読み、標準出力・標準エラーも UTF-8 にする（cp932 の端末でも日本語を出す）
 - フォルダの比較は `resolve()` と `normcase` で行う（大文字小文字・8.3 形式の短い名前・`/` と `\` の違いを吸収する）
 - `core.autocrlf` が有効でも、差分・`show` は git のオブジェクトから読むので改行は変わらない（取り出した作業ツリーのファイルだけが CRLF になる）
-- 試験は Windows の CI でも回す（偽の GitLab・手元の bare リポジトリ・本物の api-watch）
+- 試験は Windows の CI でも回す（偽の GitLab・手元の bare リポジトリ・本物の change-watch）
 
 ## 6. 採らなかった案
 

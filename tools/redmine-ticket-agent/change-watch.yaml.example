@@ -1,0 +1,80 @@
+# redmine-ticket-agent の change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+#
+# 自分が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むものに、決めた文をコメントしてステータスを完了にする。
+# Dagu のワークフロー 1 本（change-watch-auto-close。change-watch-auto-close.yaml.example をコピーして置く）で動く。
+# 毎分起動し、取得は下の schedule どおり:
+#   fetch → evaluate（filter に当たるチケットを拾う）→ work（チケットを取り直し、まだ当たれば redmine_issue.py close）
+# change-watch を呼ぶときは毎回 --plugin <redmine_issue.py のパス> を付ける（例のワークフローにも付けてある）。
+#
+# Redmine の URL と API キーは ~/.config/dagu/redmine-ticket-agent.env にだけ書く。
+# connections.yaml の redmine は次のように書き、値はその環境変数から取る:
+#
+#   redmine:
+#     - label: default
+#       url: ${REDMINE_URL}
+#       token: ${REDMINE_API_KEY}
+version: 1
+state_dir: ~/.local/state/change-watch
+
+sources:
+  redmine-my-issues:
+    connection: redmine
+    request:
+      url: "{{ conn.url }}/issues.json"
+      headers:
+        X-Redmine-API-Key: "{{ conn.token }}"
+      # 自分（API キーの持ち主）が担当する、未完了のチケット。プロジェクトを絞るなら project_id: my-project を足す
+      query: { assigned_to_id: me, status_id: open, sort: id }
+    records: issues
+    key: id
+    pagination: { type: offset, size_param: limit, size: 100, total_path: total_count }
+    schedule: "*/15 * * * *"   # Redmine に問い合わせる予定（この PC の時刻）。15 分ごと
+    jitter_sec: 300            # 予定の時刻から 0〜5 分ずらす
+    failure_backoff_sec: 300   # 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）問い合わせない
+    rate_limit: { min_interval_sec: 1, group: redmine }
+
+rules:
+  auto-close:
+    source: redmine-my-issues
+    id: id
+    # 対象のチケット: タイトル（subject）か説明（description）に「自動完了」を含む。
+    # 実行の直前に取り直したチケットにも当てはめるので、待つ間に文字列を消した・完了にしたチケットはそのまま
+    filter:
+      all:
+        - any:
+            - { path: subject, op: contains, value: 自動完了 }
+            - { path: description, op: contains, value: 自動完了 }
+        - { path: status.is_closed, op: falsy }       # 完了のステータスでない（Redmine 5.1 より前は項目が無く、常に当たる）
+    # 文字列を複数にする・大文字小文字を区別しないなら regex にする:
+    #   - { path: subject, op: regex, value: "(?i)(自動完了|auto-close)" }
+    watch: [subject, description, status.id, assigned_to.id]
+    on: [appeared, changed]
+    # 初回: いま当たっているチケットも完了にする（emit）。これから当たるものだけにするなら baseline
+    initial: emit
+    # 文字列などのルールを直したとき、直したルールで当たるようになったチケットも完了にする（rebaseline だと基準にし直すだけで、処理しない）
+    on_rule_change: continue
+    targets:
+      - name: close
+        # コメントする文とステータス（名前か ID）。python3 と redmine_issue.py はフルパスで書く（~ は展開しない）
+        command:
+          - python3
+          - /home/you/.local/share/redmine-ticket-agent/redmine_issue.py
+          - close
+          - --status
+          - 完了
+          - --note
+          - 自動で完了にしました。
+          # 長い文はファイルにして --note-file /home/you/.config/change-watch/redmine-close-note.md でもよい
+        # 実行の前後にチケットを 1 件取り直す（ヘッダーは取得元のもの）。前: 最新の内容で filter を当て直す。
+        # 後: その状態を処理し終えた状態にする（自分のコメントでもう一度起きない）
+        refresh:
+          url: "{{ conn.url }}/issues/{{ event.record_id }}.json"
+          records: issue
+        # 待つ間に担当が自分から外れたチケットは完了にしない
+        skip_if:
+          - check: redmine.not_mine
+            # options: { user_id: 12 }     # 既定は API キーの持ち主（/users/current.json）
+        timeout_sec: 120
+        max_attempts: 3        # 尽きたら打ち切り、次の変化で拾い直す
+        retry_backoff_sec: 300 # 失敗したら、この秒数（1 回ごとに倍）を過ぎたあとの起動で再試行
+        order: none

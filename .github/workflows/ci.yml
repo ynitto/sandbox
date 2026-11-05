@@ -78,12 +78,12 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
-          # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、api-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
-          # 本物の api-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
+          # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、change-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
+          # 本物の change-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/gitlab-issue-agent/test
           # gitlab-mr-review-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_mr.py のコマンド（指摘・解決・まとめの重複防止）と、
-          # 設定の例を本物の api-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
+          # 設定の例を本物の change-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
           - package: gitlab-mr-review-agent
             suites: tools/gitlab-mr-review-agent/test
           # gitlab-idd スキルの作業用フォルダ（gl.py workspace-create / workspace-remove）。手元の bare リポジトリで、
@@ -91,13 +91,13 @@ jobs:
           - package: gitlab-idd
             suites: .github/skills/gitlab-idd/tests
           # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
-          # 本物の api-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
+          # 本物の change-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
           - package: redmine-ticket-agent
             suites: tools/redmine-ticket-agent/test
-          # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
+          # change-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
           # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
-          - package: api-watch
-            suites: tools/api-watch/test
+          - package: change-watch
+            suites: tools/change-watch/test
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
           # Python で順に流す（Dagu 本体は入れない）。同梱の chain.json の検査もここで回す。
           - package: dagu-workflow-builder
@@ -141,7 +141,7 @@ jobs:
             echo "::endgroup::"
           done
 
-  # gitlab-issue-agent は Windows でもそのまま動かす（api-watch のプラグインと、api-watch をワークフローの順で呼ぶ流れ）。
+  # gitlab-issue-agent は Windows でもそのまま動かす（change-watch のプラグインと、change-watch をワークフローの順で呼ぶ流れ）。
   # Windows の実機で確かめる。
   gitlab-issue-agent-windows:
     name: python (gitlab-issue-agent, windows)
@@ -155,7 +155,7 @@ jobs:
       - name: unittest
         run: python -m unittest discover -s tools/gitlab-issue-agent/test
 
-  # api-watch のプラグインのほかのもの（MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
+  # change-watch のプラグインのほかのもの（MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
   # （git のパス・改行・一時フォルダ・読み取り専用のファイルの削除）。
   agent-plugins-windows:
     name: python (${{ matrix.package }}, windows)
@@ -181,9 +181,9 @@ jobs:
       - name: unittest
         run: python -m unittest discover -s ${{ matrix.suites }}
 
-  # api-watch も Windows でそのまま動かす（SQLite のロック・プロセスの生存確認・強制終了からの引き継ぎ）。
-  api-watch-windows:
-    name: python (api-watch, windows)
+  # change-watch も Windows でそのまま動かす（SQLite のロック・プロセスの生存確認・強制終了からの引き継ぎ）。
+  change-watch-windows:
+    name: python (change-watch, windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -194,7 +194,7 @@ jobs:
       - name: 依存（YAML の設定の読み込み）
         run: python -m pip install pyyaml
       - name: unittest
-        run: python -m unittest discover -s tools/api-watch/test
+        run: python -m unittest discover -s tools/change-watch/test
 
   dashboard:
     name: dashboard (npm test)

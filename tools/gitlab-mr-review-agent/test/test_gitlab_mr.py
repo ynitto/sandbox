@@ -1,7 +1,7 @@
 """gitlab-mr-review-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_mr.py のフィルタ・チェック・エージェントが使うコマンドと、設定の例（api-watch.yaml.example・prompt.md.example）を
-そのまま本物の api-watch で Dagu のワークフローと同じ順（fetch → evaluate → claim → render → 処理 → finish --exit-code）に
+gitlab_mr.py のフィルタ・チェック・エージェントが使うコマンドと、設定の例（change-watch.yaml.example・prompt.md.example）を
+そのまま本物の change-watch で Dagu のワークフローと同じ順（fetch → evaluate → claim → render → 処理 → finish --exit-code）に
 回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、kiro-cli（Dagu の harness.run）の代わりに、テストが
 gitlab_mr.py のコマンドを呼ぶ。
 """
@@ -31,7 +31,7 @@ except ImportError:      # pragma: no cover
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 PLUGIN = ROOT / "gitlab_mr.py"
-API_WATCH = ROOT.parent / "api-watch" / "api_watch.py"
+CHANGE_WATCH = ROOT.parent / "change-watch" / "change_watch.py"
 spec = importlib.util.spec_from_file_location("gitlab_mr", PLUGIN)
 gm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gm)
@@ -618,23 +618,23 @@ class LocalRepoTest(_GitLabBase):
 
 
 # ---------------------------------------------------------------------------
-# 設定の例をそのまま本物の api-watch で回す
+# 設定の例をそのまま本物の change-watch で回す
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(API_WATCH.is_file() and yaml is not None, "api-watch か PyYAML が無い")
+@unittest.skipUnless(CHANGE_WATCH.is_file() and yaml is not None, "change-watch か PyYAML が無い")
 class FlowTest(_GitLabBase):
     def setUp(self):
         super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        cfg = yaml.safe_load((ROOT / "api-watch.yaml.example").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "change-watch.yaml.example").read_text(encoding="utf-8"))
         cfg["state_dir"] = str(self.tmp / "state")
         src = cfg["sources"]["gitlab-mrs"]
         src.pop("schedule")
         src.update(jitter_sec=0, failure_backoff_sec=0, retry={"attempts": 1})
         tgt = cfg["rules"]["mr-review"]["targets"][0]
         tgt.update(input_template=str(ROOT / "prompt.md.example"), retry_backoff_sec=0)
-        self.cfg = self.tmp / "api-watch.yaml"
+        self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.json"
         self.conn.write_text(json.dumps({"gitlab": [{"label": "default", "url": self.gl.url, "token": TOKEN}]}),
@@ -642,7 +642,7 @@ class FlowTest(_GitLabBase):
         self.env["MR_REVIEW_CLI"] = "python3 gitlab_mr.py"
 
     def aw(self, *args) -> str:
-        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
+        r = subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
                             "--connections", str(self.conn), *args], env={**os.environ, **self.env},
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -770,10 +770,10 @@ class FlowTest(_GitLabBase):
         self.assertEqual(self.cycle(), (None, None))
 
     def test_example_dag_reviews_once(self):
-        """例の Dagu のワークフローを Dagu と同じ順で本物の api-watch に流す（kiro-cli の代わりにテストがレビューする）。"""
-        sys.path.insert(0, str(API_WATCH.parent / "test"))
+        """例の Dagu のワークフローを Dagu と同じ順で本物の change-watch に流す（kiro-cli の代わりにテストがレビューする）。"""
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
-        dag = ROOT / "api-watch-mr-review.yaml.example"
+        dag = ROOT / "change-watch-mr-review.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         self.gl.put(make_mr(1))
         prompts: list[str] = []
@@ -781,13 +781,13 @@ class FlowTest(_GitLabBase):
         def handle(step, vars):
             self.assertEqual((step["action"], step["with"]["provider"], step["with"]["prompt"]),
                              ("harness.run", "kiro", "${INPUT}"))
-            self.assertEqual(step["timeout_sec"], 1800)                   # api-watch の設定の timeout_sec と同じ
+            self.assertEqual(step["timeout_sec"], 1800)                   # change-watch の設定の timeout_sec と同じ
             prompts.append(vars["INPUT"])
             self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")])(vars["INPUT"])
             return 0
 
         def run():
-            return dagrun.run(dag, aw=[sys.executable, str(API_WATCH)], head=["--config", str(self.cfg)],
+            return dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
                               paths={"/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py": str(PLUGIN),
                                      "/home/you/.github/connections.yaml": str(self.conn)},
                               handle=handle, env=self.env)

@@ -1,0 +1,54 @@
+# Windows（ネイティブ）での change-watch の設定の例。%USERPROFILE%\.config\change-watch\change-watch.yaml などにコピーして使う。
+# you は自分のユーザー名に直す。パスは / 区切りで書いてよい（\ で書くなら YAML では '…' で囲む）。
+# change-watch は `python install.py install` で入れたもの（%LOCALAPPDATA%\Programs\change-watch\change-watch.cmd）を呼ぶ:
+#   change-watch --plugin dagu --config %USERPROFILE%\.config\change-watch\change-watch.yaml --connections %USERPROFILE%\.github\connections.yaml check
+
+version: 1
+state_dir: ~/AppData/Local/change-watch/state   # 状態（SQLite）の置き場所。WSL2 と共有しない（/mnt/c 越しの SQLite はロックが効かない）
+
+delivery:
+  adapter: dagu                                 # 実行時に --plugin dagu を付ける
+  mode: cli
+  executable: C:/Users/you/AppData/Local/Programs/dagu/dagu.exe   # PATH にあれば dagu のままでよい
+
+sources:
+  # フォルダを見る。ネットワークのフォルダなら //server/share/inbox。切れている間は一時的な失敗になり、「消えた」にはならない
+  inbox:
+    folder:
+      path: "%USERPROFILE%/Documents/inbox"     # ~ と %USERPROFILE% などの環境変数を展開する
+      include: ["**/*.csv", "**/*.xlsx"]        # 下のフォルダも見る
+      exclude: ["**/~$*"]                       # Excel が開いている間に作る一時ファイルを外す
+      settle_sec: 10                            # コピーの途中のファイルを拾わない
+
+  # GitLab の issue（Linux と同じ。接続設定は connections.yaml の gitlab）
+  issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/123/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    incremental: { type: max_value, field: updated_at, param: updated_after }
+    schedule: "*/10 * * * *"
+
+rules:
+  # 新しいファイルが置かれたら、その場で Python のスクリプトに渡す（Dagu の DAG を用意しなくてよい）
+  new-file:
+    source: inbox
+    id: rel
+    on: [appeared, changed]
+    targets:
+      - name: import
+        command: ["python", "C:/Users/you/bin/import_file.py", "{{ event.record.path }}"]
+
+  # issue の変化は Dagu の DAG へ渡す（%USERPROFILE%\.config\dagu\dags\issue-handler.yaml）
+  issue-changed:
+    source: issues
+    id: iid
+    watch: [state, labels, title]
+    unordered: [labels]
+    on: [appeared, changed]
+    targets:
+      - workflow: issue-handler
