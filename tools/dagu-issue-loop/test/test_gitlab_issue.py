@@ -1,7 +1,7 @@
 """dagu-issue-loop のテスト（標準ライブラリだけ。`python -m unittest discover -s test`）。
 
-gitlab_issue.py（api-watch のプラグイン）のフィルタ・チェックと、本物の api-watch から Dagu の子のワークフローと同じ順
-（due → begin → render → 処理 → finish）で呼んだときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、
+gitlab_issue.py（api-watch のプラグイン）のフィルタ・チェックと、本物の api-watch を Dagu のワークフローと同じ順
+（fetch → evaluate → claim → render → 処理 → finish --exit-code）で呼んだときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、
 エージェント CLI（Dagu の harness.run）の代わりに、テストが偽の GitLab を書き換える。
 """
 from __future__ import annotations
@@ -174,7 +174,7 @@ class OthersActedTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 本物の api-watch から、Dagu の子のワークフローと同じ順で呼ぶ
+# 本物の api-watch から、Dagu のワークフローと同じ順で呼ぶ
 # ---------------------------------------------------------------------------
 
 @unittest.skipUnless(API_WATCH.is_file(), "api-watch が無い")
@@ -221,80 +221,68 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r.stdout
 
-    def poll(self, rule="issue-agent"):
-        """親のワークフローの fetch → evaluate → due。実行を待つ受け渡しの ID を返す。"""
+    def cycle(self, rule="issue-agent", agent=None, exit_code="0"):
+        """1 回の起動: fetch → evaluate → claim → render → handle（agent）→ finish --exit-code。
+
+        (受け渡しの ID、プロンプト) を返す。実行できるものが無ければ (None, None)。"""
         self.aw("fetch", "--force")
         self.aw("evaluate", "--rule", rule)
-        return json.loads(self.aw("due", "--rule", rule).strip())
-
-    def child(self, delivery: str, agent=None, failed=False):
-        """子のワークフロー: begin → render → handle（agent）→ finish。(判断, プロンプト) を返す。"""
-        decision = self.aw("begin", delivery).strip()
-        prompt = None
-        if decision == "run":
-            prompt = self.aw("render", delivery)
-            if agent:
-                agent()
-            if failed:
-                self.aw("finish", delivery, "--failed", "--message", "harness が失敗")
-            else:
-                self.aw("finish", delivery)
-        else:
-            self.aw("finish", delivery)                  # handler_on success（begin しなかったら何もしない）
-        return decision, prompt
+        delivery = self.aw("claim", "--rule", rule).strip()
+        if not delivery:
+            return None, None
+        prompt = self.aw("render", delivery)
+        if agent:
+            agent()
+        self.aw("finish", delivery, "--exit-code", exit_code)
+        return delivery, prompt
 
     def test_new_issue_runs_once_and_own_comment_does_not_retrigger(self):
-        self.assertEqual(self.poll(), [])                # 初回は覚えるだけ
+        self.assertEqual(self.cycle(), (None, None))     # 初回は覚えるだけ
         self.gl.put(make_issue(2, labels=["todo"]))
-        ids = self.poll()
-        self.assertEqual(len(ids), 1)
-        decision, prompt = self.child(ids[0], agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
-        self.assertEqual(decision, "run")
+        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
+        self.assertIsNotNone(d)
         self.assertIn("GitLab の issue #2「issue 2」に変化がありました（新規、1 回目）", prompt)
         self.assertIn("- 新しい issue", prompt)
         self.assertIn('"web_url": "https://gl.example/g/p/-/issues/2"', prompt)
-        ids = self.poll()                                # エージェント自身のコメントを検知するが
-        self.assertEqual([self.child(i)[0] for i in ids], ["skip"])      # 流さない
-        self.assertEqual(self.poll(), [])
+        self.assertEqual(self.cycle(), (None, None))     # エージェント自身のコメントを検知するが、流さない
 
     def test_comment_by_someone_else_during_run_runs_again(self):
-        self.poll()
+        self.cycle()
         self.gl.put(make_issue(1, labels=["todo"], updated="2026-11-01T05:00:00Z"))
-        ids = self.poll()
-        self.child(ids[0], agent=lambda: self.gl.comment(1, "alice", "2026-11-01T06:00:00Z"))
-        ids = self.poll()
-        decision, prompt = self.child(ids[0])
-        self.assertEqual(decision, "run")
+        self.cycle(agent=lambda: self.gl.comment(1, "alice", "2026-11-01T06:00:00Z"))
+        d, prompt = self.cycle()
+        self.assertIsNotNone(d)
         self.assertIn("- コメント +1", prompt)            # 前回処理し終えた（実行前の）状態からの差分
 
     def test_failure_is_retried(self):
-        self.poll()
+        self.cycle()
         self.gl.put(make_issue(1, labels=["todo"], updated="2026-11-01T05:00:00Z"))
-        ids = self.poll()
-        self.assertEqual(self.child(ids[0], failed=True)[0], "run")
-        again = self.poll()                              # 失敗したものは、次の起動でもう一度出る
-        self.assertEqual(again, ids)
-        decision, prompt = self.child(again[0])
+        d, _ = self.cycle(exit_code="1")                 # harness.run が失敗した
+        d2, prompt = self.cycle()                        # 次の起動でもう一度
+        self.assertEqual(d2, d)
         self.assertIn("2 回目", prompt)
-        self.assertEqual(self.poll(), [])
+        self.assertEqual(self.cycle(), (None, None))
 
     def test_closed_while_waiting_is_skipped(self):
-        self.poll()
+        self.cycle()
         self.gl.put(make_issue(1, labels=["todo"], updated="2026-11-01T05:00:00Z"))
-        ids = self.poll()
+        self.aw("fetch", "--force")
+        self.aw("evaluate", "--rule", "issue-agent")
         self.gl.put(make_issue(1, labels=["todo"], state="closed", updated="2026-11-01T06:00:00Z"))
-        self.assertEqual(self.child(ids[0])[0], "skip")  # 実行の直前の取り直しで filter から外れる
+        self.assertEqual(self.aw("claim", "--rule", "issue-agent").strip(), "")   # 取り直しで filter から外れる
 
     def test_one_agent_session_across_projects(self):
         self.write_config(projects=("project-a", "project-b"))
-        self.poll("project-a")
-        self.poll("project-b")
+        self.cycle("project-a")
+        self.cycle("project-b")
         self.gl.put(make_issue(1, labels=["todo"], updated="2026-11-01T05:00:00Z"))
-        a = self.poll("project-a")[0]
-        b = self.poll("project-b")[0]
-        self.assertEqual(self.aw("begin", a).strip(), "run")
-        self.assertEqual(self.aw("begin", b).strip(), "busy")   # 同じ lock を持つ受け渡し先は同時に 1 つ
-        self.aw("finish", a)
+        for r in ("project-a", "project-b"):
+            self.aw("fetch", "--force")
+            self.aw("evaluate", "--rule", r)
+        a = self.aw("claim", "--rule", "project-a").strip()
+        self.assertTrue(a.startswith("aw_"))
+        self.assertEqual(self.aw("claim", "--rule", "project-b").strip(), "")    # 同じ lock は同時に 1 つ
+        self.aw("finish", a, "--exit-code", "0")       # project-b は試行に数えずに戻してあり、少しあとの起動で取れる
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ Dagu の定期実行と api-watch の上に組む。実装は `tools/dagu-issue-
 | 受け持ち | どこ | 何を |
 |---|---|---|
 | 取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他 | api-watch | 取得元（ページング・予定・ずらし・失敗の共有）、ルールの `watch` と `filter`、`external` の受け渡し先（`due` / `begin` / `render` / `finish`・`refresh`・`lock`） |
-| 起動・1 件ずつの呼び出し・エージェント CLI の実行と停止・ログと実行履歴 | Dagu | 親のワークフロー（`dag.run` + `parallel`）、子のワークフロー（`harness.run`） |
+| 起動・エージェント CLI の実行と停止・ログと実行履歴 | Dagu | ワークフロー 1 本（`claim` → `render` → `harness.run` → `finish`） |
 | GitLab の issue に固有のこと | `gitlab_issue.py`（api-watch のプラグイン） | プロンプトの差分（フィルタ）、実行中に自分以外が動いたか（チェック） |
 
 下敷きは agent-loop の gitlab-issue-hook（候補キー `iid`、版 `updated_at`、送信成功後にだけ既読を進める）。
@@ -18,20 +18,20 @@ Dagu の定期実行と api-watch の上に組む。実装は `tools/dagu-issue-
 ## 2. 構成
 
 ```
-Dagu: api-watch-issue-agent（毎分）
+Dagu: api-watch-issue-agent（毎分。1 回の起動で 1 件を処理する）
   fetch --source gitlab-issues     取得元の schedule（毎時 0 分）の時刻のあとに未取得なら、jitter 0〜900 秒で取得
   evaluate --rule issue-agent      watch の項目が変わった issue をイベントにする
-  due --rule issue-agent           実行を待つ受け渡しの ID の配列（DUE_RUN）
-  run-run                          action: dag.run・parallel {items: DUE_RUN, max_concurrent: 1}（空なら preconditions で呼ばない）
-Dagu: api-watch-issue-agent-run（子。DELIVERY に受け渡しの ID）
-  begin DELIVERY                   run / skip / busy / wait / failed / gone（DECISION）
+  claim --rule issue-agent         実行を待つものを古い順に begin し、最初に run になった 1 件の ID（DELIVERY）。無ければ空
   render DELIVERY                  prompt.md を展開（INPUT。gitlab_issue_changes などのフィルタ）
-  handle                           action: harness.run（provider: claude など、stdin: ${INPUT}）。DECISION が run のときだけ
-  handler_on: success → finish / failure・abort → finish --failed
+  handle (id: handle)              action: harness.run（provider: claude など、stdin: ${INPUT}）。continue_on: failure
+  finish DELIVERY --exit-code ${handle.exit_code}
+  （render 以降は DELIVERY が aw_ で始まるときだけ動く: preconditions の re:^aw_）
 ```
 
 - ワークフローは api-watch の `dags` が雛形を書く。`handle` の中身は `--handle-step` で `issue-loop.handle.yaml` から差し込む
 - 予定は api-watch の設定 1 か所（取得元の `schedule`）。ワークフローは毎分起動し、失敗したもののやり直しも毎分の起動で進む
+- 実行を待つ issue が複数あっても、1 回の起動では 1 件だけ。次の 1 件は次の起動（1 分後）が取る。同時に 1 つしか動かさないので、
+  1 回で全部を流しても待ちの合計はほとんど変わらない
 - `issue_loop.py`（状態ファイル・プロセスの管理・CLI の起動）は無くなった（§7）
 
 ### 2.1 GitLab への負荷
@@ -40,8 +40,8 @@ Dagu: api-watch-issue-agent-run（子。DELIVERY に受け渡しの ID）
 |---|---|---|
 | issue の一覧（api-watch） | 予定の時刻（毎時 0 分）のあと 1 回。0〜900 秒ずらす | issue 100 件ごとに 1 |
 | 毎分の起動（予定の時刻のあとに取得済み） | 毎分 | **0** |
-| 1 件流した | 流すたび | 4（`begin` と `finish` の取り直し、`gitlab.others_acted` の `/user`・notes） |
-| 処理し終えた状態と同じ変化（自分の書き込みなど） | 来るたび | **0**（イベントの値と処理し終えた状態のハッシュが同じなら、`begin` が取り直しもしない） |
+| 1 件流した | 流すたび | 4（`claim` と `finish` の取り直し、`gitlab.others_acted` の `/user`・notes） |
+| 処理し終えた状態と同じ変化（自分の書き込みなど） | 来るたび | **0**（イベントの値と処理し終えた状態のハッシュが同じなら、`claim` が取り直しもしない） |
 | 取得の失敗のあと | — | `failure_backoff_sec`（300 秒、倍々で最大 1 時間）のあいだ 0。プラグインの問い合わせも同じ待ちに従う |
 
 - ずらし幅は毎回ランダム（api-watch の `jitter_sec`）。PC やプロジェクトごとに固定のずれにすると、同じ設定を配った台数分が
@@ -57,9 +57,9 @@ Dagu: api-watch-issue-agent-run（子。DELIVERY に受け渡しの ID）
 `filter`（例: `state` が `opened`）は、取得したときと、実行の直前に取り直したときの両方に当てはめる。
 `order: none`: 打ち切った（dead）イベントが `retry` / `skip` されるまで同じ issue の後ろを止めない（打ち切って次の変化で拾う）。
 
-### 3.2 api-watch 側（begin / finish と refresh）
+### 3.2 api-watch 側（claim / finish と refresh）
 
-詳しくは api-watch の設計 §5.6・§5.7。1 件ごとに:
+詳しくは api-watch の設計 §5.6・§5.7。`claim` は実行を待つものに古い順に `begin` を呼び、1 件ごとに:
 
 1. `begin`: イベントの値（`after`）が「処理し終えた状態」（受け渡し先 × issue ごと）と同じなら、取り直さずに飛ばす
 2. `begin`: `lock`（`agent-session`）を取る。空いていなければ `busy`（試行に数えずに戻す）
@@ -100,9 +100,9 @@ issue の notes を新しい順に読み、`begin` の時刻（`ctx.delivery.sta
 
 | 層 | 仕組み | 守る場面 |
 |---|---|---|
-| Dagu | 同じ DAG が実行中なら次の定期実行を立てない。親の `parallel` は `max_concurrent: 1` | 毎分の起動が重なる・1 回の起動で複数の issue |
-| api-watch の `lock` | `begin` で取り、`finish` で返す期限つきの排他（持ち主は受け渡しの ID。期限は `timeout_sec` + 120 秒） | 別プロジェクトのワークフロー・手で `begin` を叩いた |
-| 期限 | `finish` が呼ばれないまま止まった受け渡しと `lock` は、期限が切れるまで誰にも渡さない | Dagu ごと落ちた |
+| Dagu | 同じ DAG が実行中なら次の定期実行を立てない。1 回の起動で 1 件だけ | 毎分の起動が重なる |
+| api-watch の `lock` | `claim`（の `begin`）で取り、`finish` で返す期限つきの排他（持ち主は受け渡しの ID。期限は `timeout_sec` + 120 秒） | 別プロジェクトのワークフロー・手で叩いた |
+| 期限 | `finish` が呼ばれないまま止まった受け渡しと `lock` は、期限が切れるまで誰にも渡さない | ワークフローを止めた・Dagu ごと落ちた |
 
 - 当初の `issue_loop.py` は CLI の pid を見て、`run` が強制終了されて CLI だけが残った場合も次を始めなかった。今は CLI を Dagu が動かすので、
   Dagu の停止・タイムアウトでは Dagu が止める。Dagu ごと落ちて CLI が残った場合は、`lock` の期限（`timeout_sec` + 120 秒）までしか守れない
@@ -110,7 +110,8 @@ issue の notes を新しい順に読み、`begin` の時刻（`ctx.delivery.sta
 
 ## 5. 失敗と再試行
 
-- 失敗 = `harness.run` の失敗・時間切れ・中止（子のワークフローの `handler_on` が `finish --failed`）と、実行の前の取り直しの失敗
+- 失敗 = `harness.run` の失敗・時間切れ（`continue_on: failure` で `finish` まで進み、`--exit-code ${handle.exit_code}` が 0 以外）と、実行の前の取り直しの失敗
+- ワークフローごと止めたときは `finish` まで進まない。その受け渡しは期限（`timeout_sec` + 120 秒）が切れてから、次の起動がもう一度取る（失敗には数えない）
 - api-watch が `retry_backoff_sec × 2^(回数-1)` のあとの起動で同じ受け渡しの ID のまま流し直す。`max_attempts` に達したら `dead`。issue が次に変われば新しいイベントになる
 - `api-watch retry <ID>` で打ち切ったものを流し直す。`api-watch forget-handled --rule issue-agent IID` で処理し終えた状態を忘れ、次のイベントで必ず流させる
 - Dagu のステップの `retry_policy` は付けない（再試行を api-watch と二重にしないため）
@@ -119,7 +120,7 @@ issue の notes を新しい順に読み、`begin` の時刻（`ctx.delivery.sta
 
 プロセスの管理（停止・生存確認・Ctrl+Break・コマンド行の分割）を Dagu に任せたので、dagu-issue-loop 側に OS ごとの切り替えは無い。
 api-watch とプラグインは標準ライブラリだけで、Windows の CI で試験を回す。Windows の Dagu は停止時に Job Object ごと止めるので
-エージェント CLI も一緒に止まり、`handler_on` の `abort` / `failure` が失敗として記録する。
+エージェント CLI も一緒に止まる。その受け渡しは期限が切れてから次の起動がもう一度取る。
 
 ## 7. 経緯と採らなかった案
 
@@ -129,7 +130,9 @@ api-watch とプラグインは標準ライブラリだけで、Windows の CI �
 - **`issue_loop.py handle` がエージェント CLI を動かす形**: CLI の起動・時間切れ・子孫ごとの停止・Windows 対応を自前で持ち（約 820 行）、
   Dagu の画面からはエージェントの実行が 1 つのステップの中に隠れていた。Dagu の `harness.run` に移し、残った GitLab 固有の部分を
   api-watch のプラグイン（フィルタとチェック）にした。`issue_loop.py` は無くなり、プラグインは約 170 行
-- **受け渡し先の DAG とキュー（api-watch の dagu アダプタで enqueue）**: 1 本の親のワークフローから子を呼ぶ形にした。取得から実行までが
-  1 つの親の実行履歴に並び、Dagu 側の設定（キュー）も要らない
+- **受け渡し先の DAG とキュー（api-watch の dagu アダプタで enqueue）**: Dagu 側にキューの設定が要り、取得と実行が別のワークフローに分かれる
+- **親と子の 2 本のワークフロー（親が `dag.run` + `parallel` で子を 1 件ずつ呼ぶ）**: 1 回の起動で待っている issue を全部流せ、
+  子の `handler_on`（abort）で中止も失敗として記録できたが、ワークフローが 2 本になる。1 本にするため、1 回の起動で 1 件だけにし
+  （同時に 1 つしか動かさないので待ちはほとんど変わらない）、中止は期限切れで取り直すことにした
 - **Dagu のキューだけで直列化する**: 別プロジェクトのワークフローをまたいだ排他を Dagu の設定に頼ることになる。api-watch の `lock` を本体にした
 - **Webhook で受ける**: Dagu だけで完結させる要件と、GitLab から到達できない手元の PC でも動かすためにポーリングにした

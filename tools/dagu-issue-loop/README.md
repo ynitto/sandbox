@@ -8,16 +8,15 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
 足す api-watch のプラグイン（`gitlab_issue.py`）と、設定の例がある。
 
 ```
- Dagu: api-watch-issue-agent（毎分起動）
+ Dagu: api-watch-issue-agent（毎分起動。1 回の起動で 1 件を処理する）
    fetch      毎時 0 分の予定のあと、0〜15 分ずらして issue を全ページ取得（予定の時刻のあとに取得済みなら問い合わせない）
    evaluate   前回と比べて変化した issue を拾う
-   due-run    実行を待つ issue を並べる
-   run-run    子のワークフローを 1 件ずつ呼ぶ（同時に 1 つ）
- Dagu: api-watch-issue-agent-run（子。1 件を処理する）
-   begin      issue を取り直し、流すかを決める（処理し終えた状態と同じ・閉じた・別のセッションが実行中なら流さない）
+   claim      流す issue を 1 件取る。issue を取り直し、処理し終えた状態と同じ・閉じた・別のセッションが実行中なら流さない
    render     プロンプトを組む（前回処理し終えたときからの変化の箇条書きと、issue の内容）
    handle     エージェント CLI を動かす（Dagu の harness.run）
-   finish     issue を取り直して処理し終えた状態にする（失敗ならあとでやり直す）
+   finish     handle の終了コードを見て、issue を取り直して処理し終えた状態にする（失敗ならあとでやり直す）
+
+ 流す issue が無ければ claim のあとは動かない。流すものが複数あれば、次の起動（1 分後）が次の 1 件を取る
 ```
 
 ## 入れ方
@@ -76,8 +75,8 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
    cp tools/dagu-issue-loop/handle-step.yaml.example ~/.config/dagu/issue-loop.handle.yaml
    ```
 
-7. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す。`api-watch-issue-agent.yaml`（親）・
-   `api-watch-issue-agent-run.yaml`（子。6 のステップが入る）・`api-watch-maintenance.yaml`（毎日の整理）ができる。
+7. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す。`api-watch-issue-agent.yaml`（取得から処理まで。
+   6 のステップが handle に入る）と `api-watch-maintenance.yaml`（毎日の整理）ができる。
    作ったあとは自由に直してよい（既にあるファイルは上書きしない）。Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
@@ -129,11 +128,12 @@ issue の取得・変化の検知・実行待ち・再試行は [api-watch](../a
 
 ## 1 セッションだけにする仕組み
 
-- 親のワークフローは、実行を待つ issue を子のワークフローに 1 件ずつ渡す（同時に 1 つ）。同じワークフローが重ねて起動されることもない
+- ワークフローは 1 回の起動で 1 件だけ処理する。同じワークフローが重ねて起動されることもない
 - api-watch の設定の `lock`（例は `agent-session`）が同じ受け渡し先どうしは、プロジェクトをまたいでも同時に 1 つだけ実行する。
   空いていなければ「あとで」として試行に数えずに戻し、次の起動でもう一度試す
-- Dagu からの停止・タイムアウトでは Dagu がエージェント CLI を止め、子のワークフローの `finish --failed` が失敗として記録する
-- 子のワークフローが `finish` を呼べずに終わった（Dagu ごと落ちたなど）ときは、`timeout_sec` + 2 分たつと次の起動が取り直す
+- エージェント CLI の時間切れ・失敗では、`finish` が終了コードを見て失敗として記録する
+- ワークフローごと止めた・Dagu ごと落ちたなどで `finish` まで進まなかったときは、`timeout_sec` + 2 分たつと次の起動が取り直す
+  （それまでその issue と `lock` は空かない）
 
 ## 失敗したとき
 

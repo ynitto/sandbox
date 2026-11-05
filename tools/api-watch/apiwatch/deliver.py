@@ -186,7 +186,7 @@ class Dispatcher:
     #
     # 1 件の流れ: begin（受け渡しを取る・排他・取り直し・飛ばす判定・skip_if）→ 処理 → finish（handled_before_if・
     # 実行のあとの取り直し・処理し終えた状態の記録・完了か失敗の記録・排他を返す）。command の受け渡し先は work が
-    # この 3 つを 1 つのプロセスで行い、external の受け渡し先は外のワークフロー（Dagu の子のワークフローなど）が
+    # この 3 つを 1 つのプロセスで行い、external の受け渡し先は外のワークフロー（Dagu のステップなど）が
     # begin / finish を別々のプロセスで呼ぶ。begin と finish は delivery_runs の行でつなぐ。
 
     def due(self, rules: list[str] | None = None, targets: list[str] | None = None,

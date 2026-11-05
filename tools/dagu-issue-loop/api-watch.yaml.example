@@ -1,9 +1,8 @@
 # dagu-issue-loop の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
-# Dagu のワークフロー 2 本で動く（どちらも api-watch の dags で作る）:
-#   api-watch-issue-agent       毎分起動。取得 → 変化の判定 → 実行を待つ issue を子のワークフローへ 1 件ずつ（同時に 1 つ）
-#   api-watch-issue-agent-run   1 件を処理する。begin（取り直し・飛ばす判定）→ render（プロンプト）→ handle（エージェント CLI。
-#                               Dagu の harness.run）→ finish（処理し終えた状態の記録。失敗ならあとでやり直す）
+# Dagu のワークフロー 1 本（api-watch-issue-agent。api-watch の dags で作る）で動く。毎分起動し、1 回の起動で 1 件を処理する:
+#   fetch → evaluate → claim（実行できる issue を 1 件取る。取り直し・飛ばす判定）→ render（プロンプト）
+#   → handle（エージェント CLI。Dagu の harness.run）→ finish（処理し終えた状態の記録。失敗ならあとでやり直す）
 # GitLab の issue に固有の部分（プロンプトの差分・実行中の他人の動き）は gitlab_issue.py（api-watch のプラグイン）が受け持つ。
 # api-watch を呼ぶときは毎回 --plugin <gitlab_issue.py のパス> を付ける（dags も付けた引数を DAG に書く）。
 #
@@ -60,9 +59,9 @@ rules:
     # filter: { all: [{ path: state, value: opened }, { path: labels, op: contains, value: agent }] }
     targets:
       - name: run
-        # api-watch は実行しない。Dagu の子のワークフロー（api-watch-issue-agent-run）が begin → 処理 → finish を呼ぶ
+        # api-watch は実行しない。Dagu のワークフローのステップが claim → 処理 → finish を呼ぶ
         external: true
-        # 処理に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。子のワークフローの render が展開する
+        # 処理に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。ワークフローの render が展開する
         input_template: ~/.config/dagu/issue-loop.prompt.md
         # 実行の前後に issue を 1 件取り直す（ヘッダーは取得元のものを使う）:
         #   - 前: 最新の内容で流す。filter から外れた・前回処理し終えた状態と同じ（自分の書き込みだけ・まとめて処理済み）なら流さない
@@ -75,7 +74,7 @@ rules:
             # options: { self_username: bot-user }     # 既定はトークンの持ち主
         # エージェント CLI は、プロジェクトをまたいで同時に 1 つだけ（同じ lock の名前を持つ受け渡し先どうし）
         lock: agent-session
-        timeout_sec: 4200      # 1 件の上限。子のワークフローの handle の timeout_sec にもなる
+        timeout_sec: 4200      # 1 件の上限。ワークフローの handle の timeout_sec にもなる
         max_attempts: 3        # 尽きたら打ち切り、次の変化で拾い直す
         retry_backoff_sec: 300 # 失敗したら、毎分の起動のうちこの秒数（1 回ごとに倍）を過ぎたもので再試行
         order: none            # 打ち切った変化があっても、同じ issue の新しい変化は流す

@@ -331,10 +331,19 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 ログは標準エラーに出す。標準出力を結果だけ（`due` の配列・`begin` の 1 語・`render` の文章）にして、Dagu のステップの `output:` で受けるため。
 
-`dags` は `external` の受け渡し先に、親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` →
-`render` → `handle`、`handler_on` で `finish`）を書く。確かめたのは Dagu v2.25.2 のスキーマと実装（`parallel` は空の配列を誤りにするので
-`preconditions` の `negate` で呼ばない、子には項目が `ITEM` として渡るので `with.params` で `DELIVERY` に入れる、`harness.run` の `with.stdin` は
-文字列で、組み込みの claude などは標準入力に流す）。`handle` は処理ごとに違うので雛形にし、`--handle-step` で中身を差し込めるようにした。
+`claim` は `due` の古い順に `begin` を呼び、最初に `run` になった 1 件の ID を出す（`skip` などはそのまま次へ、`busy` / `wait` ならやめる）。
+`finish --exit-code N` は処理のステップの終了コードで成否を決める（数でなければ失敗。ID が空なら何もしない）。
+
+`dags` は `external` の受け渡し先を、ルールのワークフロー 1 本の中に `claim`（`output: DELIVERY`）→ `render`（`output: INPUT`）→
+`handle`（`id: handle`・`continue_on: failure`）→ `finish ${DELIVERY} --exit-code ${handle.exit_code}` として書く。`render` 以降は
+`preconditions` の `re:^aw_`（取れた ID があるとき）で動く。1 回の起動で 1 件だけ処理する。確かめたのは Dagu v2.25.2 のスキーマと実装
+（`${<ステップ>.exit_code}` で前のステップの終了コードを参照できる、`harness.run` の `with.stdin` は文字列で、組み込みの claude などは
+標準入力に流す）。書き出した DAG はそのスキーマで検証した。
+
+当初は親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` → `render` → `handle`、`handler_on` で
+`finish`）の 2 本にしていた。1 回の起動で全部を流せ、子の `handler_on.abort` で中止も記録できたが、ワークフローが 2 本になる。1 本にするため、
+1 回の起動で 1 件だけにし（同時に 1 つしか動かさないので待ちはほとんど変わらない）、中止は受け渡しの期限切れで取り直すことにした。
+`handle` は処理ごとに違うので雛形にし、`--handle-step` で中身を差し込めるようにした。1 つのルールに `external` の受け渡し先は 1 つまで。
 
 **プラグインの口**（`apiwatch/plugins/__init__.py`・`apiwatch/hooks.py`）: アダプタ・コマンドに加えて、フィルタ（テンプレートの関数）と
 チェック（実行の前後の真偽）を名前で登録できる。プラグインは本体の内部に触らず、チェックの HTTP も `CheckContext.get_json` を通す。
@@ -381,7 +390,7 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、`dags` が書くルールごとのワークフロー・`--schedule`・既にある DAG を上書きしないこと、cron の解釈、予定の時刻での取得、`rate_limit.group`、
   `refresh`（自分の書き込みで再実行しない・実行中のほかの人の変化で再実行する・たまったイベントを最新で 1 回・filter から外れた／消えたら飛ばす・
   取り直しの失敗・`forget-handled`）、`external`（`due` → `begin` → `render` → `finish`・失敗の再試行と打ち切り・ルールをまたいだ `lock`・
-  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`dags` が書く親と子のワークフローと `--handle-step`
+  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`claim` と `finish --exit-code`、`dags` が書く 1 本のワークフローと `--handle-step`
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査

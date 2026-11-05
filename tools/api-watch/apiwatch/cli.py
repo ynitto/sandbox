@@ -130,7 +130,7 @@ def cmd_work(cfg, store, a) -> int:
 
 
 def cmd_due(cfg, store, a) -> int:
-    """external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す（Dagu の parallel に渡す）。"""
+    """external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す（ほかの基盤で 1 件ずつ回すとき。1 本のワークフローなら claim）。"""
     ids = Dispatcher(cfg, store).due(_rules_of_sources(cfg, a), a.target or None, external=True, limit=a.limit)
     print(json.dumps(ids))
     return EXIT_OK
@@ -141,6 +141,25 @@ def cmd_begin(cfg, store, a) -> int:
     decision, msg = Dispatcher(cfg, store).begin(a.delivery)
     log(msg)
     print(decision)
+    return EXIT_OK
+
+
+def cmd_claim(cfg, store, a) -> int:
+    """実行を待っている受け渡しを古い順に begin し、最初に run になった 1 件の ID を出す（無ければ空行）。
+
+    1 本のワークフローで 1 回の起動につき 1 件を処理するときに使う（claim → render → 処理 → finish）。飛ばすもの
+    （処理し終えた状態と同じ・filter から外れた など）は begin が完了として記録するので、そのまま次を見る。
+    lock が空いていない・取得元が失敗の待ちの中なら、そこでやめる（次の起動で試す）。"""
+    disp = Dispatcher(cfg, store)
+    for d in disp.due(_rules_of_sources(cfg, a), a.target or None, external=True):
+        decision, msg = disp.begin(d)
+        log(msg)
+        if decision == "run":
+            print(d)
+            return EXIT_OK
+        if decision in ("busy", "wait"):
+            break
+    print("")
     return EXIT_OK
 
 
@@ -179,7 +198,18 @@ def cmd_render(cfg, store, a) -> int:
 
 def cmd_finish(cfg, store, a) -> int:
     """begin した受け渡しの終わり（--failed なら失敗）を記録する。外のワークフローの最後か handler_on から呼ぶ。"""
-    st = Dispatcher(cfg, store).finish(a.delivery, not a.failed, a.message, a.handled)
+    ok, message = not a.failed, a.message
+    if a.exit_code is not None:
+        # 処理のステップの終了コード（Dagu の ${handle.exit_code}）で成否を決める。数でなければ失敗とみなす
+        try:
+            code = int(str(a.exit_code).strip())
+        except ValueError:
+            code = None
+        if code != 0:
+            ok = False
+            message = message or (f"処理が終了コード {code} で終わった" if code is not None
+                                  else f"処理の終了コードが分からない（{a.exit_code}）")
+    st = Dispatcher(cfg, store).finish(a.delivery, ok, message, a.handled) if a.delivery.strip() else "gone"
     log(f"{a.delivery}: {st}")
     return EXIT_OK
 
@@ -452,6 +482,10 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--limit", type=int)
     sp = add("begin", cmd_begin, "受け渡しを 1 件取り、実行してよいか（run / skip / busy / wait / failed / gone）を出す")
     sp.add_argument("delivery")
+    sp = add("claim", cmd_claim, "external の受け渡し先の、実行できる受け渡しを 1 件取って ID を出す（無ければ空行）")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
     sp = add("render", cmd_render, "begin した受け渡しのイベントでテンプレートを展開する（{{ event.* }}・プラグインのフィルタ）")
     sp.add_argument("delivery")
     sp.add_argument("--template", help="テンプレートのファイル（省略すると受け渡し先の input_template）")
@@ -460,6 +494,7 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("delivery")
     sp.add_argument("--failed", action="store_true")
     sp.add_argument("--message")
+    sp.add_argument("--exit-code", help="処理のステップの終了コード。0 以外（数でないものも）なら失敗として記録する")
     sp.add_argument("--handled", choices=["before", "after"],
                     help="処理し終えた状態にするのを、実行前（before）か実行のあと（after。既定）か")
     sp = add("run", cmd_run, "fetch → evaluate → dispatch → work をまとめて行う（--rule でそのルールだけ）")

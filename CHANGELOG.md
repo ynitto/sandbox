@@ -41,8 +41,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 受け渡し先の `skip_if` / `handled_before_if`: プラグインが足すチェックを、実行の前（真なら実行しない）と実行のあと（真なら実行前の状態までを処理済み）に呼ぶ
 - **プラグインの口を広げる**: `api.add_filter`（テンプレートのフィルタ）と `api.add_check`（実行の前後の判定。`ctx.get_json` で取得元の接続・
   要求の間隔・失敗の待ちを分け合って API に問い合わせる）を足す
-- `dags`: `external` の受け渡し先に、親（`due` → `action: dag.run` + `parallel`、同時に 1 つ）と子（`begin` → `render` → `handle`、
-  `handler_on` で `finish`）のワークフローを書く。`--handle-step <ルール>.<受け渡し先>=<ファイル>` で `handle` の中身を差し込む
+- `claim`: 実行を待っているものを古い順に `begin` し、最初に実行できる 1 件の ID を出す。`finish --exit-code N`: 処理のステップの終了コードで成否を決める
+- `dags`: `external` の受け渡し先を、ルールのワークフロー 1 本の中に `claim` → `render` → `handle` → `finish --exit-code ${handle.exit_code}` として書く
+  （1 回の起動で 1 件。1 つのルールに `external` は 1 つまで）。`--handle-step <ルール>.<受け渡し先>=<ファイル>` で `handle` の中身を差し込む
 - テンプレートの `{{ x | json: 2 }}`（整形）。フィルタの引数の `'...'`（単引用符）を外す（`| default: ''` が `''` になっていたのを直す）
 - ログを標準エラーに出す（標準出力は結果だけ。`due`・`begin`・`render`・`status --json` などを Dagu の `output:` で受け取れるように）
 
@@ -54,7 +55,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。約 170 行
 - 設定の例: `api-watch.yaml.example`（`external` の受け渡し先・`refresh`・`lock`・`handled_before_if`・毎時 0 分の予定・0〜15 分のずらし）、
   `prompt.md.example`（api-watch のテンプレートで書いたプロンプト）、`handle-step.yaml.example`（`harness.run` でエージェント CLI を動かすステップ）。
-  Dagu のワークフロー（親と子）は api-watch の `dags` で雛形を作る
+  Dagu のワークフロー（取得から処理までの 1 本。毎分起動し、1 回の起動で 1 件を処理する）は api-watch の `dags` で雛形を作る
 - `ISSUE_LOOP_*` の環境変数は使わない（取得・再試行・絞り込みは api-watch の設定、エージェント CLI の種類とフラグは handle のステップ、
   プロンプトはテンプレートに書く）。`issue_loop.py forget` は `api-watch forget-handled` に代わる
 - 移るとき: README の「入れ方」で入れ直し、Dagu の DAG フォルダから以前の DAG を消す

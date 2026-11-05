@@ -637,6 +637,46 @@ class ExternalTest(Base):
         out = self.env.ok(self, "render", d)
         self.assertIn('\n  "status": "b"', out)                    # json: 2 で整形
 
+    def test_claim_takes_one_runnable_and_finish_by_exit_code(self):
+        self.setup_rule()
+        self.env.api.put(1, status="b", note="by-me")
+        self.env.api.put(2, status="a")
+        self.env.ok(self, "run", "--rule", "r")                     # 1 は変化、2 は新規
+        self.env.ok(self, "claim", "--rule", "r")
+        first = self.env.stdout.strip()
+        self.assertTrue(first.startswith("aw_"))
+        self.env.ok(self, "finish", first, "--exit-code", "3")      # 処理のステップが 3 で終わった
+        row = [x for x in self.env.deliveries() if x["id"] == first][0]
+        self.assertEqual((row["status"], row["last_error"]), ("send_failed", "処理が終了コード 3 で終わった"))
+        self.env.ok(self, "claim", "--rule", "r")                   # 失敗した 1 が古いので先に（backoff 0）
+        self.assertEqual(self.env.stdout.strip(), first)
+        self.env.ok(self, "finish", first, "--exit-code", "${handle.exit_code}")   # 参照が解決されなかったら失敗
+        self.assertIn("終了コードが分からない", [x for x in self.env.deliveries() if x["id"] == first][0]["last_error"])
+        self.env.ok(self, "claim", "--rule", "r")
+        self.assertEqual(self.env.stdout.strip(), first)
+        self.env.ok(self, "finish", first, "--exit-code", "0")
+        self.env.ok(self, "claim", "--rule", "r")                   # 次は 2
+        second = self.env.stdout.strip()
+        self.assertTrue(second.startswith("aw_") and second != first)
+        self.env.ok(self, "finish", second, "--exit-code", "0")
+        self.assertEqual({x["status"] for x in self.env.deliveries() if x["id"] in (first, second)}, {"done"})
+        self.env.ok(self, "claim", "--rule", "r")
+        self.assertEqual(self.env.stdout.strip(), "")
+        self.env.ok(self, "finish", "", "--exit-code", "0")          # 取れなかったとき（DELIVERY が空）は何もしない
+
+    def test_claim_skips_and_stops_when_busy(self):
+        self.setup_rule(lock="agent")
+        self.env.api.put(1, status="b")
+        self.env.ok(self, "run", "--rule", "r")
+        s = self.env.store()
+        try:
+            self.assertTrue(s.hold("lock:agent", "someone", 300))   # 別のルールの受け渡しが lock を持っている
+        finally:
+            s.close()
+        self.env.ok(self, "claim", "--rule", "r")
+        self.assertEqual(self.env.stdout.strip(), "")
+        self.assertEqual(self.env.deliveries()[-1]["attempts"], 0)  # 試行に数えない
+
     def test_finish_failed_is_retried_and_gives_up(self):
         self.setup_rule(max_attempts=2)
         self.env.api.put(1, status="b")
@@ -760,35 +800,7 @@ class DagsTest(Base):
         self.env.ok(self, "dags", "--out", str(out), "--schedule", "0 * * * *", "--force")
         self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["schedule"], "0 * * * *")
 
-    def test_external_target_parent_and_child(self):
-        yaml = self._yaml()
-        self.env.plugins = ["dagu"]
-        self.write({"issue": self.rule({"name": "run", "external": True, "timeout_sec": 4200})},
-                   schedule="0 * * * *")
-        out = self.env.tmp / "dags"
-        self.env.ok(self, "dags", "--out", str(out), "--dotenv", "/x/issue-loop.env")
-        names = sorted(p.name for p in out.iterdir())
-        self.assertEqual(names, ["api-watch-issue-run.yaml", "api-watch-issue.yaml", "api-watch-maintenance.yaml"])
-        parent = yaml.safe_load((out / "api-watch-issue.yaml").read_text(encoding="utf-8"))
-        self.assertEqual([s["name"] for s in parent["steps"]], ["fetch", "evaluate", "due-run", "run-run"])
-        due, run = parent["steps"][2], parent["steps"][3]
-        self.assertEqual(due["with"]["args"][-5:], ["due", "--rule", "issue", "--target", "run"])
-        self.assertEqual(due["output"], "DUE_RUN")
-        self.assertEqual(run["action"], "dag.run")
-        self.assertEqual(run["with"], {"dag": "api-watch-issue-run", "params": {"DELIVERY": "${ITEM}"}})
-        self.assertEqual(run["parallel"], {"items": "${DUE_RUN}", "max_concurrent": 1})
-        self.assertEqual(run["preconditions"], [{"condition": "${DUE_RUN}", "expected": "[]", "negate": True}])
-        child = yaml.safe_load((out / "api-watch-issue-run.yaml").read_text(encoding="utf-8"))
-        self.assertNotIn("schedule", child)
-        self.assertEqual(child["params"], [{"DELIVERY": ""}])
-        self.assertEqual(child["dotenv"], ["/x/issue-loop.env"])
-        self.assertEqual(child["steps"][0]["with"]["args"][-2:], ["begin", "${params.DELIVERY}"])
-        self.assertEqual(child["steps"][0]["output"], "DECISION")
-        self.assertEqual(child["steps"][1]["preconditions"], [{"condition": "${DECISION}", "expected": "run"}])
-        self.assertEqual(child["handler_on"]["success"]["with"]["args"][-2:], ["finish", "${params.DELIVERY}"])
-        self.assertEqual(child["handler_on"]["failure"]["with"]["args"][-3:], ["finish", "${params.DELIVERY}", "--failed"])
-
-    def test_external_child_with_input_and_handle_step(self):
+    def test_external_target_in_one_workflow(self):
         yaml = self._yaml()
         self.env.plugins = ["dagu"]
         self.write({"issue": self.rule({"name": "run", "external": True, "timeout_sec": 4200,
@@ -797,18 +809,33 @@ class DagsTest(Base):
         snippet.write_text("action: harness.run\nwith:\n  provider: claude\n  prompt: 指示は標準入力\n"
                            "  stdin: \"${INPUT}\"\n", encoding="utf-8")
         out = self.env.tmp / "dags"
-        self.env.ok(self, "dags", "--out", str(out), "--handle-step", f"issue.run={snippet}")
-        child = yaml.safe_load((out / "api-watch-issue-run.yaml").read_text(encoding="utf-8"))
-        self.assertEqual([s["name"] for s in child["steps"]], ["begin", "render", "handle"])
-        self.assertEqual(child["steps"][1]["with"]["args"][-2:], ["render", "${params.DELIVERY}"])
-        self.assertEqual(child["steps"][1]["output"], "INPUT")
-        h = child["steps"][2]
-        self.assertEqual((h["action"], h["with"]["provider"], h["with"]["stdin"]), ("harness.run", "claude", "${INPUT}"))
-        self.assertEqual(h["timeout_sec"], 4200)
-        self.assertEqual(h["preconditions"], [{"condition": "${DECISION}", "expected": "run"}])
+        self.env.ok(self, "dags", "--out", str(out), "--dotenv", "/x/issue-loop.env", "--handle-step", f"issue.run={snippet}")
+        names = sorted(p.name for p in out.iterdir())
+        self.assertEqual(names, ["api-watch-issue.yaml", "api-watch-maintenance.yaml"])   # 子のワークフローは無い
+        d = yaml.safe_load((out / "api-watch-issue.yaml").read_text(encoding="utf-8"))
+        self.assertEqual([s["name"] for s in d["steps"]], ["fetch", "evaluate", "claim", "render", "handle", "finish"])
+        claim, render, handle, finish = d["steps"][2:]
+        self.assertEqual(claim["with"]["args"][-5:], ["claim", "--rule", "issue", "--target", "run"])
+        self.assertEqual(claim["output"], "DELIVERY")
+        only = [{"condition": "${DELIVERY}", "expected": "re:^aw_"}]
+        self.assertEqual(render["with"]["args"][-2:], ["render", "${DELIVERY}"])
+        self.assertEqual((render["output"], render["preconditions"]), ("INPUT", only))
+        self.assertEqual((handle["id"], handle["action"], handle["with"]["stdin"]), ("handle", "harness.run", "${INPUT}"))
+        self.assertEqual((handle["timeout_sec"], handle["continue_on"], handle["preconditions"]), (4200, {"failure": True}, only))
+        self.assertEqual(finish["with"]["args"][-4:], ["finish", "${DELIVERY}", "--exit-code", "${handle.exit_code}"])
+        self.assertEqual(finish["preconditions"], only)
+        self.assertNotIn("handler_on", d)
         code, msg = self.env.run("dags", "--out", str(out), "--handle-step", f"issue.nope={snippet}")
         self.assertNotEqual(code, 0)
         self.assertIn("external の受け渡し先 nope", msg)
+
+    def test_one_external_target_per_rule(self):
+        self.env.plugins = ["dagu"]
+        self.write({"r": self.rule({"name": "a", "external": True}, {"name": "b", "external": True})},
+                   schedule="0 * * * *")
+        code, msg = self.env.run("dags", "--out", str(self.env.tmp / "dags"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("ルールを分けて", msg)
 
     def test_rule_name_must_not_clash(self):
         self.env.plugins = ["dagu"]

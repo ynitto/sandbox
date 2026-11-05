@@ -519,26 +519,30 @@ api-watch は実行の前後だけを受け持ち、処理そのもの（エー�
 | `due --rule R [--target T]` | 実行を待っている受け渡しの ID（古い順。同じレコードの前のものが済んでいないものは除く） | JSON の配列 |
 | `begin ID` | 受け渡しを取り、`lock` を取り、`refresh` で取り直して、実行してよいかを決める。飛ばすときは完了として記録する | `run` / `skip` / `busy` / `wait` / `failed` / `gone` の 1 語 |
 | `render ID [--template F]` | `begin` が取り直したイベントでテンプレート（既定は受け渡し先の `input_template`）を展開する。`{{ event.* }}`・`{{ delivery.attempt }}`・プラグインのフィルタが使える | 展開した文章 |
-| `finish ID [--failed [--message M]] [--handled before]` | 終わりを記録する。成功なら `handled_before_if` を呼び、取り直して処理し終えた状態にし、`lock` を返す。失敗ならあとでやり直す | — |
+| `claim --rule R [--target T]` | 実行を待っているものを古い順に `begin` し、最初に `run` になった 1 件を取る（`busy` / `wait` ならやめる） | ID か空行 |
+| `finish ID [--failed [--message M]] [--exit-code N] [--handled before]` | 終わりを記録する。`--exit-code` が 0 以外なら失敗。成功なら `handled_before_if` を呼び、取り直して処理し終えた状態にし、`lock` を返す。失敗ならあとでやり直す | — |
 
 - `begin` が `run` 以外を出したら、処理を動かさずに `finish` だけ呼べばよい（何もしない）。`busy`（lock が空いていない）と `wait`（取得元が失敗の待ち）は
   試行に数えずに少しあとへ回す
 - 進み具合のログは標準エラーに出す。標準出力は結果だけなので、基盤のステップの出力（Dagu の `output:`）でそのまま受け取れる
 - `finish` が呼ばれないまま止まった（基盤ごと落ちたなど）受け渡しは、`timeout_sec` + 120 秒たつと次の `begin` が取り直す
 
-`dags` は、`external` の受け渡し先ごとに親と子の 2 本のワークフローを書く（Dagu v2 の `dag.run` と `parallel` を使う）:
+1 本のワークフローで 1 回の起動につき 1 件を処理するときは、`claim --rule R` を使う。実行を待っているものを古い順に `begin` し、最初に `run` になった
+1 件の ID を出す（無ければ空行）。`finish ID --exit-code N` は処理のステップの終了コードで成否を決める（0 以外・数でないものは失敗。ID が空なら何もしない）。
+
+`dags` は、`external` の受け渡し先をルールのワークフローの中に書く（1 つのルールに `external` は 1 つまで）:
 
 ```
- Dagu: api-watch-<ルール>（毎分）
-   fetch → evaluate → due-<受け渡し先>（実行を待つ ID の配列を出す）
-   run-<受け渡し先>   子のワークフローを ID ごとに呼ぶ（action: dag.run・parallel の max_concurrent: 1。配列が空なら呼ばない）
- Dagu: api-watch-<ルール>-<受け渡し先>（子。DELIVERY に ID を受け取る）
-   begin（DECISION）→ render（INPUT。input_template があるとき）→ handle（DECISION が run のときだけ）
-   handler_on: success → finish / failure・abort → finish --failed
+ Dagu: api-watch-<ルール>（毎分。1 回の起動で 1 件）
+   fetch → evaluate → claim（DELIVERY に ID）→ render（INPUT。input_template があるとき）→ handle（id: handle）
+   → finish ${DELIVERY} --exit-code ${handle.exit_code}
+   render 以降は DELIVERY が取れたとき（aw_ で始まる）だけ動く。handle は失敗しても finish へ進む（continue_on: failure）
 ```
+
+ワークフローごと止めたときは `finish` まで進まないので、その受け渡しは期限（`timeout_sec` + 120 秒）が切れてから次の起動がもう一度取る。
 
 `handle` は雛形のままでは失敗するので、処理に置き換える。`dags --handle-step <ルール>.<受け渡し先>=<ファイル>` を付けると、ファイルに書いた
-ステップの中身（`action`・`with` など。`name`・`depends`・`preconditions`・`timeout_sec` は `dags` が付ける）を `handle` に差し込む。
+ステップの中身（`action`・`with` など。`name`・`id`・`depends`・`preconditions`・`timeout_sec`・`continue_on` は `dags` が付ける）を `handle` に差し込む。
 例えば Claude Code を動かすなら:
 
 ```yaml
@@ -773,7 +777,7 @@ with:
 | `rebaseline --rule R` / `--source S` | 最新の取得結果を基準値にし直す（その間の変化では発火しない）。`--refetch` で次の取得を全件に、`--now` でいま取り直す |
 | `replay --rule R [--from-fetch N] [--dry-run]` | 保存済みの取得結果で判定をやり直す。API には問い合わせない。既にあるイベントは同じ ID なので積み直さない |
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
-| `due` / `begin` / `render` / `finish` | `external` の受け渡し先を外のワークフローから処理する（上の「外のワークフローで処理する」） |
+| `due` / `claim` / `begin` / `render` / `finish` | `external` の受け渡し先を外のワークフローから処理する（上の「外のワークフローで処理する」） |
 | `forget-handled --rule R [--target T] レコード...` | `refresh` のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる） |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
