@@ -133,7 +133,7 @@ def close(redmine: Redmine, issue: dict, status: str, note: str, log=print) -> i
         return OK
     # 自分がこのチケットで選べるステータスか（Redmine 5.0 以降は allowed_statuses を返す）。選べないステータスは
     # PUT しても黙って無視され、コメントだけが残るので、書く前に確かめる
-    current = redmine.issue(iid, include="allowed_statuses")
+    current = redmine.issue(iid, include="allowed_statuses,journals")
     if (current.get("status") or {}).get("id") == target:
         log(f"#{iid} は既に「{current['status'].get('name')}」なので、何もしません")
         return OK
@@ -141,7 +141,13 @@ def close(redmine: Redmine, issue: dict, status: str, note: str, log=print) -> i
     if isinstance(allowed, list) and target not in [s.get("id") for s in allowed]:
         names = "・".join(str(s.get("name")) for s in allowed) or "なし"
         raise RedmineError(f"#{iid} は「{status}」に変えられません（ワークフローで選べるもの: {names}）")
-    redmine.call("PUT", f"/issues/{iid}.json", {"issue": {"notes": note, "status_id": target}})
+    change: dict[str, Any] = {"status_id": target}
+    # 前の試行でコメントだけが残っていたら（ステータスが無視された）、同じコメントを重ねない
+    if any(str((j or {}).get("notes") or "").strip() == note for j in current.get("journals") or []):
+        log(f"#{iid} には同じコメントが既にあるので、ステータスだけを変えます")
+    else:
+        change["notes"] = note
+    redmine.call("PUT", f"/issues/{iid}.json", {"issue": change})
     after = redmine.issue(iid)
     if (after.get("status") or {}).get("id") != target:
         raise RedmineError(f"#{iid} にコメントしましたが、ステータスが「{status}」になりませんでした"

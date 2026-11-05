@@ -54,6 +54,8 @@ rules:
     on: [appeared, changed]
     # 初回: いま当たっているチケットも完了にする（emit）。これから当たるものだけにするなら baseline
     initial: emit
+    # 文字列などのルールを直したとき、直したルールで当たるようになったチケットも完了にする（rebaseline だと基準にし直すだけで、処理しない）
+    on_rule_change: continue
     targets:
       - name: close
         # コメントする文とステータス（名前か ID）。python3 と redmine_issue.py はフルパスで書く（~ は展開しない）

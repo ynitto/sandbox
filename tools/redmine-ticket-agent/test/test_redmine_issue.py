@@ -93,6 +93,9 @@ class FakeRedmine:
                     if "allowed_statuses" in q.get("include", [""])[0]:
                         ids = outer.allowed.get(iid, [s["id"] for s in STATUSES])
                         it["allowed_statuses"] = [s for s in STATUSES if s["id"] in ids]
+                    if "journals" in q.get("include", [""])[0]:
+                        it["journals"] = [{"id": n, "notes": t, "user": {"id": ME["id"]}}
+                                          for n, t in enumerate(outer.notes.get(iid, []), 1)]
                     return self._send(200, {"issue": it})
                 self._send(404, {})
 
@@ -211,6 +214,13 @@ class CloseTest(unittest.TestCase):
         with self.assertRaisesRegex(ri.RedmineError, "ステータスが「完了」になりませんでした"):
             ri.close(api, self.rm.issues[1], "完了", "済み")
 
+    def test_retry_after_ignored_status_does_not_repeat_the_note(self):
+        self.rm.put(make_issue(1))
+        self.rm.notes[1] = ["済み"]                          # 前の試行でコメントだけが残った
+        self.assertEqual(ri.close(self.api, self.rm.issues[1], "完了", "済み", log=lambda m: None), ri.OK)
+        self.assertEqual(self.rm.puts, [(1, {"status_id": 5})])
+        self.assertEqual(self.rm.notes[1], ["済み"])
+
     def test_cli_reads_env_and_event_file(self):
         self.rm.put(make_issue(3, description="本文に自動完了"))
         ev = Path(tempfile.mkdtemp()) / "ev.json"
@@ -286,6 +296,16 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(self.rm.puts, [])
         self.rm.put(make_issue(1, "ふつう（自動完了）"))
         self.cycle()
+        self.assertEqual(self.rm.issues[1]["status"]["name"], "完了")
+
+    def test_changing_the_keyword_closes_tickets_that_now_match(self):
+        self.rm.put(make_issue(1, "【片付け】古いブランチ"))
+        self.cycle()
+        self.assertEqual(self.rm.puts, [])
+        cfg = yaml.safe_load(self.cfg.read_text(encoding="utf-8"))
+        cfg["rules"]["auto-close"]["filter"]["all"][0]["any"][0]["value"] = "片付け"
+        self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        self.cycle()                                         # on_rule_change: continue なので、基準にし直さず完了にする
         self.assertEqual(self.rm.issues[1]["status"]["name"], "完了")
 
     def test_reassigned_or_unmatched_while_waiting_is_not_closed(self):

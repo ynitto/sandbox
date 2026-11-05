@@ -39,15 +39,19 @@ Dagu: api-watch-auto-close（毎分）
 - 未完了の確認は取得の `status_id=open` と `filter` の `status.is_closed`（Redmine 5.1 以降。無い版では `falsy` が欠落を真とみなし、
   `close` が「既に目的のステータス」を見て何もしない）
 - `initial: emit` を既定にする。「いま当たっているチケットも片付けたい」が主な使い方のため。GitLab 版の `baseline` と逆なので README で明示する
+- `on_rule_change: continue` にする。既定の `rebaseline` では、文字列（`filter`）を変えたとき今ある当たりを基準に取り込むだけで処理しない。
+  `continue` なら新しく当たったチケットは前回の観測が無いので `appeared` になり、完了にする（`watch` を変えたときは当たっているもの全部が
+  `changed` になるが、どれも完了にすべきものなので差し支えない）
 
 ### 2.2 close の手順と冪等性
 
 1. `--status` が数でなければ `GET /issue_statuses.json` で名前から ID を引く（無ければ一覧を添えて失敗）
-2. イベントのレコード、次に `GET /issues/{id}.json?include=allowed_statuses` の現在値が既に目的のステータスなら、何もせず 0 で終わる
+2. イベントのレコード、次に `GET /issues/{id}.json?include=allowed_statuses,journals` の現在値が既に目的のステータスなら、何もせず 0 で終わる
    （PUT の応答だけを失った再試行で、コメントを 2 回書かない）
 3. `allowed_statuses`（Redmine 5.0 以降）に目的のステータスが無ければ、書かずに失敗する。Redmine は選べない `status_id` を
    黙って無視して 204 を返し、コメントだけが残るため
 4. `PUT /issues/{id}.json` に `{"issue": {"notes": N, "status_id": S}}`。コメントとステータスが 1 つのジャーナルになる
+   ただし同じ文のコメントがジャーナルに既にあれば（前の試行でステータスだけが無視された）、`notes` を送らずステータスだけを変える
 5. `GET /issues/{id}.json` でステータスが変わったかを確かめ、変わっていなければ失敗（`allowed_statuses` を返さない古い版の保険）
 
 成功のあとは `finish` の取り直しで完了のステータスが処理し終えた状態になり、次の取得からは `status_id=open` で一覧に出ないので、
@@ -78,6 +82,8 @@ offset、`include=allowed_statuses`、選べない `status_id` を黙って無�
 - あとから文字列を足したチケットも完了になる
 - 待つ間に担当が替わった・文字列を消したチケットは完了にしない
 - 選べないステータスのときは何も書かずに失敗し、直したあとの再試行で完了になる
+- 文字列を変えると、変えたあとの文字列を含む今あるチケットも完了になる
+- 前の試行でコメントだけが残っていたら、やり直しでコメントを重ねない
 - `dags` がワークフロー 1 本と整理のワークフローを書き、プラグインと `.env` のパスが入る
 
 ## 4. 限界
