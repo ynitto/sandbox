@@ -160,6 +160,13 @@ class FakeAPI:
             since = int(q.get("since_rev") or 0)
             got = [x for x in items if x["rev"] > since]
             return self._send(h, 200, {"items": got, "sync_token": max([since] + [x["rev"] for x in items])})
+        if p.startswith("/item/"):                      # 1 件だけ返す（受け渡し先の refresh 用）
+            with self.lock:
+                it = self.items.get(int(p.split("/")[2]))
+            return self._send(h, 200, it) if it is not None else self._send(h, 404, {"message": "not found"})
+        if p == "/_put":                                # 試験のコマンドが API 側のレコードを書き換える（書き込みの代わり）
+            self.put(int(q.pop("id")), **q)
+            return self._send(h, 200, {})
         return self._send(h, 404, {"message": "not found"})
 
 
@@ -263,6 +270,7 @@ class Env:
              "request": {"url": "{{ conn.url }}" + path,
                          "headers": {"Authorization": "Bearer {{ conn.token }}"}},
              "retry": {"attempts": 3, "backoff_sec": 0},
+             "failure_backoff_sec": 0,      # 失敗のあとすぐ取り直す試験が多いので、失敗の共有の待ちは切る
              "resume_max_age_sec": 3600}
         for k, v in kw.items():
             if k == "query":
@@ -277,6 +285,7 @@ class Env:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             plug = [x for p in self.plugins for x in ("--plugin", p)]
             code = cli.main([*plug, "--config", str(self.config_path), "--connections", str(self.conn_file), *args])
+        self.stdout = out.getvalue()        # 結果だけ（ログは標準エラー）
         return code, out.getvalue() + err.getvalue()
 
     def ok(self, test, *args: str) -> str:

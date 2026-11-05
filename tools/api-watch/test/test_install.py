@@ -42,7 +42,7 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
             env.api.put(1, status="b")
         self.assertEqual(len(env.enqueued()), 1)
-        p = run(base + ["dags", "--out", str(env.tmp / "dags")])
+        p = run(base + ["dags", "--out", str(env.tmp / "dags"), "--schedule", "*/5 * * * *"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         text = (env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8")
         self.assertIn(json.dumps(str(far.resolve())), text)                    # DAG はこの .pyz を呼ぶ

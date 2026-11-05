@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 import urllib.parse
@@ -34,6 +35,10 @@ class FetchOutcome:
     not_modified: int = 0
     message: str = ""
     transient: bool = False
+
+
+class Deferred(Exception):
+    """取得元が失敗のあとの待ち（failure_backoff_sec）の中なので、いまは問い合わせない。"""
 
 
 def _loads(text: str | None) -> Any:
@@ -160,15 +165,92 @@ class Fetcher:
 
     # -- 取得 -----------------------------------------------------------------
 
-    def run(self, src: SourceSpec, force: bool = False) -> FetchOutcome:
+    def _recent(self, src: SourceSpec, fp: str) -> bool:
+        """min_interval_sec の間に（この取得条件で）取得し終えているか。"""
+        if not src.min_interval_sec:
+            return False
+        row = self.store.source_row(src.name)
+        return (row["fingerprint"] == fp and bool(row["last_success_at"])
+                and now() - row["last_success_at"] < src.min_interval_sec)
+
+    def _cooling(self, src: SourceSpec, fp: str) -> FetchOutcome | None:
+        """前の取得が失敗して、どのプロセスも問い合わせを控える時刻の前なら deferred（rate_limit.group の失敗も見る）。"""
+        row = self.store.source_row(src.name)
+        until = row["retry_not_before"] if row["fingerprint"] == fp else None
+        why = f"前回の取得が失敗した（連続 {row['consecutive_failures']} 回）"
+        if src.rate_group:
+            g = self.store.group_row(src.rate_group)["retry_not_before"]
+            if g and (not until or g > until):
+                until, why = g, f"同じ group（{src.rate_group}）の取得が失敗した"
+        if not until or until <= now():
+            return None
+        return FetchOutcome(src.name, "deferred",
+                            message=f"{why}ので、あと {until - now():.0f} 秒は問い合わせません（前回までの取得結果を使います）")
+
+    def _not_due(self, src: SourceSpec, fp: str) -> FetchOutcome | None:
+        """schedule があり、直近の予定の時刻より後に（誰かが）取得し終えていれば skipped。"""
+        if src.cron is None:
+            return None
+        row = self.store.source_row(src.name)
+        done = row["last_success_at"] if row["fingerprint"] == fp else None
+        if not done:
+            return None
+        t = datetime.fromtimestamp(now())
+        prev = src.cron.previous(t)
+        if prev is None or done < prev.timestamp():
+            return None
+        nxt = src.cron.next(t)
+        return FetchOutcome(src.name, "skipped",
+                            message="予定（" + src.schedule + "）の時刻のあとに取得済みなので取得しません"
+                                    + (f"。次は {nxt:%m-%d %H:%M} 以降" if nxt else ""))
+
+    def run(self, src: SourceSpec, force: bool = False, jitter: bool = True) -> FetchOutcome:
+        """取得する。同じ取得元を複数のワークフローが呼んでも、API への問い合わせは 1 回にまとめる:
+
+        - min_interval_sec の間に取得し終えていれば、待たずに「取得しない」で終わる（その結果を判定に使う）
+        - jitter_sec があれば 0〜その秒数だけランダムに待ってから取得する（定刻に API へ集中させない）
+        - 別のプロセスが取得中なら busy_wait_sec まで終わるのを待ち、待っている間に取得し終えたらその結果を使う
+        """
         conn = self.cfg.resolve_connection(src.connection)
         fp = src.fingerprint(conn)
-        lease = f"fetch:{src.name}"
-        if not self.store.acquire(lease, src.lease_sec):
+        # rate_limit.group があれば、同じ group の取得元とは同時に取得しない（要求の間隔を正しく共有するため）
+        lease = f"fetch-group:{src.rate_group}" if src.rate_group else f"fetch:{src.name}"
+        if not force:
+            not_due = self._not_due(src, fp)
+            if not_due:
+                return not_due
+        if not force and self._recent(src, fp):
+            return FetchOutcome(src.name, "skipped",
+                                message=f"前回の取得から {src.min_interval_sec:.0f} 秒たっていないので取得しません")
+        if not force:
+            cooling = self._cooling(src, fp)
+            if cooling:
+                return cooling
+        if jitter and not force and src.jitter_sec > 0:
+            delay = random.uniform(0, src.jitter_sec)
+            log(f"[{src.name}] API への問い合わせを {delay:.0f} 秒ずらします")
+            self.sleep(delay)
+        started = now()
+        deadline = started + src.busy_wait_sec
+        waited = False
+        while not self.store.acquire(lease, src.lease_sec):
             holder = self.store.lease_holder(lease)
             who = f"{holder['host']} pid {holder['pid']}" if holder else "別のプロセス"
-            return FetchOutcome(src.name, "busy", message=f"{who} が取得中なので何もしません")
+            if now() >= deadline:
+                return FetchOutcome(src.name, "busy", message=f"{who} が取得中なので何もしません")
+            if not waited:
+                log(f"[{src.name}] {who} が取得中なので、終わるのを最大 {src.busy_wait_sec:.0f} 秒待ちます")
+                waited = True
+            self.sleep(min(1.0, max(0.05, deadline - now())))
         try:
+            if not force:
+                row = self.store.source_row(src.name)
+                if waited and row["fingerprint"] == fp and row["last_success_at"] and row["last_success_at"] >= started:
+                    return FetchOutcome(src.name, "skipped", message="別のプロセスがいま取得した結果を使います")
+                # ずらしている・待っている間に、別のプロセスが取得し終えた・失敗した
+                for again in (self._not_due(src, fp), self._cooling(src, fp)):
+                    if again:
+                        return again
             return self._run_locked(src, conn, fp, force, lease)
         finally:
             self.store.release(lease)
@@ -211,15 +293,7 @@ class Fetcher:
         st = json.loads(fetch["page_state"])
         ctx = self._context(src, conn, position)
 
-        def on_request(ts: float) -> None:
-            with self.store.tx() as db:
-                db.execute("UPDATE sources SET last_request_at=?, last_attempt_at=? WHERE name=?",
-                           (ts, ts, src.name))
-
-        client = Client(min_interval=src.rate_min_interval_sec, per_minute=src.rate_per_minute,
-                        attempts=src.retry_attempts, backoff=src.retry_backoff_sec,
-                        max_backoff=src.retry_max_backoff_sec, max_wait=src.max_wait_sec,
-                        last_request_at=row["last_request_at"], on_request=on_request, sleep=self.sleep)
+        client = self._client(src)
         outcome = FetchOutcome(src.name, "failed", fetch_id=fid)
         try:
             while not st.get("done"):
@@ -234,13 +308,96 @@ class Fetcher:
             with self.store.tx() as db:
                 db.execute("UPDATE fetches SET status='failed', error=?, updated_at=?, requests=requests+? "
                            "WHERE id=?", (msg, now(), 0, fid))
-                db.execute("UPDATE sources SET last_status='error', last_error=?, "
-                           "consecutive_failures=consecutive_failures+1, next_allowed_at=? WHERE name=?",
-                           (msg, (now() + retry_after) if retry_after else None, src.name))
+            self._cool_down(src, msg, retry_after)
             outcome.message = msg
             outcome.transient = isinstance(e, TransientError)
             outcome.requests = client.requests
             return outcome
+
+    def _cool_down(self, src: SourceSpec, msg: str, retry_after: float | None) -> None:
+        """失敗したら、どのワークフローもしばらく問い合わせない（連続するほど延ばす）。API の Retry-After が長ければそちら。"""
+        fails = int(self.store.source_row(src.name)["consecutive_failures"] or 0)
+        cool = min(src.failure_max_backoff_sec, src.failure_backoff_sec * (2 ** min(fails, 20)))
+        if retry_after:
+            cool = max(cool, retry_after)
+        with self.store.tx() as db:
+            db.execute("UPDATE sources SET last_status='error', last_error=?, "
+                       "consecutive_failures=consecutive_failures+1, next_allowed_at=?, retry_not_before=? "
+                       "WHERE name=?",
+                       (msg, (now() + retry_after) if retry_after else None, (now() + cool) if cool else None,
+                        src.name))
+            if src.rate_group and cool:
+                # 同じ API のほかの取得元も、しばらく問い合わせない
+                db.execute("UPDATE rate_groups SET retry_not_before=MAX(COALESCE(retry_not_before, 0), ?) "
+                           "WHERE name=?", (now() + cool, src.rate_group))
+
+    def _client(self, src: SourceSpec) -> Client:
+        """要求の間隔・1 分あたりの上限を、取得元ごと（rate_limit.group があれば group ごと）に前の実行の要求も数えて守る。"""
+        row = self.store.source_row(src.name)
+        pace = self.store.group_row(src.rate_group) if src.rate_group else row
+        try:
+            recent = [float(x) for x in json.loads(pace["recent_requests"] or "[]")]
+        except (TypeError, ValueError):
+            recent = []
+
+        def on_request(ts: float) -> None:
+            nonlocal recent
+            recent = [x for x in recent if x > ts - 60] + [ts]
+            with self.store.tx() as db:
+                db.execute("UPDATE sources SET last_request_at=?, last_attempt_at=?, recent_requests=? WHERE name=?",
+                           (ts, ts, json.dumps(recent), src.name))
+                if src.rate_group:
+                    db.execute("UPDATE rate_groups SET last_request_at=?, recent_requests=? WHERE name=?",
+                               (ts, json.dumps(recent), src.rate_group))
+
+        return Client(min_interval=src.rate_min_interval_sec, per_minute=src.rate_per_minute,
+                      attempts=src.retry_attempts, backoff=src.retry_backoff_sec,
+                      max_backoff=src.retry_max_backoff_sec, max_wait=src.max_wait_sec,
+                      last_request_at=pace["last_request_at"], on_request=on_request, sleep=self.sleep,
+                      recent=[x for x in recent if x > now() - 60])
+
+    def get_json(self, src: SourceSpec, url: str, headers: dict | None, query: dict | None, ctx_extra: dict,
+                 timeout: float | None = None, method: str = "GET") -> Any:
+        """取得元の接続で 1 回だけ要求して JSON を返す（404 なら None）。受け渡し先の refresh とチェックが使う。
+
+        url・headers・query はテンプレートとして展開する（{{ conn.* }}・{{ env.* }} と ctx_extra の名前）。headers が
+        None なら取得元のヘッダー（認証）を使う。要求の間隔・1 分あたりの上限・失敗の待ちは取得元（と rate_limit.group）と
+        分け合い、失敗したら取得元を失敗の待ちに入れて TransientError / PermanentError、待ちの中なら Deferred。
+        排他は取らない（1 件だけで、取得の途中に挟まっても取得の結果を壊さないため）。"""
+        conn = self.cfg.resolve_connection(src.connection)
+        fp = src.fingerprint(conn)
+        cooling = self._cooling(src, fp)
+        if cooling:
+            raise Deferred(cooling.message)
+        ctx = self._context(src, conn, None)
+        ctx.update(ctx_extra)
+        hdrs = {str(k): str(v) for k, v in template.render(headers if headers is not None else src.headers,
+                                                            ctx).items() if v is not None}
+        for k, v in hdrs.items():
+            if is_secret_name(k) or k.lower() in ("authorization", "cookie"):
+                REDACT.add(v)
+                if " " in v:
+                    REDACT.add(v.split(" ", 1)[1])
+        full = build_url(str(template.render(url, ctx)), dict(template.render(query or {}, ctx)))
+        req = Request(method=method, url=full, headers=hdrs, body=None, timeout=timeout or src.timeout_sec)
+        try:
+            resp = self._client(src).send(req, ok_status=(200, 203, 404))
+            if resp.status == 404:
+                return None
+            return resp.json()
+        except (TransientError, PermanentError) as e:
+            self._cool_down(src, REDACT(str(e)), getattr(e, "retry_after", None))
+            raise
+
+    def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
+        """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。"""
+        body = self.get_json(src, spec.url, spec.headers, spec.query, {"event": event}, spec.timeout_sec, spec.method)
+        if body is None:
+            return None
+        rec = jpath.get(body, spec.records)
+        if isinstance(rec, list):
+            rec = rec[0] if rec else None
+        return None if rec is jpath.MISSING else rec
 
     def _resume_or_start(self, src: SourceSpec, row: Any, epoch: int) -> Any:
         prev = self.store.one("SELECT * FROM fetches WHERE source=? AND epoch=? AND status IN ('running','failed') "
@@ -393,8 +550,11 @@ class Fetcher:
             db.execute("UPDATE fetches SET status='complete', finished_at=?, updated_at=?, page_state=NULL, "
                        "position_to=?, error=NULL WHERE id=?", (now(), now(), _dumps(new_pos), fid))
             db.execute("UPDATE sources SET position=?, last_success_at=?, last_status='ok', last_error=NULL, "
-                       "last_fetch_id=?, consecutive_failures=0, next_allowed_at=NULL WHERE name=?",
+                       "last_fetch_id=?, consecutive_failures=0, next_allowed_at=NULL, retry_not_before=NULL "
+                       "WHERE name=?",
                        (_dumps(new_pos), now(), fid, src.name))
+            if src.rate_group:
+                db.execute("UPDATE rate_groups SET retry_not_before=NULL WHERE name=?", (src.rate_group,))
             if records is not None:
                 keys = []
                 for r in records:

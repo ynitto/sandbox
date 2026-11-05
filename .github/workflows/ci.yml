@@ -78,10 +78,10 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
-          # dagu-issue-loop。GitLab は手元の HTTP サーバ、エージェント CLI は小さなスクリプトで偽装し、
-          # 変化の検知・重複制御・1 セッションの排他（並行 run・取り残された CLI・SIGTERM）を見る。
-          - package: dagu-issue-loop
-            suites: tools/dagu-issue-loop/test
+          # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、api-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
+          # 本物の api-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
+          - package: gitlab-issue-agent
+            suites: tools/gitlab-issue-agent/test
           # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
           # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
           - package: api-watch
@@ -129,10 +129,10 @@ jobs:
             echo "::endgroup::"
           done
 
-  # dagu-issue-loop は Windows でもそのまま動かす（ファイルロック・プロセスの生存確認・
-  # 子孫ごとの停止を OS ごとに切り替えている）。その切り替えを Windows の実機で確かめる。
-  dagu-issue-loop-windows:
-    name: python (dagu-issue-loop, windows)
+  # gitlab-issue-agent は Windows でもそのまま動かす（api-watch のプラグインと、api-watch をワークフローの順で呼ぶ流れ）。
+  # Windows の実機で確かめる。
+  gitlab-issue-agent-windows:
+    name: python (gitlab-issue-agent, windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -141,7 +141,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: unittest
-        run: python -m unittest discover -s tools/dagu-issue-loop/test
+        run: python -m unittest discover -s tools/gitlab-issue-agent/test
 
   # api-watch も Windows でそのまま動かす（SQLite のロック・プロセスの生存確認・強制終了からの引き継ぎ）。
   api-watch-windows:

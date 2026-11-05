@@ -5,9 +5,10 @@
 
 ## 1. 位置づけ
 
-[dagu-issue-loop](./dagu-issue-loop-design.md) は GitLab の issue 専用で、変化の判定・待ち行列・エージェント CLI の
-1 セッション実行までを 1 つのスクリプトが持つ。本設計はそこから「API の取得」「変更の検知」「Dagu への受け渡し」を
-切り出して汎用にし、**実行（後続処理）は丸ごと Dagu に渡す**。
+GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent](./gitlab-issue-agent-design.md) のような用途から、「API の取得」「変更の検知」
+「受け渡し」を汎用に切り出したもの。**実行（後続処理）は Dagu のワークフローかその場のコマンドに渡す**。gitlab-issue-agent は
+取得・検知・実行待ち・1 セッションの排他を本設計に、エージェント CLI の実行を Dagu の `harness.run` に任せ、GitLab 固有の部分を
+本設計のプラグイン（`gitlab_issue.py`）として持つ。
 
 | 方針 | 決め方 |
 |---|---|
@@ -69,7 +70,7 @@
   「観測値は進んだがイベントが無い」「イベントはあるが受け渡しが無い」が起きない
 - Windows・WSL2・Linux の標準ライブラリにあり、追加の導入が要らない。`BEGIN IMMEDIATE` で複数のプロセス
   （取得元ごとの DAG・再送の DAG・後続の DAG からの ack）の書き込みを直列にできる
-- dagu-issue-loop の JSON + flock は 1 プロセス 1 ファイルの読み書きには十分だが、受け渡し先ごと・レコードごとの
+- JSON のファイル 1 つ + flock は 1 プロセス 1 ファイルの読み書きには十分だが、受け渡し先ごと・レコードごとの
   状態を持つと全体の書き戻しが重く、部分の遷移を原子的にできない
 - 制約: SQLite のロックはネットワーク越し・`/mnt/c` 越しでは効かない。状態のフォルダは動かす OS のローカルに置く（README に明記）
 
@@ -127,6 +128,56 @@
 取得元ごとに期限つきの排他（`leases`、`fetch:<名前>`）を取る。期限はページごとに延ばす。持ち主が同じ PC で死んでいれば
 （pid の生存確認、Windows は `OpenProcess`）即座に、別の PC なら期限切れで奪う。Dagu の DAG が重なっても、手で `fetch` を
 叩いても、同じ取得元を同時に 2 回取らない。判定も取得元ごとに排他する（`eval:<名前>`）。
+
+### 3.6 いつ取得するか・取得の共有とずらし
+
+**起動と取得を分ける**: いつ起動するかは Dagu（DAG の `schedule`）が、起動されたときに API へ問い合わせるかは api-watch が取得元ごとに決める。
+初版は設定の `schedule` を `dags` が DAG に書き写していたが、起動の間隔が設定と DAG の 2 か所に分かれ、設定だけ直すとずれた。
+今は書き写さない。取得元の `schedule`（cron。`apiwatch/cron.py`。この PC の時刻）は「問い合わせの予定」で、`fetch` が起動されるたびに
+「直近の予定の時刻より後に、この取得元を取得し終えているか」（`last_success_at` ≥ 直近の予定の時刻）を見て、済んでいれば `skipped` で終わる。
+DAG は毎分起動にしておけば、予定は api-watch の設定 1 か所で決まる。取得元に `schedule` が無ければ起動されるたびに取得し、予定は
+Dagu の起動間隔に任せる（`dags --schedule` か手で書く）。どちらでも動く。
+
+`dags` は `--schedule` が無ければ毎分の DAG を書く。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
+そのときは止めて `--schedule` か設定を求める。`dags` は雛形を作るだけで、既にあるファイルは `--force` のときだけ上書きする
+（DAG の `schedule` は利用者が直す場所なので、作り直しで消さない）。
+
+1 つの取得元を、それぞれ自分のワークフロー（§5.5）で取得から処理まで行う複数のルールが使うと、同じ API を何度も呼びかねない。
+`fetch` は次の順で判断して、問い合わせを 1 回にまとめる。
+
+0. `schedule` があり、直近の予定の時刻のあとに取得し終えていれば、待たずに `skipped` で終わる。続く `evaluate` はその取得結果を使う
+1. `min_interval_sec` の間に（同じ指紋で）取得し終えていれば、待たずに `skipped` で終わる
+2. `jitter_sec` があれば 0〜その秒数だけランダムに待つ（定刻に複数の PC・ワークフローが API へ集中しない）。手で叩くときは
+   `--no-jitter`、`--force` でも待たない。1 で終わるときは待たない（取得しないのにずらしても意味がない）
+3. 排他（§3.5）が取れなければ、`busy_wait_sec` まで 1 秒ごとに取り直す。取れるまでの間に別のプロセスが取得し終えていれば
+   （`last_success_at` が待ち始めた時刻以降）、その結果を使って `skipped` で終わる。待っても取れなければ従来どおり `busy`
+4. 排他を取ったあと、改めて 0・1 と失敗の待ちを見る（ずらしている・待っている間に別のワークフローが取得した・失敗した場合）
+
+DAG の fetch ステップの `timeout_sec` には、`jitter_sec` と `busy_wait_sec` を足す。
+
+**何本のワークフローが取得するか**（`Config.fetching_workflows`）: command の受け渡し先を持つルールは自分のワークフローで、それ以外のルール
+（とルールの無い取得元）は取得元のワークフローで取得する。2 本以上で、取得元に `schedule` が無いなら（`schedule` があれば 0 だけで
+予定の時刻ごとに 1 回にまとまる）、設定の読み込みで次を必須にする（注意ではなく誤りにする。抜けると、起動したワークフローの数だけ毎回問い合わせる）:
+
+- `min_interval_sec` > 0（成功した取得は、ワークフローの本数によらず `min_interval_sec` に 1 回まで）
+- `busy_wait_sec` > 0（待たずに終わると、続く `evaluate` が前回までの結果しか見ず、次の起動まで処理が遅れる）
+- `jitter_sec` < `min_interval_sec`（ずらしが長いと、先に取得したワークフローの結果が `min_interval_sec` を過ぎてから起きるワークフローがいて、
+  もう一度問い合わせる）
+
+**失敗の共有**: 取得が失敗したら（一時的な失敗も、認証などの直らない失敗も）、取得元に `retry_not_before` = 今 + `failure_backoff_sec` ×
+2^(連続の失敗回数)（上限 `failure_max_backoff_sec`。API の `Retry-After` が長ければそちら）を書く。この時刻までは、どのプロセスも
+（失敗したワークフローの Dagu の再試行も）問い合わせず `deferred`（終了コード 0）で終わり、前回までの取得結果で判定を続ける。
+ずらし・待ちのあとにも見直す。成功したら消す。`--force` は見ない。従来は `Retry-After` が無い失敗のあと、起動したワークフローがそれぞれ
+すぐに取り直していた（ページごとに `retry.attempts` 回 × Dagu の再試行 × ワークフローの本数）。
+
+**1 分あたりの上限**: `rate_limit.per_minute` は 1 プロセスの中で数えていたので、取得し終えた直後に別のワークフローが取得すると上限を超えた。
+送った要求の時刻（直近 60 秒）を取得元の `recent_requests` に残し、次のプロセスはそれを数えてから始める。取得は排他（§3.5）で
+同時には 1 つなので、これで取得元ごとの上限になる。
+
+**同じ API の別の取得元（`rate_limit.group`）**: 同じ group の取得元は、排他（§3.5）を group で 1 つ（`fetch-group:<名前>`）にして同時には
+取得しない。要求の時刻（`last_request_at`・直近 60 秒の `recent_requests`）と失敗の待ち（`retry_not_before`）を `rate_groups` の行に持ち、
+`rate_limit.min_interval_sec`・`per_minute` は group の全部の要求で数え、どれかが失敗したら group の全部が待つ。group の中で間隔・上限の値が
+違うと、どれが効くか分からないので設定の誤りにする。取得は同時に 1 つなので、要求の数え方はプロセスの中の記録と DB の記録の継ぎ足しで足りる。
 
 ## 4. 判定
 
@@ -219,6 +270,85 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 `reconcile` が Dagu に問い合わせて記録するので、後続の DAG を変えずに済む（`command` アダプタでは `status_command`）。どちらも無い場合、`order: completion` の受け渡し先では
 同じレコードの次のイベントが渡らない（README に明記）。
 
+### 5.5 その場で実行する受け渡し先（command）と、1 本のワークフロー
+
+受け渡し先に `workflow` の代わりに `command`（argv）を書くと、アダプタで別のワークフローへ渡さず、`work` がその場で実行する。
+取得 → 判定 → 処理を 1 本のワークフロー（`fetch --source S` → `evaluate --rule R` → `work --rule R`）で行い、Dagu 側に
+受け渡し先の DAG もキューも要らない。`run --rule R` は同じことを 1 つのコマンドで行う。
+
+- 受け渡しの行（deliveries）・ID・順序（`order`）・試行回数と間隔（`max_attempts` / `retry_backoff_sec`）・`retry` / `skip` は
+  `workflow` の受け渡し先と同じものを使う。状態は `pending` → `sending`（実行中。期限は `timeout_sec` + 120 秒）→ `done`、
+  失敗は `send_failed`（間隔をおいて次の `work` で同じ ID のまま再実行）→ 上限で `dead`。`dispatched` と `failed` は通らない
+- 1 回の `work` では同じ受け渡しを 2 回試さない（`retry_backoff_sec: 0` でも、失敗を同じ実行の中で上限まで繰り返さない）
+- コマンドには `params_for` と同じ値を環境変数で渡し（`APIWATCH_EVENT_FILE` など）、argv にも `{{ event.* }}`・`{{ delivery.* }}`・
+  `{{ env.* }}` を埋められる。標準出力・標準エラーはそのまま流す（Dagu のステップのログに出る）
+- `timeout_sec` を過ぎたら終了を頼み、15 秒で強制終了して失敗として数える。`work` が止められた（SIGTERM など）ときは実行中のコマンドへ
+  同じシグナルを伝え、終わるのを待って失敗として記録し、終了コード 1 で終わる
+- 同じ `work` を 2 つ動かしても、`sending` への書き換えを条件付きの UPDATE で取り合うので、1 件を 2 回実行しない。プロセスが死んだら、
+  期限が過ぎたあとの `work` が同じ ID で実行し直す（少なくとも 1 回。冪等にするのはコマンドの側）
+- `dispatch` はこの受け渡し先を飛ばす。`workflow` の受け渡し先が 1 つも無ければ `delivery`（アダプタ）は要らない
+- `dags` は、command の受け渡し先を持つルールごとに `<prefix>-<ルール名>` のワークフロー（fetch → evaluate → [dispatch] → work）の雛形を書く。
+  起動間隔は `--schedule`（既定は毎分。§3.6）。毎分起動なら、予定の時刻以外は問い合わせず、`work` が失敗したもののやり直しだけを進める。
+  work のステップには上限を付けない（1 件ごとの上限は `timeout_sec`）。
+  どのルールも自分のワークフローを持つ取得元には取得元の DAG を、`workflow` の受け渡し先が無ければ再送の DAG を書かない
+
+### 5.6 実行の前後の取り直し（`refresh`）と「処理し終えた状態」
+
+ポーリングで拾った変化を実行するまでには間があり、実行するコマンド自身がレコードを書き換えることもある。どちらも受け渡し先ごとの事情なので、
+ルールの観測値（`rule_records`。ほかの受け渡し先とも共有）は動かさず、`refresh` のある受け渡し先 × レコードごとに「最後に処理し終えた
+状態」（`handled_records`。監視する値とそのハッシュ）を持つ。`work` の 1 件は:
+
+1. イベントの `after`（監視する値）のハッシュが処理し終えた状態と同じなら、取り直さずに `done`（`last_error` に理由）。
+   コマンド自身の書き込みで出たイベント・まとめて処理し終えた古いイベントはここで落ち、API への問い合わせは 0
+2. `refresh` の要求で 1 件取り直す。404 → `done`（見つからない）。ルールの `filter` から外れた → `done`。監視する値が処理し終えた状態と同じ → `done`
+3. 取り直したレコードを入れたイベントの JSON（`<イベント ID>--<受け渡し先>.json`。ほかの受け渡し先のファイルは書き換えない）と、
+   `APIWATCH_ATTEMPT`・`APIWATCH_RESULT_FILE` を渡してコマンドを実行する
+4. 成功したら、結果ファイルが `{"handled": "before"}` でなければもう一度取り直し、その監視する値を処理し終えた状態にする。
+   `before` なら 2 の値（実行前）にする。取り直しに失敗したら 2 の値にとどめる（取りこぼさない側）
+
+取り直しは排他（§3.5）を取らない。1 件だけで、取得の途中に挟まっても取得の結果を壊さないため。要求の間隔・1 分あたりの上限・失敗の待ちは
+取得元（と `rate_limit.group`）と分け合い、取り直しの失敗も取得元を失敗の待ちに入れる。待ちの中なら、試行に数えずにあとへ回す。
+処理し終えた状態は、ルールの観測値が消えたレコードのものを `gc` で消し、`forget-rule` でルールごと消す。`forget-handled` で個別に忘れさせる。
+
+### 5.7 外のワークフローで処理する（`external`）と、プラグインの口
+
+処理（エージェントの CLI など）を api-watch のプロセスの中で動かすと、止める・時間切れ・ログ・実行履歴を api-watch が持つことになり、
+ワークフロー基盤の画面から見えない。`external: true` の受け渡し先は api-watch が実行せず、§5.5 の `work` の 1 件を、基盤のステップから呼べる
+コマンドに分ける。
+
+| コマンド | `work` の中のどこか | 状態 |
+|---|---|---|
+| `due` | 実行を待っている受け渡しを探す（`_blocked` で同じレコードの前を待つ） | 何も変えない |
+| `begin` | 受け渡しを取る（`sending`・期限 `timeout_sec` + 120 秒）→ 処理し終えた状態との比較 → `lock` → `refresh` → `filter` → `skip_if` | 実行するなら `delivery_runs` に開始の時刻・実行前の監視する値・`lock` を書く |
+| `render` | `begin` が書いたイベントの JSON（`<イベント ID>--<受け渡し先>.json`）でテンプレートを展開する | 何も変えない |
+| `finish` | `handled_before_if` → 実行のあとの `refresh` → 処理し終えた状態の記録 → 完了 / 失敗 → `lock` を返す | `delivery_runs` を消す |
+
+`begin` と `finish` は別のプロセスなので、`deliveries.owner`（プロセスごと）ではなく `delivery_runs` の行と `sending` の状態でつなぐ。
+`lock` も同じ理由で、pid で死活を見る取得の排他（§3.5）とは別に、持ち主を受け渡しの ID にした期限つきの排他（`Store.hold`）にした。
+`finish` が呼ばれないまま基盤ごと落ちても、受け渡しの期限と `lock` の期限が切れれば次の `begin` が取り直す（少なくとも 1 回）。
+`work`（`command` の受け渡し先）も同じ `begin` / `finish` を 1 つのプロセスで呼ぶだけにして、振る舞いを 1 つにした。
+
+ログは標準エラーに出す。標準出力を結果だけ（`due` の配列・`begin` の 1 語・`render` の文章）にして、Dagu のステップの `output:` で受けるため。
+
+`claim` は `due` の古い順に `begin` を呼び、最初に `run` になった 1 件の ID を出す（`skip` などはそのまま次へ、`busy` / `wait` ならやめる）。
+`finish --exit-code N` は処理のステップの終了コードで成否を決める（数でなければ失敗。ID が空なら何もしない）。
+
+`dags` は `external` の受け渡し先を、ルールのワークフロー 1 本の中に `claim`（`output: DELIVERY`）→ `render`（`output: INPUT`）→
+`handle`（`id: handle`・`continue_on: failure`）→ `finish ${DELIVERY} --exit-code ${handle.exit_code}` として書く。`render` 以降は
+`preconditions` の `re:^aw_`（取れた ID があるとき）で動く。1 回の起動で 1 件だけ処理する。確かめたのは Dagu v2.25.2 のスキーマと実装
+（`${<ステップ>.exit_code}` で前のステップの終了コードを参照できる、`harness.run` の `with.stdin` は文字列で、組み込みの claude などは
+標準入力に流す）。書き出した DAG はそのスキーマで検証した。
+
+当初は親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` → `render` → `handle`、`handler_on` で
+`finish`）の 2 本にしていた。1 回の起動で全部を流せ、子の `handler_on.abort` で中止も記録できたが、ワークフローが 2 本になる。1 本にするため、
+1 回の起動で 1 件だけにし（同時に 1 つしか動かさないので待ちはほとんど変わらない）、中止は受け渡しの期限切れで取り直すことにした。
+`handle` は処理ごとに違うので雛形にし、`--handle-step` で中身を差し込めるようにした。1 つのルールに `external` の受け渡し先は 1 つまで。
+
+**プラグインの口**（`apiwatch/plugins/__init__.py`・`apiwatch/hooks.py`）: アダプタ・コマンドに加えて、フィルタ（テンプレートの関数）と
+チェック（実行の前後の真偽）を名前で登録できる。プラグインは本体の内部に触らず、チェックの HTTP も `CheckContext.get_json` を通す。
+取得元の接続・要求の間隔・1 分あたりの上限・失敗の待ちを分け合わせ、プラグインが API への負荷の約束を破れないようにするため。
+チェックの例外は取りこぼさない側に倒す（`skip_if` は偽、`handled_before_if` は真）。
+
 ## 6. 運用
 
 - 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
@@ -252,7 +382,14 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 ## 8. 検証
 
-`tools/api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。43 件。
+`tools/api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。
+
+- `test_shared.py`: command の受け渡し先（`run --rule` で取得から実行まで・失敗の再試行と打ち切り・`retry`・`dispatch` が触らないこと・
+  時間切れ・設定の検査）、取得の共有（2 本のワークフローで問い合わせ 1 回・共有の設定が無ければ誤り・ずらし・取得中のプロセスを待ってその結果を使う・
+  失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、`dags` が書くルールごとのワークフロー・`--schedule`・既にある DAG を上書きしないこと、cron の解釈、予定の時刻での取得、`rate_limit.group`、
+  `refresh`（自分の書き込みで再実行しない・実行中のほかの人の変化で再実行する・たまったイベントを最新で 1 回・filter から外れた／消えたら飛ばす・
+  取り直しの失敗・`forget-handled`）、`external`（`due` → `begin` → `render` → `finish`・失敗の再試行と打ち切り・ルールをまたいだ `lock`・
+  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`claim` と `finish --exit-code`、`dags` が書く 1 本のワークフローと `--handle-step`
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査

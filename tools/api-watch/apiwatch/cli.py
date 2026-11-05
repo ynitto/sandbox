@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import VERSION, adapters, config as configmod, plugins
+from . import VERSION, adapters, config as configmod, hooks, plugins
 from .deliver import Dispatcher
 from .detect import Evaluator, log_outcomes
 from .fetch import Fetcher, load_records
@@ -37,19 +37,33 @@ def cmd_check(cfg, store, a) -> int:
     log(f"設定: {cfg.path}")
     log(f"状態の保存先: {cfg.state_dir}")
     log(f"接続設定: {cfg.connections.path or '（--connections の指定なし）'}")
-    log(f"受け渡し: {cfg.delivery.adapter if cfg.delivery else '（なし。検知を記録するだけ）'}")
+    here = any(t.runs_here for r in cfg.rules.values() for t in r.targets)
+    log(f"受け渡し: {cfg.delivery.adapter if cfg.delivery else '（アダプタなし）'}"
+        + ("（command の受け渡し先は work がその場で実行）" if here else ""))
     ok = True
     for name, src in cfg.sources.items():
         try:
             cfg.resolve_connection(src.connection)
             conn = "なし" if src.connection is None else f"{src.connection[0]}/{src.connection[1]}"
             log(f"  取得元 {name}: {src.method} {REDACT(src.url)}（接続 {conn}・ページング {src.pagination.type}・"
-                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本）")
+                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本・"
+                + (f"予定 {src.schedule}（起動されても予定の時刻まで取得しない）" if src.schedule
+                   else "予定なし（起動されるたびに取得）")
+                + (f"・間隔 {src.min_interval_sec:.0f} 秒以上" if src.min_interval_sec else "")
+                + (f"・group {src.rate_group}" if src.rate_group else "")
+                + (f"・ずらし 0〜{src.jitter_sec:.0f} 秒" if src.jitter_sec else "")
+                + (f"・取得中なら {src.busy_wait_sec:.0f} 秒まで待つ" if src.busy_wait_sec else "") + "）")
+            flows = cfg.fetching_workflows(name)
+            if len(flows) > 1:
+                log(f"    {len(flows)} 本のワークフロー（{'・'.join(flows)}）が取得し、問い合わせは"
+                    + ("予定の時刻ごとに 1 回" if src.schedule else f" {src.min_interval_sec:.0f} 秒に 1 回まで")
+                    + "にまとめます")
         except ConfigError as e:
             ok = False
             log(f"  取得元 {name}: {e}")
     for name, r in cfg.rules.items():
-        tg = ", ".join(f"{t.name}→{t.workflow}（{t.order}）" for t in r.targets) or "なし（検知だけ記録）"
+        tg = ", ".join(f"{t.name}→{'その場で実行' if t.runs_here else t.workflow}（{t.order}）"
+                       for t in r.targets) or "なし（検知だけ記録）"
         log(f"  ルール {name}: {r.source} / ID {r.id_paths} / 監視 {r.watch or '全体'} / 発火 {r.on} / 受け渡し {tg}")
     if cfg.delivery is not None:
         try:
@@ -64,7 +78,7 @@ def cmd_check(cfg, store, a) -> int:
 def cmd_fetch(cfg, store, a) -> int:
     code = EXIT_OK
     for name in _sources(cfg, a.source):
-        o = Fetcher(cfg, store).run(cfg.sources[name], force=a.force)
+        o = Fetcher(cfg, store).run(cfg.sources[name], force=a.force, jitter=not getattr(a, "no_jitter", False))
         log(f"[{name}] {o.status}: {o.message}")
         if o.status == "failed":
             code = max(code, EXIT_TRANSIENT if o.transient else EXIT_ERROR)
@@ -103,12 +117,113 @@ def cmd_dispatch(cfg, store, a) -> int:
     return EXIT_PARTIAL if (o.failed or o.dead) else EXIT_OK
 
 
+def cmd_work(cfg, store, a) -> int:
+    rules = _rules_of_sources(cfg, a)
+    targets = a.target or None
+    o = Dispatcher(cfg, store).work(rules, targets, a.limit)
+    log(f"実行: 完了 {o.done}・処理することが無く飛ばした {o.skipped}・失敗（あとでやり直す） {o.failed}・打ち切り {o.dead}・"
+        f"待ち {o.waiting}"
+        + ("・中止されました" if o.stopped else ""))
+    if o.stopped:
+        return EXIT_ERROR
+    return EXIT_PARTIAL if (o.failed or o.dead) else EXIT_OK
+
+
+def cmd_due(cfg, store, a) -> int:
+    """external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す（ほかの基盤で 1 件ずつ回すとき。1 本のワークフローなら claim）。"""
+    ids = Dispatcher(cfg, store).due(_rules_of_sources(cfg, a), a.target or None, external=True, limit=a.limit)
+    print(json.dumps(ids))
+    return EXIT_OK
+
+
+def cmd_begin(cfg, store, a) -> int:
+    """受け渡しを 1 件取り、実行してよいかを標準出力に 1 語で出す（run / skip / busy / wait / failed / gone）。"""
+    decision, msg = Dispatcher(cfg, store).begin(a.delivery)
+    log(msg)
+    print(decision)
+    return EXIT_OK
+
+
+def cmd_claim(cfg, store, a) -> int:
+    """実行を待っている受け渡しを古い順に begin し、最初に run になった 1 件の ID を出す（無ければ空行）。
+
+    1 本のワークフローで 1 回の起動につき 1 件を処理するときに使う（claim → render → 処理 → finish）。飛ばすもの
+    （処理し終えた状態と同じ・filter から外れた など）は begin が完了として記録するので、そのまま次を見る。
+    lock が空いていない・取得元が失敗の待ちの中なら、そこでやめる（次の起動で試す）。"""
+    disp = Dispatcher(cfg, store)
+    for d in disp.due(_rules_of_sources(cfg, a), a.target or None, external=True):
+        decision, msg = disp.begin(d)
+        log(msg)
+        if decision == "run":
+            print(d)
+            return EXIT_OK
+        if decision in ("busy", "wait"):
+            break
+    print("")
+    return EXIT_OK
+
+
+def cmd_render(cfg, store, a) -> int:
+    """begin した受け渡しのイベントでテンプレートを展開して出す（プロンプトなど）。"""
+    from pathlib import Path
+    try:
+        payload, path = Dispatcher(cfg, store).run_payload(a.delivery)
+    except KeyError:
+        log(f"受け渡し {a.delivery} が見つかりません")
+        return EXIT_ERROR
+    tpl = a.template
+    if tpl is None:
+        d = store.one("SELECT rule, target FROM deliveries WHERE id=?", (a.delivery,))
+        t = Dispatcher(cfg, store).target(d["rule"], d["target"]) if d else None
+        tpl = t.input_template if t else None
+        if tpl is None:
+            raise ConfigError("--template か、受け渡し先の input_template を書いてください")
+        p = Path(tpl).expanduser()
+        tpl = str(p if p.is_absolute() else cfg.path.parent / p)     # 設定の相対パスは設定ファイルから
+    try:
+        text = Path(tpl).expanduser().read_text(encoding="utf-8")
+    except OSError as e:
+        raise ConfigError(f"テンプレートが読めません: {tpl}（{e}）")
+    from . import template
+    ctx = {"event": payload, "delivery": payload.get("delivery") or {"id": a.delivery}, "env": dict(__import__("os").environ),
+           "event_file": str(path)}
+    out = template.render(text, ctx)
+    out = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+    if a.out:
+        Path(a.out).expanduser().write_text(out, encoding="utf-8")
+    else:
+        print(out)
+    return EXIT_OK
+
+
+def cmd_finish(cfg, store, a) -> int:
+    """begin した受け渡しの終わり（--failed なら失敗）を記録する。外のワークフローの最後か handler_on から呼ぶ。"""
+    ok, message = not a.failed, a.message
+    if a.exit_code is not None:
+        # 処理のステップの終了コード（Dagu の ${handle.exit_code}）で成否を決める。数でなければ失敗とみなす
+        try:
+            code = int(str(a.exit_code).strip())
+        except ValueError:
+            code = None
+        if code != 0:
+            ok = False
+            message = message or (f"処理が終了コード {code} で終わった" if code is not None
+                                  else f"処理の終了コードが分からない（{a.exit_code}）")
+    st = Dispatcher(cfg, store).finish(a.delivery, ok, message, a.handled) if a.delivery.strip() else "gone"
+    log(f"{a.delivery}: {st}")
+    return EXIT_OK
+
+
 def cmd_run(cfg, store, a) -> int:
+    rules = _rules(cfg, a.rule)
+    if rules:
+        a.source = sorted({cfg.rules[r].source for r in rules} & set(_sources(cfg, a.source)))
     code = cmd_fetch(cfg, store, a)
-    a.rule = None
     code2 = cmd_evaluate(cfg, store, a)
     code3 = cmd_dispatch(cfg, store, a)
-    return max(code, code2, code3)
+    a.target = None
+    code4 = cmd_work(cfg, store, a)
+    return max(code, code2, code3, code4)
 
 
 def cmd_ack(cfg, store, a) -> int:
@@ -298,6 +413,24 @@ def cmd_gc(cfg, store, a) -> int:
     return EXIT_OK
 
 
+def cmd_forget_handled(cfg, store, a) -> int:
+    rule = cfg.rules.get(a.rule)
+    if rule is None:
+        raise ConfigError(f"設定に無いルールです: {a.rule}")
+    names = [t.name for t in rule.targets if t.refresh is not None and (not a.target or t.name in a.target)]
+    if not names:
+        log(f"ルール {a.rule} に refresh のある受け渡し先がありません")
+        return EXIT_USAGE
+    n = 0
+    with store.tx() as db:
+        for rec in a.records:
+            for t in names:
+                n += db.execute("DELETE FROM handled_records WHERE rule=? AND target=? AND rkey=?",
+                                (a.rule, t, rec)).rowcount
+    log(f"処理し終えた状態を {n} 件忘れました（次に変化を受け取ったとき、必ず実行します）")
+    return EXIT_OK
+
+
 def cmd_forget_rule(cfg, store, a) -> int:
     if a.rule in cfg.rules:
         log(f"{a.rule} は設定にあります。設定から消してから実行してください（基準値の取り直しなら rebaseline）")
@@ -328,7 +461,8 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     add("check", cmd_check, "設定と接続設定を確かめる（API には問い合わせない）")
     sp = add("fetch", cmd_fetch, "取得元から取得する（全ページを取り終えたら判定に回せる）")
     sp.add_argument("--source", action="append")
-    sp.add_argument("--force", action="store_true", help="min_interval_sec を無視する")
+    sp.add_argument("--force", action="store_true", help="min_interval_sec・jitter_sec を無視する")
+    sp.add_argument("--no-jitter", action="store_true", help="jitter_sec でずらさない（手で叩くとき）")
     sp = add("evaluate", cmd_evaluate, "未判定の取得結果をルールで判定する（API には問い合わせない）")
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
@@ -336,9 +470,38 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
     sp.add_argument("--limit", type=int)
-    sp = add("run", cmd_run, "fetch → evaluate → dispatch をまとめて行う")
+    sp = add("work", cmd_work, "command の受け渡し先を、その場で 1 件ずつ実行する")
     sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
+    sp.add_argument("--limit", type=int)
+    sp = add("due", cmd_due, "external の受け渡し先の、実行を待っている受け渡しの ID を JSON の配列で出す")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
+    sp.add_argument("--limit", type=int)
+    sp = add("begin", cmd_begin, "受け渡しを 1 件取り、実行してよいか（run / skip / busy / wait / failed / gone）を出す")
+    sp.add_argument("delivery")
+    sp = add("claim", cmd_claim, "external の受け渡し先の、実行できる受け渡しを 1 件取って ID を出す（無ければ空行）")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
+    sp = add("render", cmd_render, "begin した受け渡しのイベントでテンプレートを展開する（{{ event.* }}・プラグインのフィルタ）")
+    sp.add_argument("delivery")
+    sp.add_argument("--template", help="テンプレートのファイル（省略すると受け渡し先の input_template）")
+    sp.add_argument("--out", help="書き出すファイル（省略すると標準出力）")
+    sp = add("finish", cmd_finish, "begin した受け渡しの終わりを記録する（--failed なら失敗。あとでやり直す）")
+    sp.add_argument("delivery")
+    sp.add_argument("--failed", action="store_true")
+    sp.add_argument("--message")
+    sp.add_argument("--exit-code", help="処理のステップの終了コード。0 以外（数でないものも）なら失敗として記録する")
+    sp.add_argument("--handled", choices=["before", "after"],
+                    help="処理し終えた状態にするのを、実行前（before）か実行のあと（after。既定）か")
+    sp = add("run", cmd_run, "fetch → evaluate → dispatch → work をまとめて行う（--rule でそのルールだけ）")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--no-jitter", action="store_true")
     sp.add_argument("--limit", type=int)
     sp = add("ack", cmd_ack, "後続処理の完了（--failed なら失敗）を記録する。後続の DAG の handler_on から呼ぶ")
     sp.add_argument("delivery", help="受け渡しの ID（後続の DAG では ${DAG_RUN_ID}）")
@@ -381,6 +544,11 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp = add("gc", cmd_gc, "保持期間を過ぎたものを消してファイルを縮める（未判定・未完了のものは消さない）")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--vacuum", action="store_true", help="VACUUM で DB を作り直す（時間がかかる。古い DB を自動で縮む形にする）")
+    sp = add("forget-handled", cmd_forget_handled,
+             "refresh のある受け渡し先が覚えている「処理し終えた状態」を忘れる（次の変化で必ず実行させる）")
+    sp.add_argument("--rule", required=True)
+    sp.add_argument("--target", action="append")
+    sp.add_argument("records", nargs="+", help="レコードのキー（events の「レコード」の値）")
     sp = add("forget-rule", cmd_forget_rule, "設定から消したルールの判定状態を消す")
     sp.add_argument("rule")
     plugins.load(plugin_specs or [], add)
@@ -393,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
     _common(pre)
     known, _ = pre.parse_known_args(argv)
     adapters.reset_plugins()
+    hooks.reset_plugins()
     try:
         parser = build_parser(known.plugin)
     except ConfigError as e:

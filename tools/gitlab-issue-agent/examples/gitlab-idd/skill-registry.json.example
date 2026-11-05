@@ -1,0 +1,8 @@
+{
+  "skill_configs": {
+    "gitlab-idd": {
+      "self_defer_minutes": 0,
+      "self_review_lock_minutes": 0
+    }
+  }
+}

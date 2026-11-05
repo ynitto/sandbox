@@ -12,6 +12,7 @@
     source_records  取得元の key ごとの最新のレコード（増分取得の取得元で、全体を組み立てた姿）
     rules           ルールごとの判定状態（どの取得まで判定したか・指紋・最後のエラー）
     rule_records    ルール × レコードの前回の観測値
+    handled_records 受け渡し先（refresh のある command）× レコードの、最後に処理し終えた状態
     events          検知した変更（ルール × レコード × 取得 で 1 件）
     deliveries      イベント × 受け渡し先 ごとの受け渡し状態
     leases          取得・判定の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
@@ -23,9 +24,9 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
-from .util import hostname, now, pid_alive
+from .util import hostname, now, pack, pid_alive
 
 SCHEMA_VERSION = 1
 
@@ -43,7 +44,31 @@ CREATE TABLE IF NOT EXISTS sources (
     last_status TEXT,
     last_error TEXT,
     last_fetch_id INTEGER,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    retry_not_before REAL,      -- 取得が失敗したあと、どのプロセスもこの時刻までは問い合わせない
+    recent_requests TEXT        -- 直近 60 秒に送った要求の時刻（JSON。rate_limit.per_minute をプロセスをまたいで数える）
+);
+CREATE TABLE IF NOT EXISTS handled_records (   -- refresh のある受け渡し先が、最後に処理し終えたレコードの状態
+    rule TEXT NOT NULL,
+    target TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    vhash TEXT NOT NULL,        -- 監視する値（ルールの watch）のハッシュ。イベントや取り直した値と比べる
+    value BLOB,                 -- 監視する値そのもの（次の実行に「前回処理したときの値」として渡す）
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (rule, target, rkey)
+);
+CREATE TABLE IF NOT EXISTS delivery_runs (   -- begin から finish までの、実行中の受け渡し（別のプロセスがつなぐ）
+    delivery TEXT PRIMARY KEY,
+    started_at REAL NOT NULL,
+    before_hash TEXT,           -- refresh で取り直した、実行前の監視する値のハッシュ
+    before_value BLOB,
+    lock TEXT                   -- 持っている受け渡し先の lock の名前
+);
+CREATE TABLE IF NOT EXISTS rate_groups (   -- rate_limit.group ごとに共有する要求の記録と失敗の待ち
+    name TEXT PRIMARY KEY,
+    last_request_at REAL,
+    recent_requests TEXT,
+    retry_not_before REAL
 );
 CREATE TABLE IF NOT EXISTS fetches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +210,10 @@ class Store:
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(source_records)")}
         if "seen_at" not in cols:
             self.db.execute("ALTER TABLE source_records ADD COLUMN seen_at REAL")
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(sources)")}
+        for col, typ in (("retry_not_before", "REAL"), ("recent_requests", "TEXT")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE sources ADD COLUMN {col} {typ}")
         with self.tx():
             row = self.db.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
             if row is None:
@@ -237,6 +266,24 @@ class Store:
         with self.tx() as db:
             db.execute("DELETE FROM leases WHERE name=? AND owner=?", (name, self.owner))
 
+    def hold(self, name: str, owner: str, ttl: float) -> bool:
+        """プロセスをまたいで持つ排他（受け渡し先の lock）。持ち主は受け渡しの ID で、期限が切れるまで誰にも渡さない
+        （begin のプロセスが終わっても、finish まで持ち続けるため。pid では判定しない）。"""
+        with self.tx() as db:
+            row = db.execute("SELECT * FROM leases WHERE name=?", (name,)).fetchone()
+            t = now()
+            if row is not None and row["owner"] != owner and row["expires_at"] > t:
+                return False
+            db.execute("INSERT INTO leases(name, owner, host, pid, expires_at) VALUES(?,?,?,?,?) "
+                       "ON CONFLICT(name) DO UPDATE SET owner=excluded.owner, host=excluded.host, "
+                       "pid=excluded.pid, expires_at=excluded.expires_at",
+                       (name, owner, hostname(), -1, t + ttl))
+            return True
+
+    def unhold(self, name: str, owner: str) -> None:
+        with self.tx() as db:
+            db.execute("DELETE FROM leases WHERE name=? AND owner=?", (name, owner))
+
     def lease_holder(self, name: str) -> sqlite3.Row | None:
         row = self.one("SELECT * FROM leases WHERE name=?", (name,))
         if row is None or row["expires_at"] <= now():
@@ -256,6 +303,15 @@ class Store:
 
     # -- 取得元 ---------------------------------------------------------------
 
+    def group_row(self, name: str) -> sqlite3.Row:
+        row = self.one("SELECT * FROM rate_groups WHERE name=?", (name,))
+        if row is None:
+            with self.tx() as db:
+                db.execute("INSERT OR IGNORE INTO rate_groups(name) VALUES(?)", (name,))
+            row = self.one("SELECT * FROM rate_groups WHERE name=?", (name,))
+        assert row is not None
+        return row
+
     def source_row(self, name: str) -> sqlite3.Row:
         row = self.one("SELECT * FROM sources WHERE name=?", (name,))
         if row is None:
@@ -265,8 +321,17 @@ class Store:
         assert row is not None
         return row
 
-    def event_file(self, event_id: str) -> Path:
-        return self.dir / "events" / f"{event_id}.json"
+    def event_file(self, event_id: str, target: str | None = None) -> Path:
+        """イベントの JSON。受け渡し先が取り直したレコードを入れたものは `<イベント ID>--<受け渡し先>.json`。"""
+        return self.dir / "events" / (f"{event_id}--{target}.json" if target else f"{event_id}.json")
+
+    def handled(self, rule: str, target: str, rkey: str) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM handled_records WHERE rule=? AND target=? AND rkey=?", (rule, target, rkey))
+
+    def set_handled(self, rule: str, target: str, rkey: str, vhash: str, value: Any) -> None:
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO handled_records(rule, target, rkey, vhash, value, updated_at) "
+                       "VALUES(?,?,?,?,?,?)", (rule, target, rkey, vhash, pack(value), now()))
 
     # -- 容量 -----------------------------------------------------------------
 

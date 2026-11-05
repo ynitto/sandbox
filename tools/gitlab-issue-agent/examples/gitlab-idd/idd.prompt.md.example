@@ -1,0 +1,13 @@
+GitLab のイシュー #{{ event.record.iid }}「{{ event.record.title }}」に変化がありました（{{ event | gitlab_issue_kind }}、{{ delivery.attempt }} 回目）。
+
+{{ event | gitlab_issue_changes }}
+
+gitlab-idd スキルの{{ event.record | gitlab_idd_role }}ロールで、このイシュー #{{ event.record.iid }} だけを処理してください。
+
+- 候補の一覧から別のイシューを選ばないでください。ほかのイシューは、それぞれが変化したときに別に呼ばれます
+- このイシューが着手・レビューできない状態（依存イシューが未完了・別のノードが着手中など）なら、理由を 1 行出して何もせずに終えてください
+- 接続は connections.yaml の default（--label-conn default）を使ってください
+- 処理が終わったら、イシューのラベルとコメントで結果を残してください（gitlab-idd の手順どおり）
+
+URL: {{ event.record.web_url }}
+ラベル: {{ event.record.labels | json }}

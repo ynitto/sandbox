@@ -615,7 +615,7 @@ class OpsTest(unittest.TestCase):
         except ImportError:
             self.skipTest("PyYAML が無いので生成した YAML の中身は見ない")
         d = yaml.safe_load((env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(d["schedule"], "*/10 * * * *")
+        self.assertEqual(d["schedule"], "* * * * *")      # 設定の schedule は書き写さない（毎分起動し、取得するかは api-watch が決める）
         self.assertEqual([s["name"] for s in d["steps"]], ["fetch", "evaluate", "dispatch"])
         self.assertEqual(d["steps"][1]["depends"], ["fetch"])
         self.assertEqual(d["steps"][0]["retry_policy"]["exit_code"], [3])
@@ -688,7 +688,7 @@ rules:
         self.assertTrue((other / "state.db").is_file())
         self.assertFalse((env.tmp / "from-env").exists())
         self.assertFalse((env.tmp / "state").exists())
-        env.ok(self, "--state-dir", str(other), "dags", "--out", str(env.tmp / "dags"))
+        env.ok(self, "--state-dir", str(other), "dags", "--out", str(env.tmp / "dags"), "--schedule", "*/5 * * * *")
         text = (env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8")
         self.assertIn(json.dumps(str(other.resolve())), text)
 

@@ -1,0 +1,12 @@
+# ワークフロー api-watch-idd の handle に差し込むステップ（~/.config/dagu/gitlab-issue-agent.handle.yaml にコピーして使う）。
+# dags の --handle-step idd.run=<このファイル> で差し込む。Dagu v2 の harness.run でエージェント CLI を動かす。
+#
+# エージェント CLI から gitlab-idd スキルが使えるようにしておく（例: Claude Code なら ~/.claude/skills/gitlab-idd）。
+# working_dir はプロジェクトの作業コピー（gitlab-idd はそこから git remote を読み、作業用のクローンを自分で作る）。
+action: harness.run
+working_dir: /home/you/work/project
+with:
+  provider: claude
+  prompt: GitLab のイシューに変化がありました。標準入力の指示に従って、gitlab-idd スキルで処理してください。
+  stdin: "${INPUT}"
+  dangerously_skip_permissions: true     # 無人で動かすため

@@ -292,7 +292,7 @@ class Evaluator:
                 for t in rule.targets:
                     db.execute("INSERT OR IGNORE INTO deliveries(id, seq, event_id, rule, target, workflow, rkey, status, "
                                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                               (delivery_id(ev["event_id"], t.name), seq, ev["event_id"], rule.name, t.name, t.workflow,
+                               (delivery_id(ev["event_id"], t.name), seq, ev["event_id"], rule.name, t.name, t.workflow or "",
                                 ev["record_key"], PENDING, now(), now()))
             db.execute("INSERT INTO rules(name, source, fingerprint, epoch, last_fetch_id, baseline_fetch_id, "
                        "last_eval_at, last_error, last_events, needs_rebaseline) VALUES(?,?,?,?,?,?,?,NULL,?,0) "

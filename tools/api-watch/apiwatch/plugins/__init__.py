@@ -7,6 +7,11 @@
 
     api.add_adapter(name, parse, create)        受け渡しのアダプタ（apiwatch.adapters の口）
     api.add_command(name, fn, help) -> parser   サブコマンド。fn(cfg, store, args) -> 終了コード
+    api.add_filter(name, fn)                    テンプレートのフィルタ。fn(value, arg) -> 値（apiwatch.hooks）
+    api.add_check(name, fn)                     受け渡し先の実行の前後の判定。fn(ctx: CheckContext) -> bool（apiwatch.hooks）
+
+どの口も名前で登録し、本体は使う時点で名前から探す。プラグインは本体の内部（DB・取得の仕組み）に直接触らず、
+チェックの HTTP も CheckContext.get_json を通す（取得元の接続・要求の間隔・失敗の待ちを分け合うため）。
 
 このパッケージ（apiwatch.plugins）は読み込みの仕組みだけを持ち、同梱のプラグインを import しない
 （指定されたときに名前で読み込むだけ）。
@@ -21,7 +26,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable
 
-from .. import adapters
+from .. import adapters, hooks
 from ..util import ConfigError
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -34,6 +39,12 @@ class PluginAPI:
 
     def add_adapter(self, name: str, parse, create) -> None:
         adapters.register(name, parse, create, f"プラグイン {self.plugin}")
+
+    def add_filter(self, name: str, fn) -> None:
+        hooks.add_filter(name, fn, f"プラグイン {self.plugin}")
+
+    def add_check(self, name: str, fn) -> None:
+        hooks.add_check(name, fn, f"プラグイン {self.plugin}")
 
     def add_command(self, name: str, fn, help: str):
         if self._add_command is None:

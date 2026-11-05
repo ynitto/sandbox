@@ -188,6 +188,9 @@ def gc(cfg: Config, store: Store, dry_run: bool = False, vacuum: bool = False) -
                                                (removed_cut,)).fetchone()["c"]
         if not dry_run:
             db.execute("DELETE FROM rule_records WHERE present=0 AND updated_at<?", (removed_cut,))
+            # 処理し終えた状態は、ルールの観測値が消えたレコードのものだけ消す（また現れたら appeared で流れる）
+            db.execute("DELETE FROM handled_records WHERE NOT EXISTS (SELECT 1 FROM rule_records r "
+                       "WHERE r.rule=handled_records.rule AND r.rkey=handled_records.rkey)")
         # 増分取得で組み立てた全体の姿のうち、長く取得されていないもの（設定したときだけ）
         if rt.record_days is not None:
             stale_cut = t - rt.record_days * 86400
@@ -198,7 +201,7 @@ def gc(cfg: Config, store: Store, dry_run: bool = False, vacuum: bool = False) -
     # イベントのファイル（DB から消えたもの・最終状態になってから保持期間を過ぎたもの）
     live = {r["id"] for r in store.q("SELECT id FROM events")}
     for f in (store.dir / "events").glob("*.json"):
-        eid = f.stem
+        eid = f.stem.split("--")[0]          # 取り直したレコードを入れたもの（<ID>--<受け渡し先>）も同じイベントのもの
         if eid in live:
             continue
         try:
@@ -218,6 +221,7 @@ def forget_rule(store: Store, name: str) -> str:
                        (name,))["c"]
     with store.tx() as db:
         db.execute("DELETE FROM rule_records WHERE rule=?", (name,))
+        db.execute("DELETE FROM handled_records WHERE rule=?", (name,))
         db.execute("DELETE FROM rules WHERE name=?", (name,))
     msg = f"ルール {name} の判定状態を消しました"
     if open_d:
