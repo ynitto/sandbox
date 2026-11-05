@@ -51,9 +51,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
 
-### dagu-issue-loop: GitLab の issue の変化をエージェント CLI に 1 件ずつ渡す（0.1.0）
+### gitlab-issue-agent: GitLab の issue の変化をエージェント CLI に 1 件ずつ渡す（0.1.0）
 
-- `tools/dagu-issue-loop/` を足す。issue の取得・変化の検知・実行待ち・再試行・処理し終えた状態の記録・1 セッションの排他は api-watch、
+- `tools/gitlab-issue-agent/` を足す。issue の取得・変化の検知・実行待ち・再試行・処理し終えた状態の記録・1 セッションの排他は api-watch、
   起動とエージェント CLI の実行は Dagu（v2.25 以降の `harness.run`）が受け持ち、ここには GitLab に固有の部分と設定の例を置く
 - `gitlab_issue.py`（api-watch のプラグイン）: フィルタ `gitlab_issue_changes`（前回処理し終えたときからの変化の箇条書き）・`gitlab_issue_kind`（新規 / 更新）と、
   チェック `gitlab.others_acted`（実行中に自分以外の人が issue にコメント・操作したか）。標準ライブラリだけ
@@ -62,8 +62,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ流す。初回は今ある issue を覚えるだけ。
   実行の直前に取り直し、閉じた・絞り込みから外れた・処理し終えた状態と同じなら流さない。エージェント自身のコメントでは起きず、実行中に他人が動いたときだけもう一度流す
 - エージェント CLI は同時に 1 つ（api-watch の `lock`。プロジェクトをまたいでも 1 つ）。失敗は指数バックオフで再試行し、上限で打ち切る
-- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`issue-loop.env.example`
-- 設計: `docs/designs/dagu-issue-loop-design.md`
+- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`gitlab-issue-agent.env.example`
+- **gitlab-idd スキルと繋ぐ設定の例**（`examples/gitlab-idd/`）: `status:*` のラベルが付いたイシューを、ラベルに合ったロール
+  （`status:review-ready` はレビュアー、`status:open` / `needs-rework` / `needs-clarification` はワーカー）で gitlab-idd に処理させる。
+  ルールもワークフロー（`api-watch-idd`）も 1 つ。フィルタ `gitlab_idd_role` がロールを選び、チェック `gitlab_idd.role_changed` が
+  ワーカー → レビュアー → 差し戻し → ワーカー の受け渡しで、エージェント自身のラベル変更でももう一度流させる。Dagu のワークフローの例
+  （`api-watch-idd.yaml.example`）は `dags` の出力と一致することを試験で確かめる
+- 設計: `docs/designs/gitlab-issue-agent-design.md`
 
 ### api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
 

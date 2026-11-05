@@ -1,16 +1,19 @@
-"""dagu-issue-loop — GitLab の issue のための api-watch のプラグイン（`api-watch --plugin <このファイル>` で読み込む）。
+"""gitlab-issue-agent — GitLab の issue のための api-watch のプラグイン（`api-watch --plugin <このファイル>` で読み込む）。
 
 issue の取得・変化の検知・実行待ち・再試行・実行の前後の取り直し・1 セッションの排他は api-watch が、エージェント CLI の
 起動と停止は Dagu（harness.run）が受け持つ。ここで足すのは GitLab の issue に固有の 3 つだけ:
 
     フィルタ gitlab_issue_changes   {{ event | gitlab_issue_changes }}  前回処理し終えたときからの変化の箇条書き
     フィルタ gitlab_issue_kind      {{ event | gitlab_issue_kind }}     新規 / 更新
+    フィルタ gitlab_idd_role        {{ event.record | gitlab_idd_role }} gitlab-idd スキルのロール（ラベルから。レビュアー / ワーカー）
     チェック gitlab.others_acted    実行を始めてから、自分以外の人が issue にコメント・操作したか
                                     （受け渡し先の handled_before_if に書く。真なら、処理し終えたのは実行前の状態まで）
+    チェック gitlab_idd.role_changed 実行のあいだに gitlab-idd のロールが変わったか（ワーカーが status:review-ready に
+                                    した・レビュアーが差し戻した）。handled_before_if に書くと、次のロールでもう一度流れる
 
 標準ライブラリだけで動く。api-watch の本体の内部には触らず、プラグインの口（register(api)）と、チェックに渡る
 CheckContext（GitLab への問い合わせは取得元の接続で、要求の間隔・失敗の待ちを分け合う）だけを使う。
-設計は docs/designs/dagu-issue-loop-design.md。
+設計は docs/designs/gitlab-issue-agent-design.md。
 """
 from __future__ import annotations
 
@@ -113,6 +116,31 @@ def gitlab_issue_kind(event: Any, _arg: Any = None) -> str:
     return "新規" if _base(event) is None else "更新"
 
 
+# gitlab-idd スキルのラベル（status:*）から、イシューをどのロールで処理するか
+IDD_REVIEW = ("status:review-ready",)
+IDD_WORK = ("status:open", "status:needs-rework", "status:needs-clarification")
+
+
+def _idd_role(issue: Any) -> str | None:
+    labels = set((issue or {}).get("labels") or []) if isinstance(issue, dict) else set()
+    if labels & set(IDD_REVIEW):
+        return "レビュアー"
+    if labels & set(IDD_WORK):
+        return "ワーカー"
+    return None
+
+
+def gitlab_idd_role(issue: Any, _arg: Any = None) -> str:
+    """status:review-ready ならレビュアー、status:open / needs-rework / needs-clarification ならワーカー。
+
+    どれでもなければ例外（api-watch のルールの filter で、これらのラベルの issue だけに絞っておく）。"""
+    role = _idd_role(issue)
+    if role:
+        return role
+    raise ValueError("gitlab-idd のロールを決められるラベル（status:open / status:needs-rework / "
+                     "status:needs-clarification / status:review-ready）がありません")
+
+
 # ---------------------------------------------------------------------------
 # 実行中に自分以外が動いたか
 # ---------------------------------------------------------------------------
@@ -165,7 +193,32 @@ def others_acted(ctx) -> bool:
     return False
 
 
+def _issue_url(ctx) -> str:
+    url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
+    issue = ctx.event.get("record") or {}
+    if not url or issue.get("project_id") is None or issue.get("iid") is None:
+        raise ValueError("GitLab の URL（接続設定の url か options.url）と、レコードの project_id・iid が要ります")
+    return f"{url}/api/v4/projects/{issue['project_id']}/issues/{issue['iid']}"
+
+
+def idd_role_changed(ctx) -> bool:
+    """実行の前（取り直したレコード）と今とで、gitlab-idd のロールが変わっていれば真。
+
+    エージェント自身のラベル変更は、ふつうは「処理し終えた」として吸収するが、ロールが変わったとき（ワーカーが
+    status:review-ready にした・レビュアーが status:needs-rework に戻した）は次のロールが処理する番なので、
+    実行前の状態までを処理済みにして、次の取得でもう一度流させる。今のラベルがどのロールにも当たらない
+    （status:approved・status:in-progress など）なら偽。"""
+    before = _idd_role(ctx.event.get("record"))
+    after = _idd_role(ctx.get_json(_issue_url(ctx)))
+    if after is not None and after != before:
+        ctx.log(f"gitlab-idd のロールが {before or '（なし）'} から {after} に変わったので、次の取得でもう一度流します")
+        return True
+    return False
+
+
 def register(api) -> None:
     api.add_filter("gitlab_issue_changes", gitlab_issue_changes)
     api.add_filter("gitlab_issue_kind", gitlab_issue_kind)
+    api.add_filter("gitlab_idd_role", gitlab_idd_role)
     api.add_check("gitlab.others_acted", others_acted)
+    api.add_check("gitlab_idd.role_changed", idd_role_changed)

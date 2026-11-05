@@ -36,7 +36,7 @@
 
 | ファイル | 要旨 |
 |---|---|
-| [`dagu-issue-loop-design.md`](./dagu-issue-loop-design.md) | GitLab の issue の変化を拾い、エージェント CLI を同時に 1 セッションだけ流す仕組みの設計。取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他は api-watch、エージェント CLI の実行は Dagu の `harness.run`、GitLab 固有のプロンプトの差分と実行中の他人の動きの確認は api-watch のプラグイン `gitlab_issue.py` が受け持つ。 |
+| [`gitlab-issue-agent-design.md`](./gitlab-issue-agent-design.md) | GitLab の issue の変化を拾い、エージェント CLI を同時に 1 セッションだけ流す仕組みの設計。取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他は api-watch、エージェント CLI の実行は Dagu の `harness.run`、GitLab 固有のプロンプトの差分と実行中の他人の動きの確認は api-watch のプラグイン `gitlab_issue.py` が受け持つ。gitlab-idd スキルとは、ラベルからロールを選び、ロールが変わったら次のロールで流し直す形で繋ぐ。 |
 | [`dagu-workflow-builder-design.md`](./dagu-workflow-builder-design.md) | 各環境に入っているスキルのスクリプトを、スキル側の宣言（`chain.json`）の入出力の型でつなぎ、LLM を使わずに Dagu v2 の DAG を組み立てる仕組みの設計。入出力を `--help` から推測せず宣言で持つ・型は名前の完全一致だけでつなぐ・経路は有向超グラフの最小コストを名前順の同点解決で決定的に選ぶ・書き出しは v2.25 の `action: exec` と実行ごとの作業フォルダに合わせる、の 4 点が骨格。 |
 | [`api-watch-design.md`](./api-watch-design.md) | 任意の Web API を Dagu の定期実行からポーリングし、変化・条件の成立を検知して DAG へ渡す汎用の仕組みの設計。取得（ページ単位で進めて途中から再開・完了まで判定も位置の前進もしない）・判定（取得を古い順に比べる・正規化・基準値）・受け渡し（受け渡しの ID を Dagu の実行 ID にして渡し直しを 1 回の実行に収める・レコードごとの順序）を段に分け、状態を SQLite のトランザクションで遷移させる。 |
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §7 に明記。バスのレイアウト・設定キー・役割表の全キー・CLI・上限は [`docs/specs/agent-amigos-spec.md`](../specs/agent-amigos-spec.md) にある。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |

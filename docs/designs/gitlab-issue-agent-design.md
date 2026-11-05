@@ -1,7 +1,7 @@
-# dagu-issue-loop 設計
+# gitlab-issue-agent 設計
 
 GitLab の issue の変化を拾い、エージェント CLI を **同時に 1 セッションだけ**流す仕組みを、常駐デーモン（agent-loop）ではなく
-Dagu の定期実行と api-watch の上に組む。実装は `tools/dagu-issue-loop/`（api-watch のプラグイン `gitlab_issue.py` と設定の例）、
+Dagu の定期実行と api-watch の上に組む。実装は `tools/gitlab-issue-agent/`（api-watch のプラグイン `gitlab_issue.py` と設定の例）、
 使い方は同フォルダの README。
 
 ## 1. 位置づけと分担
@@ -28,11 +28,11 @@ Dagu: api-watch-issue-agent（毎分。1 回の起動で 1 件を処理する）
   （render 以降は DELIVERY が aw_ で始まるときだけ動く: preconditions の re:^aw_）
 ```
 
-- ワークフローは api-watch の `dags` が雛形を書く。`handle` の中身は `--handle-step` で `issue-loop.handle.yaml` から差し込む
+- ワークフローは api-watch の `dags` が雛形を書く。`handle` の中身は `--handle-step` で `gitlab-issue-agent.handle.yaml` から差し込む
 - 予定は api-watch の設定 1 か所（取得元の `schedule`）。ワークフローは毎分起動し、失敗したもののやり直しも毎分の起動で進む
 - 実行を待つ issue が複数あっても、1 回の起動では 1 件だけ。次の 1 件は次の起動（1 分後）が取る。同時に 1 つしか動かさないので、
   1 回で全部を流しても待ちの合計はほとんど変わらない
-- dagu-issue-loop は状態ファイルもプロセスの管理も持たない。どこまで処理したかは api-watch だけが知っている
+- gitlab-issue-agent は状態ファイルもプロセスの管理も持たない。どこまで処理したかは api-watch だけが知っている
 
 ### 2.1 GitLab への負荷
 
@@ -87,6 +87,25 @@ issue の notes を新しい順に読み、`begin` の時刻（`ctx.delivery.sta
 - GitLab に届かないときは例外を返し、api-watch が `handled_before_if` を真とみなす（取りこぼさない側）。この場合に限り、自分のコメントでもう一巡する
 - 問い合わせは `ctx.get_json`（取得元の接続・要求の間隔・失敗の待ちを分け合う）。トークンは connections.yaml からだけ読む
 
+### 3.5 gitlab-idd スキルと繋ぐ（examples/gitlab-idd）
+
+gitlab-idd はラベル（`status:*`）でイシューを回し、頼まれるたびに 1 回だけ動く（自分ではポーリングしない）。これを 1 つのルール `idd` で繋ぐ。
+
+- `filter` で gitlab-idd が扱うラベル（`status:open` / `status:needs-rework` / `status:needs-clarification` / `status:review-ready`）の
+  イシューだけにし、ロールはプロンプトの `{{ event.record | gitlab_idd_role }}` がラベルから選ぶ。ロールごとにルールを分けないので、
+  ワークフローも 1 本で済み、`lock` が 1 つなのでワーカーとレビュアーが同時に動くこともない
+- **ロールの受け渡し**: ワーカーが `status:review-ready` にするのも、レビュアーが `status:needs-rework` に戻すのもエージェント自身の書き込みで、
+  そのままでは §3.2 の 5 が「処理し終えた状態」として吸収してしまう。チェック `gitlab_idd.role_changed`（`handled_before_if`）が、
+  実行の前と後でロールが変わったら真を返し、実行前の状態までを処理済みにする。次の取得でラベルの変化がイベントになり、次のロールで流れる。
+  ロールが変わらない書き込み（質問のコメント、`status:needs-clarification` への変更）は吸収したまま
+- プロンプトで「このイシューだけを処理して」と頼む。gitlab-idd のワーカーは本来、候補の一覧から自分で 1 件選ぶので、別のイシューに
+  手を出さないように止める（ほかのイシューは、それぞれの変化で別に呼ばれる）
+- gitlab-idd の猶予（自分が出したイシューの self-defer 60 分・自分が実装したイシューの self-review ロック 24 時間、どちらもノード単位）は、
+  1 つのエージェントがワーカーとレビュアーを兼ねると「何もせずに終わる」になり、変化が無いので二度と流れない。設定の例では
+  `skill-registry.json` で 0 にする。gitlab-idd の 24 時間の自動着手（質問に答えがないとき）も、変化が無いので起きない（README に明記）
+- 接続設定は 1 つの connections.yaml を分け合う。gitlab-idd は `gitlab` の `default`（プロジェクトの URL）を、api-watch と
+  プラグインは `watch`（GitLab の URL）を使う。gitlab-idd には `SKILL_CONNECTIONS_FILE` で同じファイルを読ませる
+
 ## 4. 1 セッションの保証
 
 | 層 | 仕組み | 守る場面 |
@@ -109,7 +128,7 @@ issue の notes を新しい順に読み、`begin` の時刻（`ctx.delivery.sta
 
 ## 6. Windows（ネイティブ）
 
-プロセスの管理（停止・生存確認・子孫ごとの停止・コマンド行の分割）は Dagu に任せるので、dagu-issue-loop 側に OS ごとの切り替えは無い。
+プロセスの管理（停止・生存確認・子孫ごとの停止・コマンド行の分割）は Dagu に任せるので、gitlab-issue-agent 側に OS ごとの切り替えは無い。
 api-watch とプラグインは標準ライブラリだけで、Windows の CI で試験を回す。Windows の Dagu は停止時に Job Object ごと止めるので
 エージェント CLI も一緒に止まる。その受け渡しは期限が切れてから次の起動がもう一度取る。
 

@@ -1,4 +1,4 @@
-"""dagu-issue-loop のテスト（標準ライブラリだけ。`python -m unittest discover -s test`）。
+"""gitlab-issue-agent のテスト（標準ライブラリだけ。`python -m unittest discover -s test`）。
 
 gitlab_issue.py（api-watch のプラグイン）のフィルタ・チェックと、本物の api-watch を Dagu のワークフローと同じ順
 （fetch → evaluate → claim → render → 処理 → finish --exit-code）で呼んだときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、
@@ -88,12 +88,14 @@ class FakeGitLab:
         with self.lock:
             self.world["issues"][str(issue["iid"])] = issue
 
-    def comment(self, iid: int, author: str, updated: str):
-        """コメントする（コメント数と updated_at が進み、notes の先頭に入る）。"""
+    def comment(self, iid: int, author: str, updated: str, labels=None):
+        """コメントする（コメント数と updated_at が進み、notes の先頭に入る）。labels を渡せばラベルも変える。"""
         with self.lock:
             it = self.world["issues"][str(iid)]
             it["user_notes_count"] += 1
             it["updated_at"] = updated
+            if labels is not None:
+                it["labels"] = list(labels)
             self.world["notes"].setdefault(str(iid), []).insert(
                 0, {"created_at": "2999-01-01T00:00:00Z", "author": {"username": author}})
 
@@ -126,14 +128,22 @@ class FilterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gi.gitlab_issue_changes("x")
 
+    def test_idd_role(self):
+        self.assertEqual(gi.gitlab_idd_role(make_issue(1, labels=["status:open", "assignee:any"])), "ワーカー")
+        self.assertEqual(gi.gitlab_idd_role(make_issue(1, labels=["status:needs-rework"])), "ワーカー")
+        self.assertEqual(gi.gitlab_idd_role(make_issue(1, labels=["status:review-ready"])), "レビュアー")
+        with self.assertRaises(ValueError):
+            gi.gitlab_idd_role(make_issue(1, labels=["status:in-progress"]))
+
 
 # ---------------------------------------------------------------------------
 # チェック（実行中に自分以外が動いたか）
 # ---------------------------------------------------------------------------
 
 class FakeCtx:
-    def __init__(self, notes, me="bot", options=None, started=1000.0):
-        self.event = {"record": make_issue(3)}
+    def __init__(self, notes=(), me="bot", options=None, started=1000.0, record=None, now=None):
+        self.event = {"record": record or make_issue(3)}
+        self.now = now
         self.delivery = {"started_at": started}
         self.options = options or {}
         self.conn = {"url": "https://gl.example"}
@@ -143,7 +153,9 @@ class FakeCtx:
 
     def get_json(self, url, headers=None, query=None):
         self.calls.append(url)
-        return {"username": self.me} if url.endswith("/user") else self.notes
+        if url.endswith("/user"):
+            return {"username": self.me}
+        return self.notes if url.endswith("/notes") else self.now
 
     def log(self, msg):
         self.logs.append(msg)
@@ -173,12 +185,29 @@ class OthersActedTest(unittest.TestCase):
         self.assertFalse(any(c.endswith("/user") for c in ctx.calls))
 
 
+class RoleChangedTest(unittest.TestCase):
+    def ctx(self, before, after):
+        return FakeCtx(record=make_issue(3, labels=before), now=make_issue(3, labels=after))
+
+    def test_worker_to_reviewer_and_back(self):
+        self.assertTrue(gi.idd_role_changed(self.ctx(["status:open"], ["status:review-ready"])))
+        self.assertTrue(gi.idd_role_changed(self.ctx(["status:review-ready"], ["status:needs-rework"])))
+
+    def test_same_role_or_out_of_idd(self):
+        self.assertFalse(gi.idd_role_changed(self.ctx(["status:open"], ["status:needs-clarification"])))
+        self.assertFalse(gi.idd_role_changed(self.ctx(["status:review-ready"], ["status:approved"])))
+        ctx = self.ctx(["status:open"], ["status:review-ready"])
+        gi.idd_role_changed(ctx)
+        self.assertEqual(ctx.calls, ["https://gl.example/api/v4/projects/7/issues/3"])
+
+
 # ---------------------------------------------------------------------------
 # 本物の api-watch から、Dagu のワークフローと同じ順で呼ぶ
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(API_WATCH.is_file(), "api-watch が無い")
-class FlowTest(unittest.TestCase):
+class _FlowBase(unittest.TestCase):
+    """偽の GitLab と本物の api-watch。write_config で設定を書き、cycle で 1 回の起動を回す。"""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.gl = FakeGitLab()
@@ -216,7 +245,8 @@ class FlowTest(unittest.TestCase):
 
     def aw(self, *args) -> str:
         r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
-                            "--connections", str(self.conn), *args], env=self.env, capture_output=True, text=True,
+                            "--connections", str(self.conn), "--state-dir", str(self.tmp / "aw-state"), *args],
+                           env=self.env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r.stdout
@@ -236,6 +266,9 @@ class FlowTest(unittest.TestCase):
         self.aw("finish", delivery, "--exit-code", exit_code)
         return delivery, prompt
 
+
+@unittest.skipUnless(API_WATCH.is_file(), "api-watch が無い")
+class FlowTest(_FlowBase):
     def test_new_issue_runs_once_and_own_comment_does_not_retrigger(self):
         self.assertEqual(self.cycle(), (None, None))     # 初回は覚えるだけ
         self.gl.put(make_issue(2, labels=["todo"]))
@@ -283,6 +316,91 @@ class FlowTest(unittest.TestCase):
         self.assertTrue(a.startswith("aw_"))
         self.assertEqual(self.aw("claim", "--rule", "project-b").strip(), "")    # 同じ lock は同時に 1 つ
         self.aw("finish", a, "--exit-code", "0")       # project-b は試行に数えずに戻してあり、少しあとの起動で取れる
+
+
+# ---------------------------------------------------------------------------
+# examples/gitlab-idd（gitlab-idd スキルと繋ぐ設定の例）
+# ---------------------------------------------------------------------------
+
+EXAMPLE = HERE.parent / "examples" / "gitlab-idd"
+try:
+    import yaml  # noqa: F401
+    HAVE_YAML = True
+except ImportError:
+    HAVE_YAML = False
+
+
+@unittest.skipUnless(API_WATCH.is_file() and HAVE_YAML, "api-watch か PyYAML が無い")
+class IddExampleTest(_FlowBase):
+    """設定の例をそのまま使い、gitlab-idd のロールが入れ替わりながら 1 つのイシューが進むことを確かめる。"""
+
+    def write_config(self, projects=None):
+        self.cfg = self.tmp / "api-watch.yaml"
+        self.cfg.write_text((EXAMPLE / "api-watch.yaml.example").read_text(encoding="utf-8"), encoding="utf-8")
+        (self.tmp / "idd.prompt.md").write_text((EXAMPLE / "idd.prompt.md.example").read_text(encoding="utf-8"),
+                                                encoding="utf-8")
+        self.conn.write_text(json.dumps({"gitlab": [{"label": "watch", "url": self.gl.url, "token": "t0ken"},
+                                                    {"label": "default", "url": self.gl.url + "/g/p", "token": "t0ken"}]}),
+                             encoding="utf-8")
+
+    def cycle(self, agent=None, exit_code="0"):
+        return super().cycle("idd", agent=agent, exit_code=exit_code)
+
+    def test_worker_reviewer_rework_and_approval(self):
+        self.assertEqual(self.cycle(), (None, None))
+        self.gl.put(make_issue(2, labels=["status:open", "assignee:any"]))
+        # ワーカー: 実装して status:review-ready にする（自分の書き込みだが、ロールが変わるので次はレビュアー）
+        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T01:00:00Z", ["status:review-ready"]))
+        self.assertIn("gitlab-idd スキルのワーカーロールで、このイシュー #2 だけを処理してください", prompt)
+        # レビュアー: 差し戻す（status:needs-rework）
+        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T02:00:00Z", ["status:needs-rework"]))
+        self.assertIn("レビュアーロールで", prompt)
+        self.assertIn("ラベル追加: status:review-ready", prompt)
+        # ワーカー: 直してもう一度 status:review-ready に
+        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T03:00:00Z", ["status:review-ready"]))
+        self.assertIn("ワーカーロールで", prompt)
+        # レビュアー: 承認する（status:approved。マージは人）
+        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T04:00:00Z", ["status:approved"]))
+        self.assertIn("レビュアーロールで", prompt)
+        self.assertEqual(self.cycle(), (None, None))    # status:approved は filter から外れる
+
+    def test_clarification_waits_for_an_answer(self):
+        self.cycle()
+        self.gl.put(make_issue(3, labels=["status:open", "assignee:any"]))
+        # ワーカー: 曖昧なので質問して status:needs-clarification に（ロールは同じワーカーなので、自分の書き込みでは起きない）
+        self.cycle(agent=lambda: self.gl.comment(3, "bot", "2026-11-03T01:00:00Z", ["status:needs-clarification"]))
+        self.assertEqual(self.cycle(), (None, None))
+        self.gl.comment(3, "alice", "2026-11-03T02:00:00Z")   # 依頼者が答えた
+        d, prompt = self.cycle()
+        self.assertIn("ワーカーロールで", prompt)
+        self.assertIn("- コメント +1", prompt)
+
+    def test_example_dag_matches_dags_output(self):
+        if os.name == "nt":
+            self.skipTest("例のパスは /home/you（POSIX）で書いている")
+        import shutil as _sh
+        root = Path(tempfile.mkdtemp())
+        home = root / "home" / "you"
+        cfg = home / ".config" / "api-watch" / "api-watch.yaml"
+        conn = home / ".github" / "connections.yaml"
+        plugin = home / ".local" / "share" / "gitlab-issue-agent" / "gitlab_issue.py"
+        handle = home / ".config" / "dagu" / "gitlab-issue-agent.handle.yaml"
+        for dst, src in ((cfg, EXAMPLE / "api-watch.yaml.example"), (conn, EXAMPLE / "connections.yaml.example"),
+                         (plugin, PLUGIN), (handle, EXAMPLE / "handle-step.yaml.example"),
+                         (cfg.parent / "idd.prompt.md", EXAMPLE / "idd.prompt.md.example")):
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy(src, dst)
+        env = {**os.environ, "GITLAB_URL": "https://gitlab.example.com", "GITLAB_TOKEN": "x", "GITLAB_PROJECT": "group/project"}
+        r = subprocess.run([sys.executable, str(API_WATCH), "--plugin", "dagu", "--plugin", str(plugin), "--config", str(cfg),
+                            "--connections", str(conn), "dags", "--out", str(root / "dags"), "--python", "/usr/bin/python3",
+                            "--script", "/home/you/.local/bin/api-watch",
+                            "--dotenv", "/home/you/.config/dagu/gitlab-issue-agent.env", "--handle-step", f"idd.run={handle}"],
+                           env=env, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = (root / "dags" / "api-watch-idd.yaml").read_text(encoding="utf-8").replace(str(root), "")
+        _sh.rmtree(root, ignore_errors=True)
+        self.assertEqual(got, (EXAMPLE / "api-watch-idd.yaml.example").read_text(encoding="utf-8"),
+                         "examples/gitlab-idd/api-watch-idd.yaml.example を dags の出力で書き直してください")
 
 
 if __name__ == "__main__":

@@ -809,7 +809,7 @@ class DagsTest(Base):
         snippet.write_text("action: harness.run\nwith:\n  provider: claude\n  prompt: 指示は標準入力\n"
                            "  stdin: \"${INPUT}\"\n", encoding="utf-8")
         out = self.env.tmp / "dags"
-        self.env.ok(self, "dags", "--out", str(out), "--dotenv", "/x/issue-loop.env", "--handle-step", f"issue.run={snippet}")
+        self.env.ok(self, "dags", "--out", str(out), "--dotenv", "/x/gitlab-issue-agent.env", "--handle-step", f"issue.run={snippet}")
         names = sorted(p.name for p in out.iterdir())
         self.assertEqual(names, ["api-watch-issue.yaml", "api-watch-maintenance.yaml"])   # 子のワークフローは無い
         d = yaml.safe_load((out / "api-watch-issue.yaml").read_text(encoding="utf-8"))

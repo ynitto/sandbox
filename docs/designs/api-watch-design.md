@@ -5,8 +5,8 @@
 
 ## 1. 位置づけ
 
-GitLab の issue の変化でエージェントを動かす [dagu-issue-loop](./dagu-issue-loop-design.md) のような用途から、「API の取得」「変更の検知」
-「受け渡し」を汎用に切り出したもの。**実行（後続処理）は Dagu のワークフローかその場のコマンドに渡す**。dagu-issue-loop は
+GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent](./gitlab-issue-agent-design.md) のような用途から、「API の取得」「変更の検知」
+「受け渡し」を汎用に切り出したもの。**実行（後続処理）は Dagu のワークフローかその場のコマンドに渡す**。gitlab-issue-agent は
 取得・検知・実行待ち・1 セッションの排他を本設計に、エージェント CLI の実行を Dagu の `harness.run` に任せ、GitLab 固有の部分を
 本設計のプラグイン（`gitlab_issue.py`）として持つ。
 

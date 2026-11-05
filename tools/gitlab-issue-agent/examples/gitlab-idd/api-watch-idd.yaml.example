@@ -1,0 +1,145 @@
+# api-watch 0.2.0 の dags が作った雛形。作ったあとは自由に直してよい（dags は既にあるファイルを上書きしない）。
+# 設定: /home/you/.config/api-watch/api-watch.yaml
+# schedule は Dagu がこのワークフローを起動する間隔。取得元に schedule があれば、起動されても予定の時刻までは
+# api-watch が取得しない（取得の予定は api-watch の設定にある）。無ければ起動されるたびに取得する
+description: "gitlab-issues を取得し、ルール idd で判定して、その場で実行する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/dagu/gitlab-issue-agent.env"
+steps:
+  - name: fetch
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "fetch"
+        - "--source"
+        - "gitlab-issues"
+    timeout_sec: 1440
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      backoff: true
+      max_interval_sec: 600
+      exit_code: [3]
+  - name: evaluate
+    depends: [fetch]
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "evaluate"
+        - "--rule"
+        - "idd"
+    timeout_sec: 600
+    retry_policy:
+      limit: 2
+      interval_sec: 10
+  - name: claim
+    depends: [evaluate]
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "claim"
+        - "--rule"
+        - "idd"
+        - "--target"
+        - "run"
+    timeout_sec: 600
+    output: DELIVERY
+  - name: render
+    depends: [claim]
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "render"
+        - "${DELIVERY}"
+    timeout_sec: 300
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
+    output: INPUT
+  - name: handle
+    id: handle
+    depends: [render]
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
+    timeout_sec: 4200
+    continue_on:                # 失敗・時間切れでも finish で記録する
+      failure: true
+    # ワークフロー api-watch-idd の handle に差し込むステップ（~/.config/dagu/gitlab-issue-agent.handle.yaml にコピーして使う）。
+    # dags の --handle-step idd.run=<このファイル> で差し込む。Dagu v2 の harness.run でエージェント CLI を動かす。
+    #
+    # エージェント CLI から gitlab-idd スキルが使えるようにしておく（例: Claude Code なら ~/.claude/skills/gitlab-idd）。
+    # working_dir はプロジェクトの作業コピー（gitlab-idd はそこから git remote を読み、作業用のクローンを自分で作る）。
+    action: harness.run
+    working_dir: /home/you/work/project
+    with:
+      provider: claude
+      prompt: GitLab のイシューに変化がありました。標準入力の指示に従って、gitlab-idd スキルで処理してください。
+      stdin: "${INPUT}"
+      dangerously_skip_permissions: true     # 無人で動かすため
+  - name: finish
+    depends: [handle]
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "finish"
+        - "${DELIVERY}"
+        - "--exit-code"
+        - "${handle.exit_code}"
+    timeout_sec: 600
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"

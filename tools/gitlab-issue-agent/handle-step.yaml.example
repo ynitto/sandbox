@@ -1,4 +1,4 @@
-# ワークフロー api-watch-issue-agent の handle に差し込むステップ（~/.config/dagu/issue-loop.handle.yaml にコピーして使う）。
+# ワークフロー api-watch-issue-agent の handle に差し込むステップ（~/.config/dagu/gitlab-issue-agent.handle.yaml にコピーして使う）。
 # api-watch の dags に --handle-step issue-agent.run=<このファイル> を付けると、handle の中身としてそのまま入る
 # （name・id・depends・preconditions・timeout_sec・continue_on は dags が付ける）。Dagu v2 の harness.run でエージェント CLI を動かす。
 # 終了コードは次の finish が受け取り、0 なら処理し終えた状態を記録し、それ以外ならあとでやり直す。
