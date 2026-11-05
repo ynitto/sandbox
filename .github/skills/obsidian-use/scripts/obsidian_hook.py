@@ -207,7 +207,7 @@ def _kiro_failure(resp: dict) -> str | None:
     return None
 
 
-_OWN = re.compile(r"vault\.py[\\\"']*\s+(?:memo|search|notes|note|log|lint|config)\b")
+_OWN = re.compile(r"vault\.py[\\\"']*\s+(?:memo|search|notes|note|ingested|links|log|lint|config)\b")
 
 
 def on_prompt(cfg: dict, sid: str, sess: dict, client: str, payload: dict) -> str:
