@@ -20,6 +20,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   Dagu のワークフロー・`ack` の例を足す
 - gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: プラグインと設定・ワークフローの例を change-watch の名前に合わせる
   （`change-watch-issue-agent.yaml.example`・`examples/gitlab-idd/change-watch-idd.yaml.example`・`change-watch-auto-close.yaml.example` など）
+### gitlab-mr-review-agent: MR の番号を「!12」でも受け取り、パスに `>` を含むファイルの指摘を読み戻せるようにする（直し）
+
+- コマンドの MR の番号は、`context` の出力に合わせて `!12`・`#12` と渡されても `12` として読む（今までは API が 404 になっていた）
+- 指摘の印に書くパスから `>` と `"` を除く。`>` を含むファイル名だと印を読み戻せず、同じ指摘を重ねて書いてしまっていた
+
 ### gitlab-mr-review-agent: 決めたリポジトリの MR を kiro-cli にレビューさせ、直った指摘を閉じる（0.1.0）
 
 - `tools/gitlab-mr-review-agent/` を足す。gitlab-issue-agent と同じく、MR の取得・変化の検知・実行待ち・再試行・処理し終えた状態・
