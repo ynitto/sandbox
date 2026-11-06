@@ -511,8 +511,13 @@ def finding_key(path: str, body: str) -> str:
     return hashlib.sha256(f"{path}\n{body.strip()}".encode("utf-8")).hexdigest()[:12]
 
 
+def mark_path(path: str) -> str:
+    """印に書くパス。印の属性の区切り（"）と HTML コメントの終わり（>）になる文字を除く（印を読み戻せなくなるため）。"""
+    return re.sub(r'[">]', "", path)
+
+
 def finding_mark(key: str, path: str, line: int) -> str:
-    return f'<!-- {MARK}:finding key="{key}" path="{path.replace(chr(34), "")}" line="{line}" -->'
+    return f'<!-- {MARK}:finding key="{key}" path="{mark_path(path)}" line="{line}" -->'
 
 
 def parse_finding(body: str) -> dict | None:
@@ -799,7 +804,7 @@ def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print
         if t["key"] == key:
             out(f"同じ指摘が既にあります（スレッド {t['id']}・{'解決済み' if t['resolved'] else '未解決'}）。書きません。")
             return OK
-        if not t["resolved"] and t["path"] == path and str(t["line"]) == str(line):
+        if not t["resolved"] and t["path"] == mark_path(path) and str(t["line"]) == str(line):
             out(f"{path}:{line} には未解決の指摘（スレッド {t['id']}）が既にあります。書きません"
                 "（言い直しで同じ指摘を重ねないため。別の問題なら、その問題がある別の行に書いてください）。")
             return OK
@@ -867,6 +872,14 @@ def cmd_prepare(gl: GitLab, repo: LocalRepo | None, branch: str, out=print) -> i
     return OK
 
 
+def _iid(value: str) -> str:
+    """MR の番号。context の出力は「MR !12」と書くので、「!12」「#12」と渡されても番号として読む。"""
+    v = str(value).strip().lstrip("!#")
+    if not v.isdigit():
+        raise argparse.ArgumentTypeError(f"MR の番号（例: 12 か !12）ではありません: {value}")
+    return v
+
+
 def _body(args) -> str:
     if getattr(args, "body_file", None):
         with open(args.body_file, encoding="utf-8") as f:
@@ -893,24 +906,24 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("prepare", help="レビュー用の作業フォルダを作る（リポジトリが無ければ 1 回だけ取ってくる）")
     pr.add_argument("--branch", default="", help="取り出すブランチ（既定はリポジトリの既定のブランチ）")
     c = sub.add_parser("context", help="MR の概要・前回までの指摘・差分を出す")
-    c.add_argument("iid")
+    c.add_argument("iid", type=_iid)
     c.add_argument("--since", default="", help="前回レビューしたコミット（あれば、そこからの差分を出す）")
     s = sub.add_parser("show", help="今のコミットのファイルを行番号つきで出す")
-    s.add_argument("iid")
+    s.add_argument("iid", type=_iid)
     s.add_argument("path")
     s.add_argument("--from", dest="frm", type=int)
     s.add_argument("--to", type=int)
     m = sub.add_parser("comment", help="差分の行に指摘のスレッドを立てる（同じ指摘は書かない）")
-    m.add_argument("iid")
+    m.add_argument("iid", type=_iid)
     m.add_argument("--path", required=True, help="ファイルのパス（新しい側）")
     m.add_argument("--line", required=True, type=int, help="新しい側の行番号")
     _add_body(m)
     r = sub.add_parser("resolve", help="指摘のスレッドに返信して解決にする")
-    r.add_argument("iid")
+    r.add_argument("iid", type=_iid)
     r.add_argument("discussion", help="スレッドの ID（context の「スレッド」の横）")
     _add_body(r)
     u = sub.add_parser("summary", help="今のコミットのレビューのまとめを 1 回だけ書く")
-    u.add_argument("iid")
+    u.add_argument("iid", type=_iid)
     _add_body(u)
     args = p.parse_args(argv)
 

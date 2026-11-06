@@ -266,6 +266,17 @@ class UnitTest(unittest.TestCase):
                          ("d1", "k1", "app.py", "3", "直して", False))
         self.assertEqual(t["replies"], [{"author": "alice", "body": "意図どおりです"}])
 
+    def test_mark_survives_awkward_paths(self):
+        mark = gm.finding_mark("k2", 'a/b>c"d.py', 7)
+        t = gm.own_threads([{"id": "d1", "notes": [{"body": f"x\n\n{mark}"}]}])[0]
+        self.assertEqual((t["key"], t["path"], t["line"]), ("k2", "a/bcd.py", "7"))
+        self.assertEqual(t["path"], gm.mark_path('a/b>c"d.py'))
+
+    def test_iid_accepts_bang_and_hash(self):
+        self.assertEqual((gm._iid("12"), gm._iid("!12"), gm._iid(" #12 ")), ("12", "12", "12"))
+        with self.assertRaises(Exception):
+            gm._iid("abc")
+
     def test_fingerprint_ignores_rebase_but_not_changes(self):
         a = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_A}]
         moved = [{"old_path": "app.py", "new_path": "app.py",
