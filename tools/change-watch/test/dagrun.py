@@ -7,6 +7,7 @@
 - preconditions の condition を展開し、expected（re: なら正規表現）に合わなければそのステップを飛ばす
 - retry_policy は exit_code に当たる終了コードのとき limit 回まで（待たずに）やり直す
 - 失敗したら、continue_on.failure が無ければそこで止める
+- handler_on の success / failure は run_handler_on で 1 つだけ動かす（${DAG_RUN_ID} などは vars で渡す）
 
 change-watch のステップ（command が例の change-watch のパス）は aw の argv で呼び、args の中の例のパスは paths で置き換え、
 先頭に head を足す（--config・--state-dir など）。exec でないステップ（handle の harness.run など）は handle(step, vars) を呼ぶ。
@@ -38,8 +39,16 @@ def check_shape(test, dag: dict, where: str) -> None:
             test.assertIn(d, seen, f"{where}: {s['name']} の depends {d} が前に無い")
         seen.add(s["name"])
         args = (s.get("with") or {}).get("args") or []
+        if s.get("action") == "exec":
+            test.assertFalse(Path(str(s["with"]["command"])).name.startswith("python") and
+                             any(str(a) == EXAMPLE_COMMAND for a in args),
+                             f"{where}: {s['name']} は change-watch を直接 command にする")
         if s.get("action") == "exec" and s["with"]["command"] == EXAMPLE_COMMAND and "fetch" in args:
             test.assertEqual(s["retry_policy"]["exit_code"], [3], f"{where}: fetch は一時的な失敗（3）だけ再試行する")
+    for event, h in (dag.get("handler_on") or {}).items():
+        args = (h.get("with") or {}).get("args") or []
+        if any("change-watch" in str(x) for x in [h.get("with", {}).get("command"), *args]):
+            test.assertEqual(h["with"]["command"], EXAMPLE_COMMAND, f"{where}: handler_on.{event} は change-watch を直接 command にする")
 
 
 def _expand(value: str, vars: dict[str, str]) -> str:
@@ -58,6 +67,22 @@ def _ok(pre: list | None, vars: dict[str, str]) -> bool:
     return True
 
 
+def _argv(w: dict, aw: list[str], head: list[str], paths: dict[str, str] | None, vars: dict[str, str]) -> list[str]:
+    args = [_expand((paths or {}).get(a, a), vars) for a in w.get("args") or []]
+    return aw + head + args if w["command"] == EXAMPLE_COMMAND else [w["command"]] + args
+
+
+def run_handler_on(dag_path: Path, event: str, *, aw: list[str], head: list[str], vars: dict[str, str],
+                   paths: dict[str, str] | None = None) -> int:
+    """handler_on.<event>（success・failure など）を 1 回動かし、終了コードを返す。"""
+    w = load(dag_path)["handler_on"][event]
+    assert w.get("action") == "exec", f"{dag_path.name}: handler_on.{event} は exec ではない"
+    p = subprocess.run(_argv(w["with"], aw, head, paths, vars), capture_output=True, text=True, encoding="utf-8")
+    if p.returncode:
+        print(f"[{dag_path.name}:handler_on.{event}] 終了コード {p.returncode}\n{p.stdout}{p.stderr}")
+    return p.returncode
+
+
 def run(dag_path: Path, *, aw: list[str], head: list[str], paths: dict[str, str] | None = None,
         handle: Callable[[dict, dict], int] | None = None, env: dict | None = None) -> dict[str, int | None]:
     """DAG を 1 回動かし、ステップごとの終了コード（飛ばしたら None）を返す。止まったところより後は入らない。"""
@@ -73,13 +98,7 @@ def run(dag_path: Path, *, aw: list[str], head: list[str], paths: dict[str, str]
         for _ in range(tries):
             out = ""
             if s.get("action") == "exec":
-                w = s["with"]
-                args = [_expand((paths or {}).get(a, a), vars) for a in w.get("args") or []]
-                if w["command"] == EXAMPLE_COMMAND:
-                    argv = aw + head + args
-                else:
-                    argv = [w["command"]] + args
-                p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                p = subprocess.run(_argv(s["with"], aw, head, paths, vars), capture_output=True, text=True, encoding="utf-8",
                                    env={**os.environ, **(env or {})}, cwd=s.get("working_dir"))
                 code, out = p.returncode, p.stdout
                 if code and not (codes and code in codes):

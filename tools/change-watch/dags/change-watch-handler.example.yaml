@@ -9,8 +9,10 @@
 #   CHANGEWATCH_EVENT_FILE   イベントの中身（変更前後の値・変更箇所・レコード）の JSON ファイル
 # ルールの targets[].params に書いた引数も同じ形で届く。ack は接続設定を使わないので --connections は要らない。
 #
-# 下の /home/you と /path/to は置き場所に合わせて直す（exec は ~ を展開しない）。Windows なら command を python に、
-# change-watch を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+# 下の /home/you と /path/to は置き場所に合わせて直す（exec は ~ を展開しない）。ack の command は install.py install が
+# 置いた change-watch。Windows なら command を python に、args の先頭を
+# C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+# 設定は既定の ~/.config/change-watch/change-watch.yaml を読む。別の場所なら args の先頭に --config と <パス> を足す。
 params:
   - CHANGEWATCH_EVENT_ID: ""
   - CHANGEWATCH_DELIVERY_ID: ""
@@ -41,11 +43,10 @@ handler_on:
   success:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /path/to/change-watch.yaml, ack, "${DAG_RUN_ID}"]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}"]
   failure:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /path/to/change-watch.yaml, ack, "${DAG_RUN_ID}",
-             --failed]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}", --failed]

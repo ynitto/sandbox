@@ -295,15 +295,13 @@ handler_on:
   success:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /home/you/.config/change-watch/change-watch.yaml,
-             ack, "${DAG_RUN_ID}"]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}"]
   failure:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /home/you/.config/change-watch/change-watch.yaml,
-             ack, "${DAG_RUN_ID}", --failed]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}", --failed]
 ```
 
 `handle_issue.py` は渡された JSON を読むだけでよい（中身は「受け渡し先の DAG」を参照）:

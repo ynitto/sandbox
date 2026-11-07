@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: 受け渡し先の DAG の例も ack で change-watch を直接呼ぶ（直し）
+
+- `dags/change-watch-handler.example.yaml` と README の「受け渡し先の DAG」の `handler_on` で、`command: python3` の引数に
+  change-watch を渡すのをやめ、ほかの例と同じく `command` に change-watch を直接書く。設定が既定の場所なら `--config` も要らない
+- 例の試験で、受け渡し先の DAG の `handler_on` から ack を流して完了・失敗が記録されることと、change-watch を直接呼んでいることを確かめる
+
 ### change-watch: api-watch を change-watch に名前を改め、Windows の設定例を足す（0.4.0）
 
 - フォルダも見るようになったので、api-watch を **change-watch** に改める。取得元が API でもフォルダでも、変化を見て渡す道具として名乗る。
