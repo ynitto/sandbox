@@ -790,7 +790,13 @@ def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, o
             raise
     lines = text.splitlines()
     start = max(1, frm or 1)
+    if start > len(lines):
+        out(f"{path} @ {ref[:8]} は全 {len(lines)} 行です。{start} 行目からは出せません")
+        return OK
     end = min(len(lines), to or len(lines), start + MAX_SHOW_LINES - 1)
+    if end < start:
+        out(f"--to（{to}）が --from（{start}）より前です")
+        return USAGE
     out(f"# {path} @ {ref[:8]}（{start}〜{end} 行目 / 全 {len(lines)} 行）")
     for n in range(start, end + 1):
         out(f"{n:>6}  {lines[n - 1]}")

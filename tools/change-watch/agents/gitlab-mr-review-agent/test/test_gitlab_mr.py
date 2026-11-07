@@ -451,6 +451,14 @@ class CommandTest(_GitLabBase):
         self.assertIn("     2      y = x * 2", out)
         self.assertNotIn("def f", out)
 
+    def test_show_out_of_range(self):
+        self.gl.files[("app.py", "a" * 40)] = "a\nb\n"
+        code, out = self.cli("show", 1, "app.py", "--from", 9)
+        self.assertIn("全 2 行です", out)
+        code, out = self.cli("show", 1, "app.py", "--from", 2, "--to", 1)
+        self.assertEqual(code, 2)
+        self.assertIn("より前です", out)
+
     def test_needs_env(self):
         self.env = {"GITLAB_URL": "", "GITLAB_TOKEN": "", "GITLAB_PROJECT": ""}
         with redirect_stderr(io.StringIO()) as err:
