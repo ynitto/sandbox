@@ -3,7 +3,7 @@
 GitLab の issue を定期的に見に行き、変化があった issue をエージェント CLI（Claude Code / Codex / Kiro / Copilot など）に
 1 件ずつ渡す。**同時に動くエージェント CLI は常に 1 つ**で、同じ変化を 2 回流さない。
 
-issue の取得・変化の検知・実行待ち・再試行は [change-watch](../change-watch/README.md) が、起動とエージェント CLI の実行は
+issue の取得・変化の検知・実行待ち・再試行は [change-watch](../../README.md) が、起動とエージェント CLI の実行は
 [Dagu](https://github.com/dagu-org/dagu)（v2.25 以降。`harness.run` を使う）が受け持つ。このフォルダには、GitLab の issue に固有の部分を
 足す change-watch のプラグイン（`gitlab_issue.py`）と、設定の例がある。
 
@@ -21,44 +21,30 @@ issue の取得・変化の検知・実行待ち・再試行は [change-watch](.
 
 ## 入れ方
 
-1. プラグインとプロンプトのテンプレートを置く。
+1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_issue.py`）・設定の雛形・プロンプト・Dagu のワークフローを、
+   どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
+   ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
 
    ```bash
-   mkdir -p ~/.local/share/gitlab-issue-agent
+   python3 tools/change-watch/install.py install --agent gitlab-issue-agent
    ```
 
-   ```bash
-   cp tools/gitlab-issue-agent/gitlab_issue.py ~/.local/share/gitlab-issue-agent/
-   ```
+   | 置かれるもの | 場所 |
+   |---|---|
+   | プログラム | `~/.local/share/change-watch/agents/gitlab-issue-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\gitlab-issue-agent\`） |
+   | 設定（`change-watch.yaml`・`gitlab-issue-agent.env`・`prompt.md`） | `~/.config/change-watch/gitlab-issue-agent/` |
+   | Dagu のワークフロー（`change-watch-issue-agent.yaml`・整理の `change-watch-gitlab-issue-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
+   | 状態 | `~/.local/state/change-watch/gitlab-issue-agent/` |
 
-   ```bash
-   cp tools/gitlab-issue-agent/prompt.md.example ~/.config/dagu/gitlab-issue-agent.prompt.md
-   ```
-
-2. GitLab の URL・プロジェクト・トークンを書く。`gitlab-issue-agent.env.example` を `~/.config/dagu/gitlab-issue-agent.env` にコピーして埋める。
+2. GitLab の URL・プロジェクト・トークンを `~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env` に書く。
    トークンには `read_api` が要る（エージェントが issue にコメントするなら、そのエージェント側の権限も別に要る）。
+   対象の issue の絞り込みは、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` の `query`（取得するもの）とルールの `filter`
+   （実行の直前にもう一度確かめるもの）に書く。
 
-   ```bash
-   cp tools/gitlab-issue-agent/gitlab-issue-agent.env.example ~/.config/dagu/gitlab-issue-agent.env
-   ```
+3. `~/.config/dagu/dags/change-watch-issue-agent.yaml` の `handle` の `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・
+   作業フォルダ（`working_dir`）を自分のものに直す。CLI はこの PC に入れて、ログインしておく。Dagu の設定（`config.yaml`）に足すものは無い。
 
-3. change-watch を入れる。
-
-   ```bash
-   python3 tools/change-watch/install.py install
-   ```
-
-4. change-watch の設定を置く。対象の issue の絞り込みは、設定の `query`（取得するもの）とルールの `filter`（実行の直前にもう一度確かめるもの）に書く。
-
-   ```bash
-   mkdir -p ~/.config/change-watch
-   ```
-
-   ```bash
-   cp tools/gitlab-issue-agent/change-watch.yaml.example ~/.config/change-watch/change-watch.yaml
-   ```
-
-5. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-issue-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
+4. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-issue-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
 
    ```yaml
    gitlab:
@@ -67,28 +53,15 @@ issue の取得・変化の検知・実行待ち・再試行は [change-watch](.
        token: ${GITLAB_TOKEN}
    ```
 
-6. Dagu のワークフローを置く。`change-watch-issue-agent.yaml.example` を `~/.config/dagu/dags/change-watch-issue-agent.yaml` にコピーし、
-   `handle` の `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・作業フォルダ（`working_dir`）と、`/home/you` を自分のものに直す。
-   CLI はこの PC に入れて、ログインしておく。毎日の整理のワークフローは change-watch の例をそのまま置く（`--plugin` は要らない）。
-   Dagu の設定（`config.yaml`）に足すものは無い。
-
-   ```bash
-   cp tools/gitlab-issue-agent/change-watch-issue-agent.yaml.example ~/.config/dagu/dags/change-watch-issue-agent.yaml
-   ```
-
-   ```bash
-   cp tools/change-watch/dags/change-watch-maintenance.example.yaml ~/.config/dagu/dags/change-watch-maintenance.yaml
-   ```
-
-7. 環境変数を読み込んで、一度手で取得して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす
+5. 環境変数を読み込んで、一度手で取得して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす
    （`dagu start-all` など）。以後は issue にコメント・ラベル変更・本文の更新などがあると、次の取得（1 時間に 1 回）でエージェントが起きる。
 
    ```bash
-   set -a; . ~/.config/dagu/gitlab-issue-agent.env; set +a
+   set -a; . ~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env; set +a
    ```
 
    ```bash
-   change-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
+   change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
    ```
 
 ## GitLab への問い合わせの回数
@@ -137,16 +110,16 @@ issue の取得・変化の検知・実行待ち・再試行は [change-watch](.
 
 | したいこと | コマンド |
 |---|---|
-| 失敗している・打ち切った変化を見る | `change-watch --config ~/.config/change-watch/change-watch.yaml events --rule issue-agent --status send_failed,dead` |
-| 打ち切った変化をすぐ流し直す | `change-watch --config ~/.config/change-watch/change-watch.yaml retry <受け渡しの ID>` |
-| 処理し終えた issue をもう一度流させる | `change-watch --config ~/.config/change-watch/change-watch.yaml forget-handled --rule issue-agent 123`（次に変化を受け取ったとき流す） |
+| 失敗している・打ち切った変化を見る | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml events --rule issue-agent --status send_failed,dead` |
+| 打ち切った変化をすぐ流し直す | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml retry <受け渡しの ID>` |
+| 処理し終えた issue をもう一度流させる | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml forget-handled --rule issue-agent 123`（次に変化を受け取ったとき流す） |
 
 ## エージェント CLI とプロンプト
 
 - エージェント CLI は Dagu の `harness.run` で動かす（ワークフローの `handle` のステップ）。`provider` に `claude` / `codex` / `kiro` / `copilot` / `gemini` などを書き、
   `with` のほかの項目は CLI のフラグになる（`dangerously_skip_permissions: true` → `--dangerously-skip-permissions`）。権限の確認で止まらないよう、
   無人で動かせるフラグを付けること
-- プロンプトは `~/.config/dagu/gitlab-issue-agent.prompt.md`（change-watch の設定の `input_template`）。change-watch のテンプレートで書き、
+- プロンプトは `~/.config/change-watch/gitlab-issue-agent/prompt.md`（change-watch の設定の `input_template`）。change-watch のテンプレートで書き、
   `{{ event.record.iid }}`・`{{ event.record.title }}`・`{{ event.record.web_url }}`・`{{ event.record | json: 2 }}`・`{{ delivery.attempt }}`（何回目か）と、
   プラグインの `{{ event | gitlab_issue_changes }}`（変化の箇条書き）・`{{ event | gitlab_issue_kind }}`（新規 / 更新）が使える
 - 組んだプロンプトはエージェント CLI の標準入力に渡る（`stdin: "${INPUT}"`）
@@ -165,7 +138,7 @@ GitLab への問い合わせは、change-watch の取得元の接続で送り、
 
 ## gitlab-idd スキルと繋ぐ
 
-[gitlab-idd](../../.github/skills/gitlab-idd/SKILL.md) スキルは、GitLab のイシューを `status:*` のラベルで回すイシュー駆動開発のスキルで、
+[gitlab-idd](../../../../.github/skills/gitlab-idd/SKILL.md) スキルは、GitLab のイシューを `status:*` のラベルで回すイシュー駆動開発のスキルで、
 「イシューを拾って」（ワーカー）や「イシューをレビューして」（レビュアー）と頼まれたときに 1 回ずつ動く。これを gitlab-issue-agent に繋ぐと、
 ラベルやコメントが変わったイシューを、そのラベルに合ったロールで自動で処理させられる。設定の例は `examples/gitlab-idd/` にある。
 
@@ -190,14 +163,14 @@ GitLab への問い合わせは、change-watch の取得元の接続で送り、
 
 ### 入れ方
 
-上の「入れ方」の 1〜7 のうち、次のファイルを `examples/gitlab-idd/` のものに替える。
+上の「入れ方」のとおり入れてから、次のファイルを `examples/gitlab-idd/` のものに替える（パスの `/home/you` は自分の場所に直す）。
 
 | 置く場所 | 例 | 替えるもの |
 |---|---|---|
-| `~/.config/change-watch/change-watch.yaml` | `change-watch.yaml.example` | 4 の設定（ルール `idd`） |
-| `~/.config/change-watch/idd.prompt.md` | `idd.prompt.md.example` | プロンプト（設定と同じフォルダに置く） |
-| `~/.github/connections.yaml` | `connections.yaml.example` | 5 の接続設定（`default` は gitlab-idd 用のプロジェクトの URL、`watch` は change-watch 用の GitLab の URL） |
-| `~/.config/dagu/dags/change-watch-idd.yaml` | `change-watch-idd.yaml.example` | 6 のワークフロー（ルール `idd`） |
+| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | `change-watch.yaml.example` | 設定（ルール `idd`） |
+| `~/.config/change-watch/gitlab-issue-agent/idd.prompt.md` | `idd.prompt.md.example` | プロンプト（設定と同じフォルダに置く） |
+| `~/.github/connections.yaml` | `connections.yaml.example` | 4 の接続設定（`default` は gitlab-idd 用のプロジェクトの URL、`watch` は change-watch 用の GitLab の URL） |
+| `~/.config/dagu/dags/change-watch-idd.yaml` | `change-watch-idd.yaml.example` | ワークフロー（ルール `idd`）。インストーラが置いた `change-watch-issue-agent.yaml` は消す |
 | エージェントのホームの `skill-registry.json`（Claude Code なら `~/.claude/skill-registry.json`） | `skill-registry.json.example` | 足す（既にあれば `skill_configs.gitlab-idd` だけを足す） |
 
 `gitlab-issue-agent.env` には `SKILL_CONNECTIONS_FILE`（上の connections.yaml のパス。gitlab-idd にも同じ接続設定を読ませる）と
@@ -209,10 +182,10 @@ gitlab-idd のワーカーは、イシューごとにリポジトリをクロー
 （取ってくるのは対象ブランチの新しいコミットだけ）。作業コピーのブランチ・書きかけの変更には触らない。作業コピーの `origin` は
 gitlab-idd 用のプロジェクトを指していること。書かなければ、従来どおりイシューごとに一時フォルダへクローンする。
 
-6 のワークフローは、`change-watch-issue-agent.yaml` の代わりに `change-watch-idd.yaml` を置く（ルール名が `idd`）。7 は `--rule idd` で取る。
+ワークフローは `change-watch-issue-agent.yaml` の代わりに `change-watch-idd.yaml` を置く（ルール名が `idd`）。5 は `--rule idd` で取る。
 
 ```bash
-change-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run --rule idd --no-jitter
+change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py --connections ~/.github/connections.yaml run --rule idd --no-jitter
 ```
 
 ### 気をつけること
@@ -229,8 +202,9 @@ change-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config
 
 ## Windows で使うとき
 
-- change-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `change-watch.pyz` のフルパスにする
-- Dagu の設定フォルダは `C:\Users\<名前>\.config\dagu\` で、DAG は `dags\` に置く
+- インストーラは `python tools\change-watch\install.py install --agent gitlab-issue-agent` で、Dagu から使う Python で動かす。
+  ワークフローの `command`（その Python と `change-watch.pyz`）は、インストーラが Windows の形にして置く
+- Dagu の設定フォルダは `C:\Users\<名前>\.config\dagu\` で、ワークフローは `dags\` に置かれる（別の場所ならインストーラに `--dagu-dir`）
 - ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
 - gitlab-idd のワーカーの作業用フォルダは、一時フォルダ（`%TEMP%`）の下に作る。git（Git for Windows 2.31 以降）が要る
 
@@ -238,15 +212,15 @@ change-watch --plugin ~/.local/share/gitlab-issue-agent/gitlab_issue.py --config
 
 | ファイル | 書くこと |
 |---|---|
-| `~/.config/dagu/gitlab-issue-agent.env` | GitLab の URL・プロジェクト・トークン |
-| `~/.config/change-watch/change-watch.yaml` | 取得の予定・ずらし・監視する項目・絞り込み・再試行・実行の上限・`lock` |
-| `~/.config/dagu/gitlab-issue-agent.prompt.md` | プロンプト |
+| `~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env` | GitLab の URL・プロジェクト・トークン |
+| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | 取得の予定・ずらし・監視する項目・絞り込み・再試行・実行の上限・`lock` |
+| `~/.config/change-watch/gitlab-issue-agent/prompt.md` | プロンプト |
 | `~/.config/dagu/dags/change-watch-issue-agent.yaml` | エージェント CLI の種類・フラグ・作業フォルダ（`handle` のステップ） |
 
 ## テスト
 
 ```bash
-cd tools/gitlab-issue-agent && python3 -m unittest discover -s test
+cd tools/change-watch/agents/gitlab-issue-agent && python3 -m unittest discover -s test
 ```
 
-設計: [`docs/designs/gitlab-issue-agent-design.md`](../../docs/designs/gitlab-issue-agent-design.md)
+設計: [`docs/designs/gitlab-issue-agent-design.md`](../../../../docs/designs/gitlab-issue-agent-design.md)

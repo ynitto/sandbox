@@ -1,4 +1,4 @@
-# gitlab-idd スキルでイシューを処理させる change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+# gitlab-idd スキルでイシューを処理させる change-watch の設定（~/.config/change-watch/gitlab-issue-agent/change-watch.yaml。install.py install --agent gitlab-issue-agent が無ければ置く）。
 #
 # gitlab-idd のラベル（status:*）が付いたイシューが変わったら、エージェント CLI に gitlab-idd スキルでそのイシューを処理させる:
 #   status:open / status:needs-rework / status:needs-clarification   → ワーカーロール（実装・ブランチ・MR・報告）
@@ -9,7 +9,7 @@
 #
 # Dagu のワークフロー（change-watch-idd）は change-watch-idd.yaml.example をコピーして置く（README の「gitlab-idd スキルと繋ぐ」）。
 version: 1
-state_dir: ~/.local/state/change-watch
+state_dir: ~/.local/state/change-watch/gitlab-issue-agent   # エージェントごとに分ける
 
 sources:
   gitlab-issues:
@@ -47,7 +47,7 @@ rules:
     targets:
       - name: run
         external: true
-        input_template: idd.prompt.md        # この設定ファイルからの相対パス（~/.config/change-watch/idd.prompt.md）
+        input_template: idd.prompt.md        # この設定ファイルからの相対パス（~/.config/change-watch/gitlab-issue-agent/idd.prompt.md）
         refresh:
           url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ event.record_id }}"
         # 実行のあとで次のどちらかなら、処理し終えたのは実行前の状態までにして、次の取得でもう一度流す:

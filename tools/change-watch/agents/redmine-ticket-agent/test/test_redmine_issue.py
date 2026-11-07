@@ -25,7 +25,7 @@ except ImportError:      # pragma: no cover
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "redmine_issue.py"
 EXAMPLE = HERE.parent / "change-watch.yaml.example"
-CHANGE_WATCH = HERE.parent.parent / "change-watch" / "change_watch.py"
+CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("redmine_issue", PLUGIN)
 ri = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ri)
@@ -34,7 +34,8 @@ KEY = "k3y"
 ME = {"id": 5, "name": "自分"}
 ALICE = {"id": 9, "name": "alice"}
 STATUSES = [{"id": 1, "name": "新規", "is_closed": False}, {"id": 2, "name": "進行中", "is_closed": False},
-            {"id": 5, "name": "完了", "is_closed": True}]
+            {"id": 5, "name": "完了", "is_closed": True}, {"id": 6, "name": "却下", "is_closed": True}]
+CLOSED = {s["id"] for s in STATUSES if s["is_closed"]}
 
 
 def make_issue(iid: int, subject: str = "", description: str = "", assignee=ME, status: int = 1) -> dict:
@@ -52,6 +53,7 @@ class FakeRedmine:
         self.notes: dict[int, list[str]] = {}
         self.allowed: dict[int, list[int]] = {}   # チケットごとに選べるステータス（無ければすべて）
         self.puts: list[tuple[int, dict]] = []
+        self.legacy = False                        # Redmine 5.1 より前: チケットのステータスに is_closed が無い
         self.lock = threading.Lock()
         outer = self
 
@@ -72,6 +74,9 @@ class FakeRedmine:
                 q = parse_qs(u.query)
                 with outer.lock:
                     issues = json.loads(json.dumps(outer.issues))
+                if outer.legacy:
+                    for it in issues.values():
+                        it["status"].pop("is_closed", None)
                 if u.path == "/users/current.json":
                     return self._send(200, {"user": {"id": ME["id"], "login": "me"}})
                 if u.path == "/issue_statuses.json":
@@ -81,7 +86,7 @@ class FakeRedmine:
                     if q.get("assigned_to_id") == ["me"]:
                         items = [i for i in items if (i.get("assigned_to") or {}).get("id") == ME["id"]]
                     if q.get("status_id") == ["open"]:
-                        items = [i for i in items if not i["status"]["is_closed"]]
+                        items = [i for i in items if i["status"]["id"] not in CLOSED]
                     off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["25"])[0])
                     return self._send(200, {"issues": items[off:off + lim], "total_count": len(items),
                                             "offset": off, "limit": lim})
@@ -194,10 +199,23 @@ class CloseTest(unittest.TestCase):
         self.assertEqual(ri.close(self.api, self.rm.issues[1], "5", "済み", log=lambda m: None), ri.OK)
         self.assertEqual(self.rm.puts, [])
 
+    def test_already_closed_with_another_status_is_noop(self):
+        # 上のルールが先に「却下」にしたチケット。下のルールの close はコメントもステータスも変えない
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                self.rm.legacy = legacy
+                self.rm.put(make_issue(1, status=1))
+                ri.close(self.api, self.rm.issues[1], "却下", "上のルール", log=lambda m: None)
+                self.rm.puts.clear()
+                self.assertEqual(ri.close(ri.Redmine(self.rm.url, KEY), self.rm.issues[1], "完了", "下のルール",
+                                          log=lambda m: None), ri.OK)
+                self.assertEqual(self.rm.puts, [])
+                self.assertEqual(self.rm.notes.pop(1), ["上のルール"])
+
     def test_unknown_status_and_disallowed_transition_write_nothing(self):
         self.rm.put(make_issue(1))
-        with self.assertRaisesRegex(ri.RedmineError, "ありません（あるもの: 新規・進行中・完了）"):
-            ri.close(self.api, self.rm.issues[1], "却下", "済み")
+        with self.assertRaisesRegex(ri.RedmineError, "ありません（あるもの: 新規・進行中・完了・却下）"):
+            ri.close(self.api, self.rm.issues[1], "保留", "済み")
         self.rm.allowed[1] = [1, 2]
         with self.assertRaisesRegex(ri.RedmineError, "変えられません（ワークフローで選べるもの: 新規・進行中）"):
             ri.close(self.api, self.rm.issues[1], "完了", "済み")
@@ -251,10 +269,13 @@ class FlowTest(unittest.TestCase):
         src = cfg["sources"]["redmine-my-issues"]
         src.update({"retry": {"attempts": 1}, "failure_backoff_sec": 0, "jitter_sec": 0})
         src.pop("schedule")
-        target = cfg["rules"]["auto-close"]["targets"][0]
-        self.assertEqual(target["command"][1], "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py")
-        target["command"][0:2] = [sys.executable, str(PLUGIN)]
-        target["retry_backoff_sec"] = 0
+        src.update({"min_interval_sec": 1, "busy_wait_sec": 1})   # ルールが 2 本あるので schedule の代わりに要る（fetch は --force）
+        self.assertEqual(list(cfg["rules"]), ["auto-close", "auto-close-duplicate"])
+        for rule in cfg["rules"].values():
+            target = rule["targets"][0]
+            self.assertEqual(target["command"][1], "/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py")
+            target["command"][0:2] = [sys.executable, str(PLUGIN)]
+            target["retry_backoff_sec"] = 0
         self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.yaml"
@@ -271,10 +292,10 @@ class FlowTest(unittest.TestCase):
 
     def cycle(self, between=None) -> str:
         self.aw("fetch", "--force")
-        self.aw("evaluate", "--rule", "auto-close")
+        self.aw("evaluate", "--source", "redmine-my-issues")       # 例のワークフローと同じく、取得元のルールを全部回す
         if between:
             between()
-        return self.aw("work", "--rule", "auto-close")
+        return self.aw("work", "--source", "redmine-my-issues")
 
     def test_closes_only_my_matching_tickets_once(self):
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
@@ -289,6 +310,30 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(self.rm.issues[4]["status"]["name"], "新規")
         self.cycle()
         self.assertEqual(len(self.rm.puts), 2)               # 2 回目は何もしない
+
+    def test_each_pair_writes_its_own_comment(self):
+        self.rm.put(make_issue(1, "【自動完了】ログの整理"))
+        self.rm.put(make_issue(2, "【重複】#1 と同じ"))
+        self.rm.put(make_issue(3, "重複かもしれない"))             # 【重複】ではない
+        self.cycle()
+        self.assertEqual(self.rm.notes, {1: ["自動で完了にしました。"], 2: ["重複のため完了にしました。"]})
+        self.assertEqual(self.rm.issues[2]["status"]["name"], "完了")
+        self.assertEqual(self.rm.issues[3]["status"]["name"], "新規")
+
+    def test_ticket_matching_two_pairs_gets_the_upper_comment_once(self):
+        cfg = yaml.safe_load(self.cfg.read_text(encoding="utf-8"))
+        cmd = cfg["rules"]["auto-close-duplicate"]["targets"][0]["command"]
+        cmd[cmd.index("--status") + 1] = "却下"                   # 下の対は別の完了扱いのステータスにする
+        self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        for legacy in (False, True):                             # 5.1 より前は filter の is_closed が効かず、close が止める
+            with self.subTest(legacy=legacy):
+                self.rm.legacy = legacy
+                iid = 10 + int(legacy)
+                self.rm.put(make_issue(iid, "【重複】自動完了の手順"))
+                self.cycle()
+                self.assertEqual(self.rm.notes[iid], ["自動で完了にしました。"])
+                self.assertEqual(self.rm.issues[iid]["status"]["name"], "完了")
+                self.assertEqual(len([x for x in self.rm.puts if x[0] == iid]), 1)
 
     def test_ticket_edited_to_match_later_is_closed(self):
         self.rm.put(make_issue(1, "ふつう"))
@@ -333,11 +378,18 @@ class FlowTest(unittest.TestCase):
         import dagrun
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
         dag = HERE.parent / "change-watch-auto-close.yaml.example"
+        dagrun.check_shape(self, dagrun.load(dag), dag.name)
         r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
-                       paths={"/home/you/.local/share/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
-                              "/home/you/.github/connections.yaml": str(self.conn)}, env=self.env)
+                       paths={"/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
+                              "/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}, env=self.env)
         self.assertEqual(r, {"fetch": 0, "evaluate": 0, "work": 0})
         self.assertEqual(self.rm.notes[1], ["自動で完了にしました。"])
+        gc = HERE.parent / "change-watch-redmine-ticket-agent-maintenance.yaml.example"
+        dagrun.check_shape(self, dagrun.load(gc), gc.name)
+        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
+            "/home/you/.github/connections.yaml": str(self.conn),
+            "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
 
 if __name__ == "__main__":

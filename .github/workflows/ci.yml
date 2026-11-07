@@ -81,11 +81,11 @@ jobs:
           # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、change-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
           # 本物の change-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
-            suites: tools/gitlab-issue-agent/test
+            suites: tools/change-watch/agents/gitlab-issue-agent/test
           # gitlab-mr-review-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_mr.py のコマンド（指摘・解決・まとめの重複防止）と、
           # 設定の例を本物の change-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
           - package: gitlab-mr-review-agent
-            suites: tools/gitlab-mr-review-agent/test
+            suites: tools/change-watch/agents/gitlab-mr-review-agent/test
           # gitlab-idd スキルの作業用フォルダ（gl.py workspace-create / workspace-remove）。手元の bare リポジトリで、
           # 既にある作業コピーへの git worktree・一時フォルダへのクローン・片付けを見る（GitLab の API は呼ばない）。
           - package: gitlab-idd
@@ -93,7 +93,7 @@ jobs:
           # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
           # 本物の change-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
           - package: redmine-ticket-agent
-            suites: tools/redmine-ticket-agent/test
+            suites: tools/change-watch/agents/redmine-ticket-agent/test
           # change-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
           # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
           - package: change-watch
@@ -153,7 +153,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: unittest
-        run: python -m unittest discover -s tools/gitlab-issue-agent/test
+        run: python -m unittest discover -s tools/change-watch/agents/gitlab-issue-agent/test
 
   # change-watch のプラグインのほかのもの（MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
   # （git のパス・改行・一時フォルダ・読み取り専用のファイルの削除）。
@@ -166,9 +166,9 @@ jobs:
       matrix:
         include:
           - package: gitlab-mr-review-agent
-            suites: tools/gitlab-mr-review-agent/test
+            suites: tools/change-watch/agents/gitlab-mr-review-agent/test
           - package: redmine-ticket-agent
-            suites: tools/redmine-ticket-agent/test
+            suites: tools/change-watch/agents/redmine-ticket-agent/test
           - package: gitlab-idd
             suites: .github/skills/gitlab-idd/tests
     steps:

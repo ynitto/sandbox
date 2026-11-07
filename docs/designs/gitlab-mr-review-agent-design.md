@@ -1,7 +1,7 @@
 # gitlab-mr-review-agent 設計
 
 決めた GitLab のリポジトリの MR を、エージェント CLI（kiro-cli）に **同時に 1 セッションだけ**レビューさせる。gitlab-issue-agent と同じく
-Dagu の定期実行と change-watch の上に組み、MR に固有の部分だけを足す。実装は `tools/gitlab-mr-review-agent/`（`gitlab_mr.py` と設定の例）、
+Dagu の定期実行と change-watch の上に組み、MR に固有の部分だけを足す。実装は `tools/change-watch/agents/gitlab-mr-review-agent/`（`gitlab_mr.py` と設定の例）、
 使い方は同フォルダの README。
 
 要件:

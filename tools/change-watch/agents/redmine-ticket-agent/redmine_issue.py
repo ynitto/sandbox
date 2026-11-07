@@ -85,6 +85,7 @@ class Redmine:
         self.url = url.rstrip("/")
         self.key = key
         self.timeout = timeout
+        self._statuses: list[dict] | None = None
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -110,11 +111,24 @@ class Redmine:
         body = self.call("GET", f"/issues/{issue_id}.json" + (f"?include={include}" if include else ""))
         return (body or {}).get("issue") or {}
 
+    def statuses(self) -> list[dict]:
+        """/issue_statuses.json のステータスの一覧（1 回だけ引く）。"""
+        if self._statuses is None:
+            self._statuses = (self.call("GET", "/issue_statuses.json") or {}).get("issue_statuses") or []
+        return self._statuses
+
+    def is_closed(self, status: dict | None) -> bool:
+        """チケットのステータスが完了扱いか。Redmine 5.1 より前はチケットに is_closed が無いので、一覧で引く。"""
+        status = status or {}
+        if "is_closed" in status:
+            return bool(status["is_closed"])
+        return any(s.get("id") == status.get("id") and s.get("is_closed") for s in self.statuses())
+
     def status_id(self, status: str) -> int:
         """数ならそのまま ID、名前なら /issue_statuses.json で引く。"""
         if str(status).isdigit():
             return int(status)
-        statuses = (self.call("GET", "/issue_statuses.json") or {}).get("issue_statuses") or []
+        statuses = self.statuses()
         for s in statuses:
             if str(s.get("name")) == str(status):
                 return int(s["id"])
@@ -123,7 +137,11 @@ class Redmine:
 
 
 def close(redmine: Redmine, issue: dict, status: str, note: str, log=print) -> int:
-    """チケットにコメントを書き、ステータスを status にする。既にそのステータスなら何もしない。"""
+    """チケットにコメントを書き、ステータスを status にする。既にそのステータスか、ほかの完了扱いのステータスなら何もしない。
+
+    完了扱いのチケットに触らないのは、1 つのチケットが複数のルール（条件とコメントの対）に当たったとき、上のルールが
+    完了にしたあとで下のルールがコメントを重ねたりステータスを変えたりしないため。
+    """
     iid = issue.get("id")
     if iid is None:
         raise RedmineError("イベントのチケットに id がありません")
@@ -134,8 +152,8 @@ def close(redmine: Redmine, issue: dict, status: str, note: str, log=print) -> i
     # 自分がこのチケットで選べるステータスか（Redmine 5.0 以降は allowed_statuses を返す）。選べないステータスは
     # PUT しても黙って無視され、コメントだけが残るので、書く前に確かめる
     current = redmine.issue(iid, include="allowed_statuses,journals")
-    if (current.get("status") or {}).get("id") == target:
-        log(f"#{iid} は既に「{current['status'].get('name')}」なので、何もしません")
+    if (current.get("status") or {}).get("id") == target or redmine.is_closed(current.get("status")):
+        log(f"#{iid} は既に「{(current.get('status') or {}).get('name')}」なので、何もしません")
         return OK
     allowed = current.get("allowed_statuses")
     if isinstance(allowed, list) and target not in [s.get("id") for s in allowed]:

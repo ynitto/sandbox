@@ -33,10 +33,18 @@ API にいつ問い合わせるかは、起動されたときに change-watch �
 | `changewatch/hooks.py` | プラグインが足すフィルタ（テンプレート）とチェック（実行の前後の判定）の登録先 | なし |
 | `changewatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）。**Dagu に依存するコードはこの 1 ファイルだけ** | あり |
 | `dags/*.example.yaml` | change-watch を動かす Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） | あり |
+| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） | 例のワークフローだけ |
 
-プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
-（例のワークフローにも付けてある）。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
-「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。`status`・`events`・`ack` などアダプタを使わないコマンドは付けなくても動く。
+プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。`adapter: dagu` で Dagu へ渡すときは、Dagu に触るコマンドに
+`--plugin dagu` を付ける。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
+「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。
+
+| `--plugin dagu` | コマンド |
+|---|---|
+| 要る | `dispatch`（Dagu へ渡す）・`reconcile`（Dagu に状態を問い合わせる）・`retry`（Dagu に再実行させる）・`run`（中で `dispatch` もする）・`check`（受け渡しの設定も確かめる） |
+| 要らない | `fetch`・`evaluate`・`work`・`claim`・`render`・`finish`・`ack`・`skip`・`gc`・`status`・`events` など |
+
+例のワークフローも、`--plugin dagu` は `dispatch`・`reconcile` のステップにだけ付けてある。
 
 1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
 
@@ -149,6 +157,33 @@ Dagu を使わないときは、6・7 の代わりに cron などから `change-
 - `delivery.executable` に `dagu.exe` の場所を書く（PATH にあれば `dagu` のままでよい）
 - 状態のフォルダを Windows と WSL2 で共有しない（`/mnt/c/...` 越しの SQLite はロックが効かない）。どちらか片方で動かす
 
+## エージェントを入れる
+
+`agents/` の下のエージェントは、インストーラに `--agent <名前>` を付けて入れる（繰り返し可）。change-watch もいっしょに入れ直すので、
+エージェントと change-watch の版がずれない。入れられるものは `install.py agents` で出る。
+
+```bash
+python3 tools/change-watch/install.py install --agent redmine-ticket-agent
+```
+
+どのエージェントも、置き場所は同じ決まり:
+
+| 置かれるもの | 場所 | 入れ直したとき |
+|---|---|---|
+| プログラム（プラグイン兼コマンドの `.py`） | `~/.local/share/change-watch/agents/<名前>/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\<名前>\`） | 新しくする |
+| 設定（`change-watch.yaml`・`<名前>.env`・プロンプト） | `~/.config/change-watch/<名前>/` | 既にあれば触らない |
+| Dagu のワークフロー（処理と、整理の `change-watch-<名前>-maintenance.yaml`） | `~/.config/dagu/dags/`（`--dagu-dir` で変える。`--no-dags` で置かない） | 既にあれば触らない |
+| 状態 | `~/.local/state/change-watch/<名前>/`（設定の `state_dir`） | — |
+
+- 設定と状態はエージェントごとに分かれている。1 台で複数のエージェントを動かしても、設定をまとめる必要はない
+- 置いたワークフローと設定のパス（change-watch・プログラム・設定・接続設定 `~/.github/connections.yaml`）は、この PC のものになっている。
+  Windows では、ワークフローの `command` を Python に、`args` の先頭を `change-watch.pyz` にして置く。作業フォルダなど自分で決めるものは
+  `/home/you` のまま残し、インストールの最後に「自分のものに直すところ」として出す
+- 新しい版の雛形を見たいときは、置いた設定を別名にしてから入れ直すか、`agents/<名前>/` の `.example` と見比べる
+- 消すときは `install.py uninstall --agent <名前>`（プログラムだけを消し、設定・状態・ワークフローは残す）
+
+使い方は各エージェントの README の「入れ方」にある。
+
 ## Dagu での設定例
 
 GitLab の issue を 10 分ごとに見て、新しい issue・状態やラベルの変化を `issue-handler` という DAG へ渡す例。
@@ -246,8 +281,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -265,7 +298,7 @@ steps:
     # …（evaluate --source issues）
   - name: dispatch
     depends: [evaluate]
-    # …（dispatch --source issues）
+    # …（"--plugin" "dagu" を付けて dispatch --source issues。Dagu へ渡すのはこのステップだけ）
 ```
 
 ### 5. 受け渡し先の DAG（`~/.config/dagu/dags/issue-handler.yaml`）
@@ -295,15 +328,13 @@ handler_on:
   success:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /home/you/.config/change-watch/change-watch.yaml,
-             ack, "${DAG_RUN_ID}"]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}"]
   failure:
     action: exec
     with:
-      command: python3
-      args: [/home/you/.local/bin/change-watch, --config, /home/you/.config/change-watch/change-watch.yaml,
-             ack, "${DAG_RUN_ID}", --failed]
+      command: "/home/you/.local/bin/change-watch"
+      args: [ack, "${DAG_RUN_ID}", --failed]
 ```
 
 `handle_issue.py` は渡された JSON を読むだけでよい（中身は「受け渡し先の DAG」を参照）:
@@ -417,8 +448,6 @@ steps:
         - "C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz"
         - "--config"
         - "C:/Users/you/.config/change-watch/change-watch.yaml"
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "C:/Users/you/.github/connections.yaml"
         - "fetch"
@@ -547,7 +576,7 @@ steps:
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
-      args: ["--plugin", "dagu", "--connections", "/home/you/.github/connections.yaml", "fetch", "--source", "issues"]
+      args: ["--connections", "/home/you/.github/connections.yaml", "fetch", "--source", "issues"]
     timeout_sec: 2220            # 取得の時間 + jitter_sec + busy_wait_sec
     retry_policy: { limit: 3, interval_sec: 60, backoff: true, max_interval_sec: 600, exit_code: [3] }
   - name: evaluate
@@ -872,7 +901,8 @@ change-watch を動かす Dagu のワークフローは、`dags/` の例をコ�
 
 - fetch は、一時的な失敗（終了コード 3）のときだけ Dagu に再試行させる（`retry_policy.exit_code: [3]`）。設定の誤りや認証の失敗は再試行しない
 - fetch の `timeout_sec` は、取得元の `jitter_sec`・`busy_wait_sec` を書いたらその分を足す
-- `--plugin` を足すとき（`gitlab_issue.py` などのプラグイン）は、どのステップにも同じ順で足す
+- `--plugin dagu` は Dagu に触る `dispatch`・`reconcile` のステップにだけ付ける（上の「本体と Dagu プラグインの分け方」）
+- ほかのプラグイン（`gitlab_issue.py` など）を足すときは、どのステップにも同じ順で足す（取得・判定・実行でフィルタやチェックを使うため）
 - 設定ファイルが既定の `~/.config/change-watch/change-watch.yaml` でなければ、どのステップの `args` の先頭にも `"--config"` と `<パス>` を足す
 - 例は試験で、Dagu と同じ順に本物の change-watch へ流して確かめている（`test/test_dag_examples.py`）
 
