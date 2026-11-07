@@ -1,23 +1,24 @@
-# gitlab-issue-agent の Dagu のワークフロー（~/.config/dagu/dags/change-watch-issue-agent.yaml にコピーして使う）。
-# 毎分起動し、1 回の起動で 1 件を処理する: fetch → evaluate → claim → render → handle（エージェント CLI）→ finish。
-# GitLab にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
+# gitlab-idd スキルと繋ぐときの Dagu のワークフロー（~/.config/dagu/dags/change-watch-idd.yaml にコピーして使う）。
+# 毎分起動し、1 回の起動で 1 件を処理する: fetch → evaluate → claim → render（ラベルからロールを選んだプロンプト）→ handle → finish。
 # handle の provider・working_dir を自分のものに直す。
 # command は install.py install が置いた change-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
-# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
-description: "gitlab-issues を取得し、ルール issue-agent で判定して、エージェント CLI で 1 件を処理する"
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz）。
+description: "gitlab-issues を取得し、ルール idd で判定して、gitlab-idd スキルで 1 件を処理する"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
 dotenv:
-  - "/home/you/.config/dagu/gitlab-issue-agent.env"
+  - "/home/you/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env"
 steps:
   - name: fetch
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -36,13 +37,15 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "evaluate"
         - "--rule"
-        - "issue-agent"
+        - "idd"
     timeout_sec: 600
     retry_policy:
       limit: 2
@@ -53,13 +56,15 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "claim"
         - "--rule"
-        - "issue-agent"
+        - "idd"
         - "--target"
         - "run"
     timeout_sec: 600
@@ -70,8 +75,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "render"
@@ -90,27 +97,27 @@ steps:
     timeout_sec: 4200             # change-watch の設定の timeout_sec と同じにする
     continue_on:                # 失敗・時間切れでも finish で記録する
       failure: true
-    # エージェント CLI の動かし方（Dagu v2 の harness.run）。終了コードは finish が受け取り、0 なら処理し終えた状態を記録し、
-    # それ以外ならあとでやり直す。
-    #   provider  claude / codex / kiro / copilot / gemini など（Dagu の組み込み）。CLI はこの PC にインストールしてログインしておく
-    #   stdin     render が組んだプロンプト（${INPUT}）
-    #   ほかの with の項目は CLI のフラグになる（dangerously_skip_permissions: true → --dangerously-skip-permissions）
+    # エージェント CLI から gitlab-idd スキルが使えるようにしておく（例: Claude Code なら ~/.claude/skills/gitlab-idd）。
+    # working_dir はプロジェクトの作業コピー（既にあるものでよい。gitlab-idd はそこから git remote を読む）。
+    # gitlab-issue-agent.env の GITLAB_IDD_LOCAL_REPO に同じフォルダを書くと、gitlab-idd はイシューごとにクローンせず、
+    # そのリポジトリに git worktree を足して作業する（作業コピーのブランチ・書きかけの変更には触らない）。
     action: harness.run
-    working_dir: /home/you/work/project      # エージェントを動かすフォルダ（リポジトリの作業コピー）
+    working_dir: /home/you/work/project
     with:
       provider: claude
-      prompt: GitLab の issue に変化がありました。標準入力の指示に従って対応してください。
+      prompt: GitLab のイシューに変化がありました。標準入力の指示に従って、gitlab-idd スキルで処理してください。
       stdin: "${INPUT}"
-      dangerously_skip_permissions: true     # 権限の確認で止まらないように（無人で動かすため）
-      # model: sonnet
+      dangerously_skip_permissions: true     # 無人で動かすため
   - name: finish
     depends: [handle]
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "finish"

@@ -1,0 +1,22 @@
+# gitlab-issue-agent の整理のワークフロー（install.py install --agent gitlab-issue-agent が ~/.config/dagu/dags/change-watch-gitlab-issue-agent-maintenance.yaml に、この PC のパスにして置く）。
+# 状態はエージェントごとに分けているので、整理（gc）もエージェントごとに 1 本置く。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
+description: "gitlab-issue-agent の、保持期間を過ぎた取得結果・イベントを整理する"
+schedule: "17 3 * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env"
+steps:
+  - name: gc
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "gc"
+    timeout_sec: 1800

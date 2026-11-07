@@ -25,7 +25,7 @@ except ImportError:      # pragma: no cover
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "redmine_issue.py"
 EXAMPLE = HERE.parent / "change-watch.yaml.example"
-CHANGE_WATCH = HERE.parent.parent / "change-watch" / "change_watch.py"
+CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("redmine_issue", PLUGIN)
 ri = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ri)
@@ -273,7 +273,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(list(cfg["rules"]), ["auto-close", "auto-close-duplicate"])
         for rule in cfg["rules"].values():
             target = rule["targets"][0]
-            self.assertEqual(target["command"][1], "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py")
+            self.assertEqual(target["command"][1], "/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py")
             target["command"][0:2] = [sys.executable, str(PLUGIN)]
             target["retry_backoff_sec"] = 0
         self.cfg = self.tmp / "change-watch.yaml"
@@ -380,10 +380,16 @@ class FlowTest(unittest.TestCase):
         dag = HERE.parent / "change-watch-auto-close.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
-                       paths={"/home/you/.local/share/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
-                              "/home/you/.github/connections.yaml": str(self.conn)}, env=self.env)
+                       paths={"/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
+                              "/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}, env=self.env)
         self.assertEqual(r, {"fetch": 0, "evaluate": 0, "work": 0})
         self.assertEqual(self.rm.notes[1], ["自動で完了にしました。"])
+        gc = HERE.parent / "change-watch-redmine-ticket-agent-maintenance.yaml.example"
+        dagrun.check_shape(self, dagrun.load(gc), gc.name)
+        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
+            "/home/you/.github/connections.yaml": str(self.conn),
+            "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
 
 if __name__ == "__main__":

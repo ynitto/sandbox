@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "gitlab_issue.py"
 PROMPT = HERE.parent / "prompt.md.example"
-CHANGE_WATCH = HERE.parent.parent / "change-watch" / "change_watch.py"
+CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("gitlab_issue", PLUGIN)
 gi = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gi)
@@ -285,8 +285,9 @@ class _FlowBase(unittest.TestCase):
 
         r = dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)],
                        head=["--config", str(self.cfg), "--state-dir", str(self.tmp / "aw-state")],
-                       paths={"/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py": str(PLUGIN),
-                              "/home/you/.github/connections.yaml": str(self.conn)},
+                       paths={"/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py": str(PLUGIN),
+                              "/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)},
                        handle=handle, env=self.env)
         self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n != "handle"], [], r)
         self.assertEqual(r["finish"], 0 if seen else None, r)      # 失敗も finish で記録する。取れなければ何もしない
@@ -320,6 +321,13 @@ class FlowTest(_FlowBase):
         self.assertIn("issue #2", self.run_dag(dag, exit_code=1))   # 失敗も finish で記録し、
         self.assertIn("2 回目", self.run_dag(dag))                  # 次の起動でもう一度
         self.assertIsNone(self.run_dag(dag))
+        import dagrun
+        gc = HERE.parent / "change-watch-gitlab-issue-agent-maintenance.yaml.example"
+        dagrun.check_shape(self, dagrun.load(gc), gc.name)
+        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)],
+                                    head=["--state-dir", str(self.tmp / "aw-state")], env=self.env, paths={
+            "/home/you/.github/connections.yaml": str(self.conn),
+            "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
     def test_failure_is_retried(self):
         self.cycle()

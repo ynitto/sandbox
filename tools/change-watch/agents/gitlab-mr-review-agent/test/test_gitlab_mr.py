@@ -31,7 +31,7 @@ except ImportError:      # pragma: no cover
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 PLUGIN = ROOT / "gitlab_mr.py"
-CHANGE_WATCH = ROOT.parent / "change-watch" / "change_watch.py"
+CHANGE_WATCH = ROOT.parents[1] / "change_watch.py"   # tools/change-watch/agents/<エージェント>
 spec = importlib.util.spec_from_file_location("gitlab_mr", PLUGIN)
 gm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gm)
@@ -799,8 +799,9 @@ class FlowTest(_GitLabBase):
 
         def run():
             return dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
-                              paths={"/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py": str(PLUGIN),
-                                     "/home/you/.github/connections.yaml": str(self.conn)},
+                              paths={"/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py": str(PLUGIN),
+                                     "/home/you/.github/connections.yaml": str(self.conn),
+                                     "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)},
                               handle=handle, env=self.env)
         r = run()
         self.assertEqual(r, {"fetch": 0, "evaluate": 0, "claim": 0, "render": 0, "handle": 0, "finish": 0})
@@ -808,6 +809,11 @@ class FlowTest(_GitLabBase):
         self.assertEqual(len(self.gl.discussions["1"]), 1)
         r = run()                                                        # 同じコミットはもう流さない
         self.assertEqual((r["handle"], r["finish"], len(prompts)), (None, None, 1))
+        gc = ROOT / "change-watch-gitlab-mr-review-agent-maintenance.yaml.example"
+        dagrun.check_shape(self, dagrun.load(gc), gc.name)
+        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
+            "/home/you/.github/connections.yaml": str(self.conn),
+            "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
     def test_merged_while_waiting_is_skipped(self):
         self.gl.put(make_mr(1))

@@ -33,6 +33,7 @@ API にいつ問い合わせるかは、起動されたときに change-watch �
 | `changewatch/hooks.py` | プラグインが足すフィルタ（テンプレート）とチェック（実行の前後の判定）の登録先 | なし |
 | `changewatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）。**Dagu に依存するコードはこの 1 ファイルだけ** | あり |
 | `dags/*.example.yaml` | change-watch を動かす Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） | あり |
+| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） | 例のワークフローだけ |
 
 プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。`adapter: dagu` で Dagu へ渡すときは、Dagu に触るコマンドに
 `--plugin dagu` を付ける。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
@@ -155,6 +156,33 @@ Dagu を使わないときは、6・7 の代わりに cron などから `change-
 - `install.py install` を、Dagu から使う Python で実行する。Dagu のワークフローの `command` はその Python（`python.exe`）、`args` の先頭は `change-watch.pyz` の絶対パスにする
 - `delivery.executable` に `dagu.exe` の場所を書く（PATH にあれば `dagu` のままでよい）
 - 状態のフォルダを Windows と WSL2 で共有しない（`/mnt/c/...` 越しの SQLite はロックが効かない）。どちらか片方で動かす
+
+## エージェントを入れる
+
+`agents/` の下のエージェントは、インストーラに `--agent <名前>` を付けて入れる（繰り返し可）。change-watch もいっしょに入れ直すので、
+エージェントと change-watch の版がずれない。入れられるものは `install.py agents` で出る。
+
+```bash
+python3 tools/change-watch/install.py install --agent redmine-ticket-agent
+```
+
+どのエージェントも、置き場所は同じ決まり:
+
+| 置かれるもの | 場所 | 入れ直したとき |
+|---|---|---|
+| プログラム（プラグイン兼コマンドの `.py`） | `~/.local/share/change-watch/agents/<名前>/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\<名前>\`） | 新しくする |
+| 設定（`change-watch.yaml`・`<名前>.env`・プロンプト） | `~/.config/change-watch/<名前>/` | 既にあれば触らない |
+| Dagu のワークフロー（処理と、整理の `change-watch-<名前>-maintenance.yaml`） | `~/.config/dagu/dags/`（`--dagu-dir` で変える。`--no-dags` で置かない） | 既にあれば触らない |
+| 状態 | `~/.local/state/change-watch/<名前>/`（設定の `state_dir`） | — |
+
+- 設定と状態はエージェントごとに分かれている。1 台で複数のエージェントを動かしても、設定をまとめる必要はない
+- 置いたワークフローと設定のパス（change-watch・プログラム・設定・接続設定 `~/.github/connections.yaml`）は、この PC のものになっている。
+  Windows では、ワークフローの `command` を Python に、`args` の先頭を `change-watch.pyz` にして置く。作業フォルダなど自分で決めるものは
+  `/home/you` のまま残し、インストールの最後に「自分のものに直すところ」として出す
+- 新しい版の雛形を見たいときは、置いた設定を別名にしてから入れ直すか、`agents/<名前>/` の `.example` と見比べる
+- 消すときは `install.py uninstall --agent <名前>`（プログラムだけを消し、設定・状態・ワークフローは残す）
+
+使い方は各エージェントの README の「入れ方」にある。
 
 ## Dagu での設定例
 

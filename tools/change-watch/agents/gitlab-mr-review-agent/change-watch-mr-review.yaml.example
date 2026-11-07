@@ -1,23 +1,25 @@
-# gitlab-mr-review-agent の Dagu のワークフロー（~/.config/dagu/dags/change-watch-mr-review.yaml にコピーして使う）。
+# gitlab-mr-review-agent の Dagu のワークフロー（install.py install --agent gitlab-mr-review-agent が ~/.config/dagu/dags/change-watch-mr-review.yaml に、この PC のパスにして置く）。
 # 毎分起動し、1 回の起動で 1 件をレビューする: fetch → evaluate → claim → render → handle（kiro-cli）→ finish。
 # GitLab にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
 # handle の working_dir を自分のものに直す。
-# command は install.py install が置いた change-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
-# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
 description: "gitlab-mrs を取得し、ルール mr-review で判定して、kiro-cli で 1 件をレビューする"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
 dotenv:
-  - "/home/you/.config/dagu/gitlab-mr-review-agent.env"
+  - "/home/you/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env"
 steps:
   - name: fetch
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -36,8 +38,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "evaluate"
@@ -53,8 +57,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "claim"
@@ -70,8 +76,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "render"
@@ -113,8 +121,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
         - "--plugin"
-        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "finish"

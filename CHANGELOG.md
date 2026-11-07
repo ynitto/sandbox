@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: エージェントを `tools/change-watch/agents/` にまとめ、インストーラで同じ場所に入れる（0.5.0）
+
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent を `tools/<名前>/` から `tools/change-watch/agents/<名前>/` へ移す
+- `install.py install --agent <名前>`（繰り返し可）で、change-watch とエージェントをまとめて入れる。置き場所はどのエージェントも同じ決まり:
+  プログラムは `~/.local/share/change-watch/agents/<名前>/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\<名前>\`）、
+  設定（`change-watch.yaml`・`<名前>.env`・プロンプト）は `~/.config/change-watch/<名前>/`、Dagu のワークフローは `~/.config/dagu/dags/`、
+  状態は `~/.local/state/change-watch/<名前>/`。設定とワークフローは無いときだけ置き、パスはこの PC のものにする（Windows は `command` を
+  Python に、`args` の先頭を `change-watch.pyz` に）。入れ直すとプログラムだけが新しくなる。`uninstall --agent <名前>`・`agents` も足す
+- 設定と状態をエージェントごとに分ける（1 台で複数のエージェントを動かしても設定をまとめなくてよい）。ワークフローは `--config` を明示し、
+  整理のワークフローもエージェントごとに 1 本（`change-watch-<名前>-maintenance`）
+- 乗り換え（前の版を使っている PC）:
+  1. `python3 tools/change-watch/install.py install --agent <名前>` で入れる
+  2. 前の設定 `~/.config/change-watch/change-watch.yaml` の取得元・ルールを、`~/.config/change-watch/<名前>/change-watch.yaml` に写す
+     （`state_dir` は新しい雛形のまま）。`~/.config/dagu/<名前>.env` とプロンプト（`~/.config/dagu/<名前>.prompt.md`）の中身も
+     `~/.config/change-watch/<名前>/` の `<名前>.env`・`prompt.md` に写す
+  3. 処理し終えたものを引き継ぐなら、Dagu を止めて `~/.local/state/change-watch/state.db*` を `~/.local/state/change-watch/<名前>/` へ移す
+     （2 つ以上のエージェントで共有していたなら、それぞれにコピーする）。移さないと、`initial: emit` のエージェントは今あるものをもう一度処理する
+  4. `~/.config/dagu/dags/` の前のワークフロー（同じ名前のもの）を消してから入れ直すと、新しいワークフローが置かれる。共通の
+     `change-watch-maintenance.yaml` は、エージェントだけで使っていたなら消す
+  5. `~/.local/share/<名前>/` と `~/.config/dagu/<名前>.env`・`<名前>.prompt.md` を消す
+
 ### redmine-ticket-agent: 条件とコメントの対を複数書けるようにする
 
 - 対ごとに change-watch のルールを 1 本書く（条件は `filter`、コメントは `close` の `--note`）。設定の例に 2 つ目の対

@@ -4,7 +4,7 @@
 kiro-cli は差分の行に指摘のスレッドを立て、次のコミットで直っていればそのスレッドに返信して**解決にする**。
 **コミットが変わっていない MR は二度レビューしない**（コメント・返信・ラベルの変更では起こさない）。
 
-MR の取得・変化の検知・実行待ち・再試行は [change-watch](../change-watch/README.md) が、起動と kiro-cli の実行は
+MR の取得・変化の検知・実行待ち・再試行は [change-watch](../../README.md) が、起動と kiro-cli の実行は
 [Dagu](https://github.com/dagu-org/dagu)（v2.25 以降。`harness.run` を使う）が受け持つ。[gitlab-issue-agent](../gitlab-issue-agent/README.md) と
 同じ作りで、このフォルダには、MR に固有の部分を足す `gitlab_mr.py`（change-watch のプラグインで、kiro-cli が GitLab に読み書きする
 コマンドも兼ねる）と、設定の例がある。
@@ -23,48 +23,32 @@ MR の取得・変化の検知・実行待ち・再試行は [change-watch](../c
 
 ## 入れ方
 
-1. プラグインとプロンプトのテンプレートを置く。
+1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_mr.py`）・設定の雛形・プロンプト・Dagu のワークフローを、
+   どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
+   ワークフローと設定のパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
 
    ```bash
-   mkdir -p ~/.local/share/gitlab-mr-review-agent ~/.config/dagu
+   python3 tools/change-watch/install.py install --agent gitlab-mr-review-agent
    ```
 
-   ```bash
-   cp tools/gitlab-mr-review-agent/gitlab_mr.py ~/.local/share/gitlab-mr-review-agent/
-   ```
+   | 置かれるもの | 場所 |
+   |---|---|
+   | プログラム | `~/.local/share/change-watch/agents/gitlab-mr-review-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\gitlab-mr-review-agent\`） |
+   | 設定（`change-watch.yaml`・`gitlab-mr-review-agent.env`・`prompt.md`） | `~/.config/change-watch/gitlab-mr-review-agent/` |
+   | Dagu のワークフロー（`change-watch-mr-review.yaml`・整理の `change-watch-gitlab-mr-review-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
+   | 状態 | `~/.local/state/change-watch/gitlab-mr-review-agent/` |
 
-   ```bash
-   cp tools/gitlab-mr-review-agent/prompt.md.example ~/.config/dagu/gitlab-mr-review-agent.prompt.md
-   ```
-
-2. GitLab の URL・リポジトリ・トークンを書く。`gitlab-mr-review-agent.env.example` を `~/.config/dagu/gitlab-mr-review-agent.env` にコピーして埋める。
+2. GitLab の URL・リポジトリ・トークンと手元のリポジトリを `~/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env` に書く。
    トークンには `api` スコープが要り、**このトークンの持ち主が指摘の書き手**になる。スレッドを解決にするには、そのリポジトリで Developer 以上の権限が要る。
-   `MR_REVIEW_CLI` は 1 で置いた `gitlab_mr.py` のフルパスにする。`MR_REVIEW_REPO_DIR` は手元のリポジトリで、**既にある作業コピーを指定してよい**
-   （その作業ツリー・ブランチ・書きかけの変更には触らない。無ければ 6 で 1 回だけ取ってくる）。`MR_REVIEW_WORKTREE` はレビュー用の作業フォルダで、
-   そのリポジトリに `git worktree` で足す（レビューのたびに MR のコミットに切り替え、ほかのファイルは消すので、ほかの用途に使わない）。
+   `MR_REVIEW_REPO_DIR` は手元のリポジトリで、**既にある作業コピーを指定してよい**（その作業ツリー・ブランチ・書きかけの変更には触らない。
+   無ければ 5 で 1 回だけ取ってくる）。`MR_REVIEW_WORKTREE` はレビュー用の作業フォルダで、そのリポジトリに `git worktree` で足す
+   （レビューのたびに MR のコミットに切り替え、ほかのファイルは消すので、ほかの用途に使わない）。`MR_REVIEW_CLI` はインストーラが埋めてある。
 
-   ```bash
-   cp tools/gitlab-mr-review-agent/gitlab-mr-review-agent.env.example ~/.config/dagu/gitlab-mr-review-agent.env
-   ```
+3. `~/.config/dagu/dags/change-watch-mr-review.yaml` の `handle` の作業フォルダ（`working_dir`）を、2 の `MR_REVIEW_WORKTREE` と同じにする。
+   レビューする MR を絞るなら、`~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml` の取得元の `query`（例: `target_branch: main`）とルールの `filter` に書く。
+   kiro-cli はこの PC に入れて、ログインしておく。
 
-3. change-watch を入れる。
-
-   ```bash
-   python3 tools/change-watch/install.py install
-   ```
-
-4. change-watch の設定を置く。レビューする MR を絞るなら、設定の取得元の `query`（例: `target_branch: main`）とルールの `filter` に書く。
-   gitlab-issue-agent と同じ PC で動かすなら、両方の `sources` と `rules` を 1 つの設定ファイルにまとめる。
-
-   ```bash
-   mkdir -p ~/.config/change-watch
-   ```
-
-   ```bash
-   cp tools/gitlab-mr-review-agent/change-watch.yaml.example ~/.config/change-watch/change-watch.yaml
-   ```
-
-5. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-mr-review-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
+4. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-mr-review-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
 
    ```yaml
    gitlab:
@@ -73,32 +57,19 @@ MR の取得・変化の検知・実行待ち・再試行は [change-watch](../c
        token: ${GITLAB_TOKEN}
    ```
 
-6. Dagu のワークフローを置く。`change-watch-mr-review.yaml.example` を `~/.config/dagu/dags/change-watch-mr-review.yaml` にコピーし、
-   `handle` の作業フォルダ（`working_dir`）を 2 の `MR_REVIEW_WORKTREE` と同じにして、`/home/you` を自分のものに直す。
-   kiro-cli はこの PC に入れて、ログインしておく。毎日の整理のワークフローは change-watch の例をそのまま置く。
-   Dagu の設定（`config.yaml`）に足すものは無い。
-
-   ```bash
-   cp tools/gitlab-mr-review-agent/change-watch-mr-review.yaml.example ~/.config/dagu/dags/change-watch-mr-review.yaml
-   ```
-
-   ```bash
-   cp tools/change-watch/dags/change-watch-maintenance.example.yaml ~/.config/dagu/dags/change-watch-maintenance.yaml
-   ```
-
-7. 環境変数を読み込んで、`prepare` でレビュー用の作業フォルダを作る（リポジトリが無ければ、ここで 1 回だけ取ってくる。ファイルの中身は
+5. 環境変数を読み込んで、`prepare` でレビュー用の作業フォルダを作る（リポジトリが無ければ、ここで 1 回だけ取ってくる。ファイルの中身は
    要るときに取るので、履歴の大きなリポジトリでも軽い）。git（2.31 以降）が要る。
 
    ```bash
-   set -a; . ~/.config/dagu/gitlab-mr-review-agent.env; set +a
+   set -a; . ~/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env; set +a
    ```
 
    ```bash
-   python3 ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py prepare
+   python3 ~/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py prepare
    ```
 
-8. Dagu のスケジューラを動かす（`dagu start-all` など）。設定の例は `initial: emit` なので、**最初の取得で、いま開いている MR もレビューする**
-   （1 分に 1 件ずつ）。これから変わる MR だけにしたいなら、動かす前に `initial: baseline` にする。
+6. Dagu のスケジューラを動かす（`dagu start-all` など）。Dagu の設定（`config.yaml`）に足すものは無い。設定の例は `initial: emit` なので、
+   **最初の取得で、いま開いている MR もレビューする**（1 分に 1 件ずつ）。これから変わる MR だけにしたいなら、動かす前に `initial: baseline` にする。
 
 ## いつレビューするか
 
@@ -162,16 +133,16 @@ kiro-cli が 0 以外で終わる・時間切れ・止められると失敗に�
 
 | したいこと | コマンド |
 |---|---|
-| 失敗している・打ち切ったレビューを見る | `change-watch --config ~/.config/change-watch/change-watch.yaml events --rule mr-review --status send_failed,dead` |
-| 打ち切ったレビューをすぐやり直す | `change-watch --config ~/.config/change-watch/change-watch.yaml retry <受け渡しの ID>` |
-| レビューし終えた MR をもう一度レビューさせる | `change-watch --config ~/.config/change-watch/change-watch.yaml forget-handled --rule mr-review 12` と、MR のまとめのコメントを消す |
+| 失敗している・打ち切ったレビューを見る | `change-watch --config ~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml events --rule mr-review --status send_failed,dead` |
+| 打ち切ったレビューをすぐやり直す | `change-watch --config ~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml retry <受け渡しの ID>` |
+| レビューし終えた MR をもう一度レビューさせる | `change-watch --config ~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml forget-handled --rule mr-review 12` と、MR のまとめのコメントを消す |
 
 ## kiro-cli とプロンプト
 
 - kiro-cli は Dagu の `harness.run` で動かす（ワークフローの `handle`）。プロンプトは引数で渡し（`prompt: "${INPUT}"`）、
   `trust_all_tools: true`（`--trust-all-tools`）で確認なしにコマンドを実行させる。Dagu の `harness.run` が使えない版なら、
   `handle` のコメントにある `action: exec` で kiro-cli を直接呼ぶ
-- プロンプトは `~/.config/dagu/gitlab-mr-review-agent.prompt.md`（change-watch の設定の `input_template`）。何を指摘するか・まとめに何を書くかは
+- プロンプトは `~/.config/change-watch/gitlab-mr-review-agent/prompt.md`（change-watch の設定の `input_template`）。何を指摘するか・まとめに何を書くかは
   ここで変える。`{{ event.record.iid }}`・`{{ event.record.title }}`・`{{ event.record.web_url }}`・`{{ delivery.attempt }}`（何回目か）と、
   プラグインの `{{ event | gitlab_mr_since }}`（前回レビューしたコミット）・`{{ event | gitlab_mr_kind }}`（初めて / 再レビュー）が使える
 - GitLab への読み書きは、プロンプトに書いた `gitlab_mr.py` のコマンドだけで行わせる
@@ -205,8 +176,8 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 
 ## Windows で使うとき
 
-- `gitlab-mr-review-agent.env` の `MR_REVIEW_CLI` は `python C:/Users/<名前>/.local/share/gitlab-mr-review-agent/gitlab_mr.py` のように書く
-- change-watch は `python install.py install` で入れる。ワークフローの `command` はその Python（`python`）にし、`args` の先頭を `change-watch.pyz` のフルパスにする
+- インストーラは `python tools\change-watch\install.py install --agent gitlab-mr-review-agent` で、Dagu から使う Python で動かす。
+  ワークフローの `command`（その Python と `change-watch.pyz`）と `.env` の `MR_REVIEW_CLI` は、インストーラが Windows の形にして置く
 - `MR_REVIEW_REPO_DIR`・`MR_REVIEW_WORKTREE` と、ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く
 - git は Git for Windows（2.31 以降）。長いパス（260 字を超える）と日本語のファイル名は、このツールが git に設定を渡して扱う。
   HTTPS のリモートは、その PC の資格情報マネージャーか、GitLab と同じホストならトークンで取る
@@ -215,16 +186,16 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 
 | ファイル | 書くこと |
 |---|---|
-| `~/.config/dagu/gitlab-mr-review-agent.env` | GitLab の URL・リポジトリ・トークン・`gitlab_mr.py` の呼び方・手元のリポジトリ・レビュー用の作業フォルダ |
+| `~/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env` | GitLab の URL・リポジトリ・トークン・`gitlab_mr.py` の呼び方・手元のリポジトリ・レビュー用の作業フォルダ |
 | `~/.github/connections.yaml` | GitLab の接続（値は上の環境変数から取る） |
-| `~/.config/change-watch/change-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
-| `~/.config/dagu/gitlab-mr-review-agent.prompt.md` | プロンプト（レビューの観点） |
+| `~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
+| `~/.config/change-watch/gitlab-mr-review-agent/prompt.md` | プロンプト（レビューの観点） |
 | `~/.config/dagu/dags/change-watch-mr-review.yaml` | Dagu のワークフロー（kiro-cli のフラグ・作業フォルダは `handle`） |
 
 ## テスト
 
 ```bash
-cd tools/gitlab-mr-review-agent && python3 -m unittest discover -s test
+cd tools/change-watch/agents/gitlab-mr-review-agent && python3 -m unittest discover -s test
 ```
 
-設計: [`docs/designs/gitlab-mr-review-agent-design.md`](../../docs/designs/gitlab-mr-review-agent-design.md)
+設計: [`docs/designs/gitlab-mr-review-agent-design.md`](../../../../docs/designs/gitlab-mr-review-agent-design.md)

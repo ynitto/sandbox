@@ -1,4 +1,4 @@
-# gitlab-mr-review-agent の change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+# gitlab-mr-review-agent の change-watch の設定（~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml。install.py install --agent gitlab-mr-review-agent が無ければ置く）。
 #
 # Dagu のワークフロー 1 本（change-watch-mr-review。change-watch-mr-review.yaml.example をコピーして置く）で動く。
 # 毎分起動し、1 回の起動で 1 件をレビューする:
@@ -7,7 +7,7 @@
 # GitLab の MR に固有の部分（前回レビューしたコミット・レビュー中のコミットの追加）は gitlab_mr.py（change-watch のプラグイン）が受け持つ。
 # change-watch を呼ぶときは毎回 --plugin <gitlab_mr.py のパス> を付ける（例のワークフローにも付けてある）。
 #
-# GitLab の URL・プロジェクト・トークンは ~/.config/dagu/gitlab-mr-review-agent.env にだけ書く。
+# GitLab の URL・プロジェクト・トークンは ~/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env にだけ書く。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
 #
 #   gitlab:
@@ -15,7 +15,7 @@
 #       url: ${GITLAB_URL}
 #       token: ${GITLAB_TOKEN}
 version: 1
-state_dir: ~/.local/state/change-watch
+state_dir: ~/.local/state/change-watch/gitlab-mr-review-agent   # エージェントごとに分ける
 
 sources:
   gitlab-mrs:
@@ -57,7 +57,7 @@ rules:
         # change-watch は実行しない。Dagu のワークフローのステップが claim → 処理 → finish を呼ぶ
         external: true
         # kiro-cli に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。ワークフローの render が展開する
-        input_template: ~/.config/dagu/gitlab-mr-review-agent.prompt.md
+        input_template: ~/.config/change-watch/gitlab-mr-review-agent/prompt.md
         # 実行の前後に MR を 1 件取り直す（ヘッダーは取得元のものを使う）:
         #   - 前: 最新のコミットでレビューする。filter から外れた・レビューし終えたコミットと同じなら流さない
         #   - 後: そのコミットを「レビューし終えた状態」にする

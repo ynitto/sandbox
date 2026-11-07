@@ -2,7 +2,7 @@
 
 Redmine の「自分が担当する未完了のチケットのうち、決めた条件に当たるもの」に、その条件と対にした文をコメントしてステータスを
 完了にする（条件とコメントの対は複数）。gitlab-issue-agent と同じく、Dagu の定期実行と change-watch の上に組み、ここには Redmine に固有の部分だけを置く。
-実装は `tools/redmine-ticket-agent/`（`redmine_issue.py` と設定の例）、使い方は同フォルダの README。
+実装は `tools/change-watch/agents/redmine-ticket-agent/`（`redmine_issue.py` と設定の例）、使い方は同フォルダの README。
 
 ## 1. 位置づけと分担
 
@@ -98,7 +98,7 @@ change-watch はルールごとにワークフローがある形を前提に、`
 
 ## 3. 試験
 
-`tools/redmine-ticket-agent/test/test_redmine_issue.py`。Redmine は手元の HTTP サーバで偽装し（一覧の `assigned_to_id=me`・`status_id=open`・
+`tools/change-watch/agents/redmine-ticket-agent/test/test_redmine_issue.py`。Redmine は手元の HTTP サーバで偽装し（一覧の `assigned_to_id=me`・`status_id=open`・
 offset、`include=allowed_statuses`、選べない `status_id` を黙って無視する PUT）、設定の例をそのまま本物の change-watch で回す。
 
 - 自分が担当し、タイトルか説明に文字列を含むものだけが 1 回だけ完了になる。ほかの人の担当・当たらないものはそのまま

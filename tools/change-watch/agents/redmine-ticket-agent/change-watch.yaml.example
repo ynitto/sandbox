@@ -1,4 +1,4 @@
-# redmine-ticket-agent の change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+# redmine-ticket-agent の change-watch の設定（~/.config/change-watch/redmine-ticket-agent/change-watch.yaml。install.py install --agent redmine-ticket-agent が無ければ置く）。
 #
 # 自分が担当する未完了のチケットのうち、決めた条件に当たるものに、決めた文をコメントしてステータスを完了にする。
 # 条件とコメントの対は、ルール 1 本に 1 つ。対を増やすときは下の auto-close-duplicate のようにルールを足す
@@ -10,7 +10,7 @@
 #   fetch → evaluate（filter に当たるチケットを拾う）→ work（チケットを取り直し、まだ当たれば redmine_issue.py close）
 # change-watch を呼ぶときは毎回 --plugin <redmine_issue.py のパス> を付ける（例のワークフローにも付けてある）。
 #
-# Redmine の URL と API キーは ~/.config/dagu/redmine-ticket-agent.env にだけ書く。
+# Redmine の URL と API キーは ~/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env にだけ書く。
 # connections.yaml の redmine は次のように書き、値はその環境変数から取る:
 #
 #   redmine:
@@ -18,7 +18,7 @@
 #       url: ${REDMINE_URL}
 #       token: ${REDMINE_API_KEY}
 version: 1
-state_dir: ~/.local/state/change-watch
+state_dir: ~/.local/state/change-watch/redmine-ticket-agent   # エージェントごとに分ける
 
 sources:
   redmine-my-issues:
@@ -66,13 +66,13 @@ rules:
         # コメントする文とステータス（名前か ID。完了扱いのステータスにする）。python3 と redmine_issue.py はフルパスで書く（~ は展開しない）
         command:
           - python3
-          - /home/you/.local/share/redmine-ticket-agent/redmine_issue.py
+          - /home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py
           - close
           - --status
           - 完了
           - --note
           - 自動で完了にしました。
-          # 長い文はファイルにして --note-file /home/you/.config/change-watch/redmine-close-note.md でもよい
+          # 長い文はファイルにして --note-file /home/you/.config/change-watch/redmine-ticket-agent/close-note.md でもよい
         # 実行の前後にチケットを 1 件取り直す（ヘッダーは取得元のもの）。前: 最新の内容で filter を当て直す。
         # 後: その状態を処理し終えた状態にする（自分のコメントでもう一度起きない）
         refresh:
@@ -99,7 +99,7 @@ rules:
       - <<: *close
         command:
           - python3
-          - /home/you/.local/share/redmine-ticket-agent/redmine_issue.py
+          - /home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py
           - close
           - --status
           - 完了
