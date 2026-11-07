@@ -1,9 +1,10 @@
 # redmine-ticket-agent の Dagu のワークフロー（~/.config/dagu/dags/change-watch-auto-close.yaml にコピーして使う）。
 # 毎分起動する: fetch → evaluate（filter に当たるチケットを拾う）→ work（取り直し、まだ当たれば redmine_issue.py close）。
+# evaluate と work は取得元 redmine-my-issues のルールを全部回すので、設定にルール（条件とコメントの対）を足してもここは直さなくてよい。
 # Redmine にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
 # command は install.py install が置いた change-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
 # Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
-description: "redmine-my-issues を取得し、ルール auto-close で判定して、当たったチケットを完了にする"
+description: "redmine-my-issues を取得し、そのルールで判定して、当たったチケットを完了にする"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
@@ -40,8 +41,8 @@ steps:
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "evaluate"
-        - "--rule"
-        - "auto-close"
+        - "--source"
+        - "redmine-my-issues"
     timeout_sec: 600
     retry_policy:
       limit: 2
@@ -57,6 +58,6 @@ steps:
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "work"
-        - "--rule"
-        - "auto-close"
+        - "--source"
+        - "redmine-my-issues"
     # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない

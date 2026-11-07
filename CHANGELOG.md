@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### redmine-ticket-agent: 条件とコメントの対を複数書けるようにする
+
+- 対ごとに change-watch のルールを 1 本書く（条件は `filter`、コメントは `close` の `--note`）。設定の例に 2 つ目の対
+  `auto-close-duplicate`（タイトルに「【重複】」→「重複のため完了にしました。」）を足し、共通の項目は YAML のアンカー（`<<: *auto-close`・
+  `<<: *close`）で引き継ぐので、対を足すときは条件とコメントだけを書けばよい
+- 1 つのチケットが複数の対に当たったら、上に書いた対のコメントで 1 回だけ完了にする。`close` は、既にほかの完了扱いのステータスの
+  チケットにはコメントもステータスも変えない（Redmine 5.1 より前で `filter` の `status.is_closed` が効かないときも）
+- ワークフローの例は `evaluate`・`work` を `--source redmine-my-issues` で呼ぶ（取得元のルールを全部回す）。対を足してもワークフローは直さない。
+  置いてあるワークフローは `--rule auto-close` を `--source redmine-my-issues` に直す（直さないと、足した対が判定されない）
+
 ### change-watch・gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: 例のワークフローの `--plugin dagu` を要るステップにだけ付ける（直し）
 
 - `--plugin dagu` は Dagu に触るコマンド（`dispatch`・`reconcile`・`retry`・`run`・`check`）にだけ要る。例のワークフローでは
