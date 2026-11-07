@@ -75,11 +75,38 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 そこで生成をやめ、5 つの形を `dags/*.example.yaml` として置いた。ワークフローは `install.py install` が置いた 1 ファイルの `change-watch` を
 `command` にして呼ぶので、Python と入口のパスを組み立てる必要がない。例が古くならないよう、試験（`test/dagrun.py`）が例の DAG を Dagu と同じ順
 （depends・`output:`・`preconditions`・`retry_policy.exit_code`・`continue_on.failure`・`${<id>.exit_code}`）で本物の change-watch に流す。
-gitlab-issue-agent・redmine-ticket-agent の例のワークフローも同じ実行役で流す。
+`agents/` の各エージェントの例のワークフロー（整理を含む）も同じ実行役で流す。
 
 生成が担っていた検査のうち、「1 つのルールに `external` は 1 つまで」「ルールの名前が取得元・再送・整理のワークフローの名前と重ならない」は、
 ワークフローの名前を生成が決めていたための制約なので、生成と一緒になくした（`claim --rule R --target T` は受け渡し先ごとに取れる）。
 「取得元に `schedule` も `min_interval_sec` も無いまま毎分起動する」の注意は README に書いた。
+
+### 2.0.2 エージェント（`agents/`）の置き場所とインストーラ
+
+change-watch の上で動くエージェント（gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent）は `tools/change-watch/agents/<名前>/` に置く。
+どれも「change-watch のプラグイン兼 CLI の `.py` 1 つ」「設定の雛形（`change-watch.yaml`・`.env`・プロンプト）」「Dagu のワークフローの例」で
+できていて、以前は README の `mkdir`・`cp` でエージェントごとに別の場所（`~/.local/share/<名前>/`・`~/.config/dagu/<名前>.env`）へ置き、
+change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch.yaml` にコピーしていた（1 台で 2 つ動かすと手でまとめる必要があった）。
+
+`install.py install --agent <名前>` が、どのエージェントも同じ決まりで置く:
+
+| 置くもの | 場所 | 入れ直したとき |
+|---|---|---|
+| `agents/<名前>/*.py` | `~/.local/share/change-watch/agents/<名前>/`（Windows は `.pyz` の隣の `agents\<名前>\`） | 上書き（更新） |
+| `agents/<名前>/*.example`（ワークフロー以外） | `~/.config/change-watch/<名前>/`（`.example` を外す） | 無いときだけ |
+| `agents/<名前>/change-watch-*.yaml.example` | `~/.config/dagu/dags/` | 無いときだけ |
+| 状態（雛形の `state_dir`） | `~/.local/state/change-watch/<名前>/` | — |
+
+- 設定と状態をエージェントごとに分ける。入れる・消す・`gc` がエージェント単位で済み、取得元やルールの名前が重なっても互いに影響しない。
+  そのためワークフローは `--config` を明示し、整理（`gc`）のワークフローもエージェントごとに 1 本ある（`change-watch-<名前>-maintenance`）
+- 置き場所の決まりはファイル名だけで決める（`.py`・`change-watch-*.yaml.example`・それ以外の `.example`）。エージェントを足すときに
+  インストーラを直さない（`agents/` にフォルダを足すだけ）
+- 例の `/home/you/...` は、change-watch・プログラム・設定・接続設定の場所に限って、この PC のパスに置き換える。Windows ではワークフローの
+  `command` を Python に、`args` の先頭を `.pyz` にし、設定と `.env` のコマンドの `python3` を Python のフルパスにする。§2.0.1 の「生成しない」は
+  設定から DAG を組み立てないという意味で、ここでは例の文字列の決まった箇所を置き換えるだけ。作業フォルダなど自分で決めるものは
+  置き換えず、`/home/you` のまま残して直すところとして表示する
+- 設定とワークフローを上書きしないのは、直したものを入れ直しで失わないため。前の版の置き場所や状態（`~/.local/state/change-watch/state.db`）
+  が残っていれば、移し方を表示する（状態を移さないと `initial: emit` のエージェントが最初から数え直す）
 
 ### 2.1 状態を SQLite にした理由
 
@@ -439,6 +466,8 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 - `test_dag_examples.py`: `dags/` の例のワークフローの形（depends・fetch の再試行は終了コード 3 だけ）と、取得元・ルール・`external`・再送・整理の
   ワークフローを `test/dagrun.py` で Dagu と同じ順に本物の change-watch へ流して動くこと（`external` は失敗を finish で記録し、次の起動でやり直す）
 - `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで取得から受け渡しまで動くこと、
-  site-packages を読まない（`python -S`）ときに同梱の PyYAML で YAML の設定を読めること、インストールと削除（Windows は `.cmd`）
+  site-packages を読まない（`python -S`）ときに同梱の PyYAML で YAML の設定を読めること、インストールと削除（Windows は `.cmd`）、
+  `--agent` で 3 つのエージェントが同じ決まりの場所に置かれ、置いたワークフローのとおりの argv で `check` が通ること、入れ直しで
+  プログラムは新しくなり直した設定は残ること、Windows の形（`command` が Python・`args` の先頭が `.pyz`）に置き換わること
 - `dags/` の例 6 つと、gitlab-issue-agent・redmine-ticket-agent の例のワークフロー 3 つを Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、
   エラー 0 件を確認した（2026-11-05、手元）。Dagu 本体での実行はまだ確かめていない

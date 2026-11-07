@@ -1,4 +1,4 @@
-# gitlab-issue-agent の change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+# gitlab-issue-agent の change-watch の設定（~/.config/change-watch/gitlab-issue-agent/change-watch.yaml。install.py install --agent gitlab-issue-agent が無ければ置く）。
 #
 # Dagu のワークフロー 1 本（change-watch-issue-agent。change-watch-issue-agent.yaml.example をコピーして置く）で動く。
 # 毎分起動し、1 回の起動で 1 件を処理する:
@@ -11,7 +11,7 @@
 # 問い合わせの予定も Dagu に任せたいなら、取得元の schedule を消し、ワークフローの schedule を "0 * * * *" のように書き換える
 # （そのときは min_interval_sec を書いておくと、手で叩いたときや別のワークフローとの重複を防げる）。
 #
-# GitLab の URL・プロジェクト・トークンは ~/.config/dagu/gitlab-issue-agent.env にだけ書く。
+# GitLab の URL・プロジェクト・トークンは ~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env にだけ書く。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
 #
 #   gitlab:
@@ -19,7 +19,7 @@
 #       url: ${GITLAB_URL}
 #       token: ${GITLAB_TOKEN}
 version: 1
-state_dir: ~/.local/state/change-watch
+state_dir: ~/.local/state/change-watch/gitlab-issue-agent   # エージェントごとに分ける
 
 sources:
   gitlab-issues:
@@ -58,7 +58,7 @@ rules:
         # change-watch は実行しない。Dagu のワークフローのステップが claim → 処理 → finish を呼ぶ
         external: true
         # 処理に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。ワークフローの render が展開する
-        input_template: ~/.config/dagu/gitlab-issue-agent.prompt.md
+        input_template: ~/.config/change-watch/gitlab-issue-agent/prompt.md
         # 実行の前後に issue を 1 件取り直す（ヘッダーは取得元のものを使う）:
         #   - 前: 最新の内容で流す。filter から外れた・前回処理し終えた状態と同じ（自分の書き込みだけ・まとめて処理済み）なら流さない
         #   - 後: その状態を「処理し終えた状態」にする（エージェント自身のコメントでもう一度起きない）

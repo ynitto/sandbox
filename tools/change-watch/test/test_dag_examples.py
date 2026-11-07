@@ -53,6 +53,22 @@ class DagExampleTest(unittest.TestCase):
         self.assertEqual(self.run_dag("change-watch-dispatch.example.yaml"), {"evaluate": 0, "dispatch": 0, "reconcile": 0})
         self.assertEqual(self.run_dag("change-watch-maintenance.example.yaml"), {"gc": 0})
 
+    def test_handler_acks_the_delivery(self):
+        self.write({"r": {"source": "items", "id": "id", "watch": ["status"], "initial": "emit",
+                          "targets": ["ok", "ng"]}})
+        self.env.api.put(1, status="a")
+        self.run_dag("change-watch-source.example.yaml")
+        ids = {r["dag"]: r["run_id"] for r in self.env.enqueued()}
+        self.assertEqual(sorted(ids), ["ng", "ok"])
+        for target, event in (("ok", "success"), ("ng", "failure")):
+            code = dagrun.run_handler_on(DAGS / "change-watch-handler.example.yaml", event,
+                                         aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.env.config_path)],
+                                         vars={"DAG_RUN_ID": ids[target]})
+            self.assertEqual(code, 0, event)
+        got = {d["target"]: d["status"] for d in self.env.deliveries()}
+        self.assertEqual(got["ok"], "done")
+        self.assertEqual(got["ng"], "failed")
+
     def test_rule_runs_command_in_place(self):
         handler = self.env.tmp / "h.py"
         handler.write_text("import os, sys\nopen(sys.argv[1], 'a').write(os.environ['CHANGEWATCH_RECORD_ID'] + '\\n')\n",

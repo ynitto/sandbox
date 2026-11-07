@@ -1,25 +1,25 @@
-# gitlab-issue-agent の Dagu のワークフロー（~/.config/dagu/dags/change-watch-issue-agent.yaml にコピーして使う）。
+# gitlab-issue-agent の Dagu のワークフロー（install.py install --agent gitlab-issue-agent が ~/.config/dagu/dags/change-watch-issue-agent.yaml に、この PC のパスにして置く）。
 # 毎分起動し、1 回の起動で 1 件を処理する: fetch → evaluate → claim → render → handle（エージェント CLI）→ finish。
 # GitLab にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
 # handle の provider・working_dir を自分のものに直す。
-# command は install.py install が置いた change-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
-# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
 description: "gitlab-issues を取得し、ルール issue-agent で判定して、エージェント CLI で 1 件を処理する"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
 dotenv:
-  - "/home/you/.config/dagu/gitlab-issue-agent.env"
+  - "/home/you/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env"
 steps:
   - name: fetch
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "dagu"
-        - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -38,10 +38,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "dagu"
-        - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "evaluate"
@@ -57,10 +57,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "dagu"
-        - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "claim"
@@ -76,10 +76,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "dagu"
-        - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "render"
@@ -117,10 +117,10 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
         - "--plugin"
-        - "dagu"
-        - "--plugin"
-        - "/home/you/.local/share/gitlab-issue-agent/gitlab_issue.py"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "finish"

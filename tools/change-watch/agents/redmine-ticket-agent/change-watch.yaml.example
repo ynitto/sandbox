@@ -1,12 +1,16 @@
-# redmine-ticket-agent の change-watch の設定（~/.config/change-watch/change-watch.yaml にコピーして使う）。
+# redmine-ticket-agent の change-watch の設定（~/.config/change-watch/redmine-ticket-agent/change-watch.yaml。install.py install --agent redmine-ticket-agent が無ければ置く）。
 #
-# 自分が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むものに、決めた文をコメントしてステータスを完了にする。
+# 自分が担当する未完了のチケットのうち、決めた条件に当たるものに、決めた文をコメントしてステータスを完了にする。
+# 条件とコメントの対は、ルール 1 本に 1 つ。対を増やすときは下の auto-close-duplicate のようにルールを足す
+# （ワークフローは取得元 redmine-my-issues のルールを全部回すので、直さなくてよい）。
+# 1 つのチケットが複数のルールに当たったら、上に書いたルールのコメントで 1 回だけ完了にする（下のルールは、取り直したときに
+# もう完了なので何もしない）。
 # Dagu のワークフロー 1 本（change-watch-auto-close。change-watch-auto-close.yaml.example をコピーして置く）で動く。
 # 毎分起動し、取得は下の schedule どおり:
 #   fetch → evaluate（filter に当たるチケットを拾う）→ work（チケットを取り直し、まだ当たれば redmine_issue.py close）
 # change-watch を呼ぶときは毎回 --plugin <redmine_issue.py のパス> を付ける（例のワークフローにも付けてある）。
 #
-# Redmine の URL と API キーは ~/.config/dagu/redmine-ticket-agent.env にだけ書く。
+# Redmine の URL と API キーは ~/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env にだけ書く。
 # connections.yaml の redmine は次のように書き、値はその環境変数から取る:
 #
 #   redmine:
@@ -14,7 +18,7 @@
 #       url: ${REDMINE_URL}
 #       token: ${REDMINE_API_KEY}
 version: 1
-state_dir: ~/.local/state/change-watch
+state_dir: ~/.local/state/change-watch/redmine-ticket-agent   # エージェントごとに分ける
 
 sources:
   redmine-my-issues:
@@ -34,10 +38,12 @@ sources:
     rate_limit: { min_interval_sec: 1, group: redmine }
 
 rules:
-  auto-close:
+  # 対 1: タイトルか説明に「自動完了」を含む → 「自動で完了にしました。」とコメントして完了。
+  # ここに書いた項目（&auto-close）を、下のルールが <<: *auto-close で引き継ぐ
+  auto-close: &auto-close
     source: redmine-my-issues
     id: id
-    # 対象のチケット: タイトル（subject）か説明（description）に「自動完了」を含む。
+    # 対象のチケット（条件）: タイトル（subject）か説明（description）に「自動完了」を含む。
     # 実行の直前に取り直したチケットにも当てはめるので、待つ間に文字列を消した・完了にしたチケットはそのまま
     filter:
       all:
@@ -54,17 +60,19 @@ rules:
     # 文字列などのルールを直したとき、直したルールで当たるようになったチケットも完了にする（rebaseline だと基準にし直すだけで、処理しない）
     on_rule_change: continue
     targets:
-      - name: close
-        # コメントする文とステータス（名前か ID）。python3 と redmine_issue.py はフルパスで書く（~ は展開しない）
+      # ここに書いた項目（&close）を、下のルールの受け渡し先が <<: *close で引き継ぐ
+      - &close
+        name: close
+        # コメントする文とステータス（名前か ID。完了扱いのステータスにする）。python3 と redmine_issue.py はフルパスで書く（~ は展開しない）
         command:
           - python3
-          - /home/you/.local/share/redmine-ticket-agent/redmine_issue.py
+          - /home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py
           - close
           - --status
           - 完了
           - --note
           - 自動で完了にしました。
-          # 長い文はファイルにして --note-file /home/you/.config/change-watch/redmine-close-note.md でもよい
+          # 長い文はファイルにして --note-file /home/you/.config/change-watch/redmine-ticket-agent/close-note.md でもよい
         # 実行の前後にチケットを 1 件取り直す（ヘッダーは取得元のもの）。前: 最新の内容で filter を当て直す。
         # 後: その状態を処理し終えた状態にする（自分のコメントでもう一度起きない）
         refresh:
@@ -78,3 +86,22 @@ rules:
         max_attempts: 3        # 尽きたら打ち切り、次の変化で拾い直す
         retry_backoff_sec: 300 # 失敗したら、この秒数（1 回ごとに倍）を過ぎたあとの起動で再試行
         order: none
+
+  # 対 2: タイトルに「【重複】」を含む → 「重複のため完了にしました。」とコメントして完了。
+  # 書くのは条件（filter）とコメント（command）だけで、ほかは対 1 と同じ。要らなければルールごと消す
+  auto-close-duplicate:
+    <<: *auto-close
+    filter:
+      all:
+        - { path: subject, op: contains, value: 【重複】 }
+        - { path: status.is_closed, op: falsy }       # どの対にも書く
+    targets:
+      - <<: *close
+        command:
+          - python3
+          - /home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py
+          - close
+          - --status
+          - 完了
+          - --note
+          - 重複のため完了にしました。

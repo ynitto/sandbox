@@ -1,7 +1,7 @@
 # gitlab-issue-agent 設計
 
 GitLab の issue の変化を拾い、エージェント CLI を **同時に 1 セッションだけ**流す仕組みを、常駐デーモン（agent-loop）ではなく
-Dagu の定期実行と change-watch の上に組む。実装は `tools/gitlab-issue-agent/`（change-watch のプラグイン `gitlab_issue.py` と設定の例）、
+Dagu の定期実行と change-watch の上に組む。実装は `tools/change-watch/agents/gitlab-issue-agent/`（change-watch のプラグイン `gitlab_issue.py` と設定の例）、
 使い方は同フォルダの README。
 
 ## 1. 位置づけと分担

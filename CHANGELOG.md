@@ -7,6 +7,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: エージェントを `tools/change-watch/agents/` にまとめ、インストーラで同じ場所に入れる（0.5.0）
+
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent を `tools/<名前>/` から `tools/change-watch/agents/<名前>/` へ移す
+- `install.py install --agent <名前>`（繰り返し可）で、change-watch とエージェントをまとめて入れる。置き場所はどのエージェントも同じ決まり:
+  プログラムは `~/.local/share/change-watch/agents/<名前>/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\<名前>\`）、
+  設定（`change-watch.yaml`・`<名前>.env`・プロンプト）は `~/.config/change-watch/<名前>/`、Dagu のワークフローは `~/.config/dagu/dags/`、
+  状態は `~/.local/state/change-watch/<名前>/`。設定とワークフローは無いときだけ置き、パスはこの PC のものにする（Windows は `command` を
+  Python に、`args` の先頭を `change-watch.pyz` に）。入れ直すとプログラムだけが新しくなる。`uninstall --agent <名前>`・`agents` も足す
+- 設定と状態をエージェントごとに分ける（1 台で複数のエージェントを動かしても設定をまとめなくてよい）。ワークフローは `--config` を明示し、
+  整理のワークフローもエージェントごとに 1 本（`change-watch-<名前>-maintenance`）
+- 乗り換え（前の版を使っている PC）:
+  1. `python3 tools/change-watch/install.py install --agent <名前>` で入れる
+  2. 前の設定 `~/.config/change-watch/change-watch.yaml` の取得元・ルールを、`~/.config/change-watch/<名前>/change-watch.yaml` に写す
+     （`state_dir` は新しい雛形のまま）。`~/.config/dagu/<名前>.env` とプロンプト（`~/.config/dagu/<名前>.prompt.md`）の中身も
+     `~/.config/change-watch/<名前>/` の `<名前>.env`・`prompt.md` に写す
+  3. 処理し終えたものを引き継ぐなら、Dagu を止めて `~/.local/state/change-watch/state.db*` を `~/.local/state/change-watch/<名前>/` へ移す
+     （2 つ以上のエージェントで共有していたなら、それぞれにコピーする）。移さないと、`initial: emit` のエージェントは今あるものをもう一度処理する
+  4. `~/.config/dagu/dags/` の前のワークフロー（同じ名前のもの）を消してから入れ直すと、新しいワークフローが置かれる。共通の
+     `change-watch-maintenance.yaml` は、エージェントだけで使っていたなら消す
+  5. `~/.local/share/<名前>/` と `~/.config/dagu/<名前>.env`・`<名前>.prompt.md` を消す
+
+### redmine-ticket-agent: 条件とコメントの対を複数書けるようにする
+
+- 対ごとに change-watch のルールを 1 本書く（条件は `filter`、コメントは `close` の `--note`）。設定の例に 2 つ目の対
+  `auto-close-duplicate`（タイトルに「【重複】」→「重複のため完了にしました。」）を足し、共通の項目は YAML のアンカー（`<<: *auto-close`・
+  `<<: *close`）で引き継ぐので、対を足すときは条件とコメントだけを書けばよい
+- 1 つのチケットが複数の対に当たったら、上に書いた対のコメントで 1 回だけ完了にする。`close` は、既にほかの完了扱いのステータスの
+  チケットにはコメントもステータスも変えない（Redmine 5.1 より前で `filter` の `status.is_closed` が効かないときも）
+- ワークフローの例は `evaluate`・`work` を `--source redmine-my-issues` で呼ぶ（取得元のルールを全部回す）。対を足してもワークフローは直さない。
+  置いてあるワークフローは `--rule auto-close` を `--source redmine-my-issues` に直す（直さないと、足した対が判定されない）
+
+### change-watch・gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: 例のワークフローの `--plugin dagu` を要るステップにだけ付ける（直し）
+
+- `--plugin dagu` は Dagu に触るコマンド（`dispatch`・`reconcile`・`retry`・`run`・`check`）にだけ要る。例のワークフローでは
+  `dispatch`・`reconcile` のステップにだけ付け、`fetch`・`evaluate`・`work`・`claim`・`render`・`finish`・`gc` からは外す
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent は Dagu へ渡さない（`delivery` が無い）ので、ワークフローの例と
+  redmine-ticket-agent の README の `check` から `--plugin dagu` を外す。今のワークフローに付いたままでも動く
+- change-watch の README に、`--plugin dagu` が要るコマンドと要らないコマンドの表を足す
+- 例の試験で、`--plugin dagu` が Dagu に触るステップにだけ付いていることを確かめる
+
+### change-watch: 受け渡し先の DAG の例も ack で change-watch を直接呼ぶ（直し）
+
+- `dags/change-watch-handler.example.yaml` と README の「受け渡し先の DAG」の `handler_on` で、`command: python3` の引数に
+  change-watch を渡すのをやめ、ほかの例と同じく `command` に change-watch を直接書く。設定が既定の場所なら `--config` も要らない
+- 例の試験で、受け渡し先の DAG の `handler_on` から ack を流して完了・失敗が記録されることと、change-watch を直接呼んでいることを確かめる
+
 ### change-watch: api-watch を change-watch に名前を改め、Windows の設定例を足す（0.4.0）
 
 - フォルダも見るようになったので、api-watch を **change-watch** に改める。取得元が API でもフォルダでも、変化を見て渡す道具として名乗る。
