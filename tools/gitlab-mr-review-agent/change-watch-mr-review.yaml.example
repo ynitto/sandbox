@@ -17,8 +17,6 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "dagu"
-        - "--plugin"
         - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
@@ -39,8 +37,6 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "dagu"
-        - "--plugin"
         - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
@@ -58,8 +54,6 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "dagu"
-        - "--plugin"
         - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
@@ -76,8 +70,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--plugin"
         - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"
@@ -121,8 +113,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--plugin"
         - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
         - "--connections"

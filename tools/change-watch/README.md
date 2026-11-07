@@ -34,9 +34,16 @@ API にいつ問い合わせるかは、起動されたときに change-watch �
 | `changewatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）。**Dagu に依存するコードはこの 1 ファイルだけ** | あり |
 | `dags/*.example.yaml` | change-watch を動かす Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） | あり |
 
-プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
-（例のワークフローにも付けてある）。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
-「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。`status`・`events`・`ack` などアダプタを使わないコマンドは付けなくても動く。
+プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。`adapter: dagu` で Dagu へ渡すときは、Dagu に触るコマンドに
+`--plugin dagu` を付ける。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
+「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。
+
+| `--plugin dagu` | コマンド |
+|---|---|
+| 要る | `dispatch`（Dagu へ渡す）・`reconcile`（Dagu に状態を問い合わせる）・`retry`（Dagu に再実行させる）・`run`（中で `dispatch` もする）・`check`（受け渡しの設定も確かめる） |
+| 要らない | `fetch`・`evaluate`・`work`・`claim`・`render`・`finish`・`ack`・`skip`・`gc`・`status`・`events` など |
+
+例のワークフローも、`--plugin dagu` は `dispatch`・`reconcile` のステップにだけ付けてある。
 
 1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
 
@@ -246,8 +253,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -265,7 +270,7 @@ steps:
     # …（evaluate --source issues）
   - name: dispatch
     depends: [evaluate]
-    # …（dispatch --source issues）
+    # …（"--plugin" "dagu" を付けて dispatch --source issues。Dagu へ渡すのはこのステップだけ）
 ```
 
 ### 5. 受け渡し先の DAG（`~/.config/dagu/dags/issue-handler.yaml`）
@@ -415,8 +420,6 @@ steps:
         - "C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz"
         - "--config"
         - "C:/Users/you/.config/change-watch/change-watch.yaml"
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "C:/Users/you/.github/connections.yaml"
         - "fetch"
@@ -545,7 +548,7 @@ steps:
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
-      args: ["--plugin", "dagu", "--connections", "/home/you/.github/connections.yaml", "fetch", "--source", "issues"]
+      args: ["--connections", "/home/you/.github/connections.yaml", "fetch", "--source", "issues"]
     timeout_sec: 2220            # 取得の時間 + jitter_sec + busy_wait_sec
     retry_policy: { limit: 3, interval_sec: 60, backoff: true, max_interval_sec: 600, exit_code: [3] }
   - name: evaluate
@@ -870,7 +873,8 @@ change-watch を動かす Dagu のワークフローは、`dags/` の例をコ�
 
 - fetch は、一時的な失敗（終了コード 3）のときだけ Dagu に再試行させる（`retry_policy.exit_code: [3]`）。設定の誤りや認証の失敗は再試行しない
 - fetch の `timeout_sec` は、取得元の `jitter_sec`・`busy_wait_sec` を書いたらその分を足す
-- `--plugin` を足すとき（`gitlab_issue.py` などのプラグイン）は、どのステップにも同じ順で足す
+- `--plugin dagu` は Dagu に触る `dispatch`・`reconcile` のステップにだけ付ける（上の「本体と Dagu プラグインの分け方」）
+- ほかのプラグイン（`gitlab_issue.py` など）を足すときは、どのステップにも同じ順で足す（取得・判定・実行でフィルタやチェックを使うため）
 - 設定ファイルが既定の `~/.config/change-watch/change-watch.yaml` でなければ、どのステップの `args` の先頭にも `"--config"` と `<パス>` を足す
 - 例は試験で、Dagu と同じ順に本物の change-watch へ流して確かめている（`test/test_dag_examples.py`）
 

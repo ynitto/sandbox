@@ -333,6 +333,7 @@ class FlowTest(unittest.TestCase):
         import dagrun
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
         dag = HERE.parent / "change-watch-auto-close.yaml.example"
+        dagrun.check_shape(self, dagrun.load(dag), dag.name)
         r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
                        paths={"/home/you/.local/share/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
                               "/home/you/.github/connections.yaml": str(self.conn)}, env=self.env)

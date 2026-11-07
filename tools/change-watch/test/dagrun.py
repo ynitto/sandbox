@@ -21,6 +21,23 @@ from pathlib import Path
 from typing import Callable
 
 EXAMPLE_COMMAND = "/home/you/.local/bin/change-watch"
+GLOBAL_OPTIONS = {"--plugin", "--config", "--connections", "--state-dir"}   # 値を 1 つ取る、サブコマンドの前のオプション
+USES_DAGU = {"dispatch", "reconcile", "retry", "run"}                       # Dagu に触る（--plugin dagu が要る）サブコマンド
+
+
+def subcommand(args: list) -> str | None:
+    """change-watch の argv からサブコマンドを取り出す（前のオプションとその値を飛ばす）。"""
+    i = 0
+    while i < len(args):
+        if str(args[i]) in GLOBAL_OPTIONS:
+            i += 2
+            continue
+        return str(args[i])
+    return None
+
+
+def plugins(args: list) -> list[str]:
+    return [str(args[i + 1]) for i in range(len(args) - 1) if str(args[i]) == "--plugin"]
 
 
 def load(path: Path) -> dict:
@@ -29,7 +46,8 @@ def load(path: Path) -> dict:
 
 
 def check_shape(test, dag: dict, where: str) -> None:
-    """例の DAG の形: depends があれば type: graph・名前が重ならない・depends が前のステップを指す・取得は終了コード 3 だけ再試行する。"""
+    """例の DAG の形: depends があれば type: graph・名前が重ならない・depends が前のステップを指す・取得は終了コード 3 だけ再試行する・
+    --plugin dagu は Dagu に触るステップ（dispatch・reconcile など）にだけ付ける。"""
     if any(s.get("depends") for s in dag["steps"]):
         test.assertEqual(dag.get("type"), "graph", where)
     seen: set[str] = set()
@@ -43,6 +61,10 @@ def check_shape(test, dag: dict, where: str) -> None:
             test.assertFalse(Path(str(s["with"]["command"])).name.startswith("python") and
                              any(str(a) == EXAMPLE_COMMAND for a in args),
                              f"{where}: {s['name']} は change-watch を直接 command にする")
+        if s.get("action") == "exec" and s["with"]["command"] == EXAMPLE_COMMAND:
+            sub = subcommand(args)
+            test.assertEqual("dagu" in plugins(args), sub in USES_DAGU,
+                             f"{where}: {s['name']}（{sub}）の --plugin dagu は Dagu に触るステップにだけ付ける")
         if s.get("action") == "exec" and s["with"]["command"] == EXAMPLE_COMMAND and "fetch" in args:
             test.assertEqual(s["retry_policy"]["exit_code"], [3], f"{where}: fetch は一時的な失敗（3）だけ再試行する")
     for event, h in (dag.get("handler_on") or {}).items():

@@ -16,8 +16,6 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "dagu"
-        - "--plugin"
         - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
@@ -38,8 +36,6 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "dagu"
-        - "--plugin"
         - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
@@ -56,8 +52,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--plugin"
         - "/home/you/.local/share/redmine-ticket-agent/redmine_issue.py"
         - "--connections"

@@ -69,7 +69,7 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
    ```
 
    ```bash
-   change-watch --plugin dagu --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml check
+   change-watch --plugin ~/.local/share/redmine-ticket-agent/redmine_issue.py --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
    ```bash

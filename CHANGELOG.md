@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch・gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: 例のワークフローの `--plugin dagu` を要るステップにだけ付ける（直し）
+
+- `--plugin dagu` は Dagu に触るコマンド（`dispatch`・`reconcile`・`retry`・`run`・`check`）にだけ要る。例のワークフローでは
+  `dispatch`・`reconcile` のステップにだけ付け、`fetch`・`evaluate`・`work`・`claim`・`render`・`finish`・`gc` からは外す
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent は Dagu へ渡さない（`delivery` が無い）ので、ワークフローの例と
+  redmine-ticket-agent の README の `check` から `--plugin dagu` を外す。今のワークフローに付いたままでも動く
+- change-watch の README に、`--plugin dagu` が要るコマンドと要らないコマンドの表を足す
+- 例の試験で、`--plugin dagu` が Dagu に触るステップにだけ付いていることを確かめる
+
 ### change-watch: 受け渡し先の DAG の例も ack で change-watch を直接呼ぶ（直し）
 
 - `dags/change-watch-handler.example.yaml` と README の「受け渡し先の DAG」の `handler_on` で、`command: python3` の引数に

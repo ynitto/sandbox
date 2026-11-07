@@ -5,7 +5,8 @@
 # command は install.py install が置いた change-watch（exec は ~ を展開しないので絶対パスで書く）。Windows なら command を python に、
 # args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
 # 設定は既定の ~/.config/change-watch/change-watch.yaml を読む。別の場所なら args の先頭に "--config" と <パス> を足す。
-# プラグインを足すなら "--plugin" と <.py のパス> を、どのステップにも同じように足す。
+# どのステップも Dagu に触らないので "--plugin" "dagu" は要らない（dispatch を挟むなら、そのステップにだけ付ける）。
+# ほかのプラグイン（"--plugin" と <.py のパス>）を足すなら、どのステップにも同じように足す。
 description: "items を取得し、ルール triage で判定して、その場で実行する"
 schedule: "* * * * *"
 type: graph
@@ -16,8 +17,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "fetch"
@@ -36,8 +35,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "evaluate"
@@ -53,8 +50,6 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
-        - "--plugin"
-        - "dagu"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "work"

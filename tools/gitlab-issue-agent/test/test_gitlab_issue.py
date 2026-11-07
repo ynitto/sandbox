@@ -275,6 +275,7 @@ class _FlowBase(unittest.TestCase):
             self.skipTest("例の DAG を読むのに PyYAML が要る")
         sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
+        dagrun.check_shape(self, dagrun.load(path), path.name)
         seen = []
 
         def handle(step, vars):
