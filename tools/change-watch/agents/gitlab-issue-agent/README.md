@@ -129,14 +129,14 @@ GitLab に問い合わせられない（一時的な失敗）ときは、`get` �
 
 ## プラグイン（gitlab_issue.py）が足すもの
 
-既定のワークフローでは使わない。下の「gitlab-idd スキルと繋ぐ」と「ルールで判定する形」で使う。
+既定のワークフローでは使わない。下の「ルールで判定する形」で使う。
 
 | 名前 | 種類 | すること |
 |---|---|---|
 | `gitlab_issue_changes` | フィルタ | 前回処理し終えたとき（無ければ前回の取得）からの変化の箇条書き |
 | `gitlab_issue_kind` | フィルタ | 新規 / 更新 |
 | `gitlab.others_acted` | チェック | 実行を始めてから、自分以外の人が issue にコメント・操作したか（`handled_before_if` に書く） |
-| `gitlab_idd_role` | フィルタ | gitlab-idd のロール（`status:review-ready` ならレビュアー、`status:open` などならワーカー）。下の「gitlab-idd スキルと繋ぐ」 |
+| `gitlab_idd_role` | フィルタ | gitlab-idd のロール（`status:review-ready` ならレビュアー、`status:open` などならワーカー）。ルールで判定する形で gitlab-idd と繋ぐとき |
 | `gitlab_idd.role_changed` | チェック | 実行のあいだに gitlab-idd のロールが変わったか（`handled_before_if` に書くと、次のロールでもう一度流れる） |
 
 GitLab への問い合わせは、change-watch の取得元の接続で送り、要求の間隔・失敗の待ちを取得と分け合う。
@@ -153,16 +153,47 @@ GitLab への問い合わせは、change-watch の取得元の接続で送り、
 | `status:review-ready` | gitlab-idd のレビュアーロールで、そのイシューの受け入れ条件を評価して承認か差し戻しをする |
 | それ以外（`status:in-progress` / `status:approved` / `status:done` など） | 流さない（マージは人が行う） |
 
+ラベルでの絞り込みとロールの分岐は、ワークフローの `preconditions`（Dagu）に書いてある。change-watch の設定には取得元だけを書く。
+ロールごとに consumer（`idd-worker`・`idd-reviewer`）を分け、それぞれが「前回そのロールで見てから変わったイシュー」を受け取る。
+
 ```
- Dagu: change-watch-idd（毎分起動。1 回の起動で 1 件）
-   fetch → evaluate → claim → render（ラベルからロールを選んだプロンプト）→ handle（harness.run）→ finish
+ Dagu: change-watch-idd（毎分起動。1 回の起動でロールごとに 1 件まで。エージェント CLI は 1 つずつ動く）
+   get-work      ワーカーの側で変わったイシューを 1 件受け取る（--consumer idd-worker）
+   work          ラベルが status:open / needs-rework / needs-clarification なら → ワーカーロールで処理   ← 条件（Dagu）
+   commit-work   見終えたと記録する
+   absorb-work   work が動いたイシューは、取り直した姿で記録し直す（自分の書き込みでワーカーがもう一度起きない）
+   get-review → review（status:review-ready なら → レビュアーロール）→ commit-review → absorb-review   ← 同じ形
 
  イシューの進み方: status:open ─ワーカー→ status:review-ready ─レビュアー→ status:approved（人がマージ）
                                               └─差し戻し→ status:needs-rework ─ワーカー→ …
 ```
 
-- ワーカーが `status:review-ready` にしたり、レビュアーが差し戻したりして**ロールが変わったときは、エージェント自身の書き込みでも次の取得でもう一度流す**
-  （チェック `gitlab_idd.role_changed`）。ロールが変わらない自分の書き込み（質問のコメント・`status:needs-clarification` への変更など）では流さない
+ワークフローの条件の部分（抜粋）:
+
+```yaml
+  - name: work
+    depends: [get-work]
+    preconditions:              # 条件（Dagu）: ワーカーが受け持つラベルのイシュー
+      - condition: "${TO_WORK.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${TO_WORK.record.labels}"
+        expected: 're:"status:(open|needs-rework|needs-clarification)"'
+    continue_on: { skipped: true, failure: true }
+    action: harness.run
+  - name: review
+    depends: [get-review]
+    preconditions:              # 条件（Dagu）: レビューを待つイシュー
+      - condition: "${TO_REVIEW.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${TO_REVIEW.record.labels}"
+        expected: 're:"status:(review-ready)"'
+    continue_on: { skipped: true, failure: true }
+    action: harness.run
+```
+
+- ワーカーが `status:review-ready` にしたり、レビュアーが差し戻したりして**ロールが変わったときは、エージェント自身の書き込みでも相手のロールの側に変化として届く**
+  （consumer をロールごとに分けているため。同じ起動の中で続けて動くこともある）。ロールが変わらない自分の書き込み（質問のコメント・
+  `status:needs-clarification` への変更など）では、`absorb-work` が取り直した姿を基準にするので流さない
 - 依頼者が質問に答える（コメントする）と、ワーカーがもう一度呼ばれる
 - エージェントには「このイシューだけを処理して」と頼む。gitlab-idd が候補の一覧から別のイシューを選ばないように、プロンプトで止めている
 
@@ -172,25 +203,28 @@ GitLab への問い合わせは、change-watch の取得元の接続で送り、
 
 | 置く場所 | 例 | 替えるもの |
 |---|---|---|
-| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | `change-watch.yaml.example` | 設定（ルール `idd`） |
-| `~/.config/change-watch/gitlab-issue-agent/idd.prompt.md` | `idd.prompt.md.example` | プロンプト（設定と同じフォルダに置く） |
+| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | `change-watch.yaml.example` | 設定（取得元だけ。`gitlab:watch` の接続を使う） |
 | `~/.github/connections.yaml` | `connections.yaml.example` | 4 の接続設定（`default` は gitlab-idd 用のプロジェクトの URL、`watch` は change-watch 用の GitLab の URL） |
-| `~/.config/dagu/dags/change-watch-idd.yaml` | `change-watch-idd.yaml.example` | ワークフロー（ルール `idd`）。インストーラが置いた `change-watch-issue-agent.yaml` は消す |
+| `~/.config/dagu/dags/change-watch-idd.yaml` | `change-watch-idd.yaml.example` | ワークフロー（ラベルでの絞り込みとロールの分岐・プロンプト）。インストーラが置いた `change-watch-issue-agent.yaml` は消す |
 | エージェントのホームの `skill-registry.json`（Claude Code なら `~/.claude/skill-registry.json`） | `skill-registry.json.example` | 足す（既にあれば `skill_configs.gitlab-idd` だけを足す） |
 
 `gitlab-issue-agent.env` には `SKILL_CONNECTIONS_FILE`（上の connections.yaml のパス。gitlab-idd にも同じ接続設定を読ませる）と
 `GITLAB_NODE_ID` も書く（`gitlab-issue-agent.env.example` の該当の行）。エージェント CLI から gitlab-idd スキルが使えるようにしておく
 （Claude Code なら `~/.claude/skills/gitlab-idd`）。
 
-既にある作業コピーを使うなら、`gitlab-issue-agent.env` の `GITLAB_IDD_LOCAL_REPO` にそのフォルダ（handle のステップの `working_dir` と同じでよい）を書く。
+既にある作業コピーを使うなら、`gitlab-issue-agent.env` の `GITLAB_IDD_LOCAL_REPO` にそのフォルダ（`work`・`review` のステップの `working_dir` と同じでよい）を書く。
 gitlab-idd のワーカーは、イシューごとにリポジトリをクローンする代わりに、そのリポジトリへ `git worktree` を足して作業し、終わったら外す
 （取ってくるのは対象ブランチの新しいコミットだけ）。作業コピーのブランチ・書きかけの変更には触らない。作業コピーの `origin` は
 gitlab-idd 用のプロジェクトを指していること。書かなければ、従来どおりイシューごとに一時フォルダへクローンする。
 
-ワークフローは `change-watch-issue-agent.yaml` の代わりに `change-watch-idd.yaml` を置く（ルール名が `idd`）。5 は `--rule idd` で取る。
+ワークフローは `change-watch-issue-agent.yaml` の代わりに `change-watch-idd.yaml` を置く。5 はロールごとに基準を取る。
 
 ```bash
-change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py --connections ~/.github/connections.yaml run --rule idd --no-jitter
+change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --connections ~/.github/connections.yaml get --source gitlab-issues --consumer idd-worker --no-jitter
+```
+
+```bash
+change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --connections ~/.github/connections.yaml get --source gitlab-issues --consumer idd-reviewer --no-fetch
 ```
 
 ### 気をつけること

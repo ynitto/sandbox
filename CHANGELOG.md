@@ -19,7 +19,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   ルールで判定する形の例は `change-watch.rules.yaml.example` に移す。条件で分けるワークフローの例 `dags/change-watch-get.example.yaml` を足す
 - gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent のインストーラが置く設定とワークフローをこの形にする。条件はワークフローの
   `preconditions` に書く（gitlab-issue-agent は新しい issue と変わった issue で分け、redmine-ticket-agent は条件とコメントの対をステップに分ける）。
-  プロンプトはワークフローの `prompt` に書く。ルールで判定する形の例（とプロンプト）は各エージェントの `examples/rules/` に移す。
+  gitlab-issue-agent の gitlab-idd の例も、ラベルでの絞り込みとワーカー / レビュアーの分岐をワークフローに書く形にする
+  （ロールごとに consumer を分け、`idd.prompt.md.example` はやめる）。プロンプトはワークフローの `prompt` に書く。ルールで判定する形の例（とプロンプト）は各エージェントの `examples/rules/` に移す。
   既に入れた設定とワークフローは上書きしないので、そのまま動く
 
 ### change-watch: エージェントを `tools/change-watch/agents/` にまとめ、インストーラで同じ場所に入れる（0.5.0）
