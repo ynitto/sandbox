@@ -100,6 +100,19 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(self.env.api.count("/_put"), 1)
 
+    def test_folder_source(self):
+        inbox = self.env.tmp / "inbox"
+        inbox.mkdir()
+        (inbox / "a.csv").write_text("1", encoding="utf-8")
+        self.env.write_config({"inbox": {"folder": {"path": str(inbox), "include": ["*.csv"], "settle_sec": 0}}}, {}, delivery=None)
+        run = lambda: json.loads(self.env.ok(self, "get", "--source", "inbox", "--consumer", "flow") and self.env.stdout)
+        self.assertEqual(run(), [])                                            # 今あるファイルを覚えるだけ
+        (inbox / "b.csv").write_text("2", encoding="utf-8")
+        got = run()
+        self.assertEqual([(c["key"], c["kind"]) for c in got], [("b.csv", "appeared")])
+        self.env.ok(self, "commit", "--source", "inbox", "--consumer", "flow", "b.csv")
+        self.assertEqual(run(), [])
+
     def test_key_is_required_for_consumers(self):
         self.env.write_config({"items": self.env.source("/all")}, {}, delivery=None)
         code, out = self.env.run("get", "--source", "items", "--consumer", "flow")

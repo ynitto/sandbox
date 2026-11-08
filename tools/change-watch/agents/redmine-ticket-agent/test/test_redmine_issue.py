@@ -24,7 +24,7 @@ except ImportError:      # pragma: no cover
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "redmine_issue.py"
-EXAMPLE = HERE.parent / "change-watch.yaml.example"
+EXAMPLE = HERE.parent / "examples" / "rules" / "change-watch.yaml.example"
 CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("redmine_issue", PLUGIN)
 ri = importlib.util.module_from_spec(spec)
@@ -377,7 +377,7 @@ class FlowTest(unittest.TestCase):
         sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
-        dag = HERE.parent / "change-watch-auto-close.yaml.example"
+        dag = HERE.parent / "examples" / "rules" / "change-watch-auto-close.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
                        paths={"/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
@@ -392,8 +392,8 @@ class FlowTest(unittest.TestCase):
             "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
 
-class DaguSideExampleTest(unittest.TestCase):
-    """examples/dagu/: 条件は Dagu の preconditions が判定し、change-watch は get / call / commit だけを受け持つ形。"""
+class DefaultExampleTest(unittest.TestCase):
+    """既定の例: 条件は Dagu の preconditions が判定し、change-watch は get / call / commit だけを受け持つ形。"""
 
     def setUp(self):
         if yaml is None:
@@ -402,7 +402,7 @@ class DaguSideExampleTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.rm = FakeRedmine()
         self.addCleanup(self.rm.close)
-        d = HERE.parent / "examples" / "dagu"
+        d = HERE.parent
         cfg = yaml.safe_load((d / "change-watch.yaml.example").read_text(encoding="utf-8"))
         self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
         cfg["state_dir"] = str(self.tmp / "state")

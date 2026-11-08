@@ -4,16 +4,16 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
 決めた文字列を含むなど）に、決めた文をコメントしてステータスを完了にする。**条件とコメントの対は複数書ける**（「【重複】なら
 『重複のため完了にしました。』」など）。コメントとステータスの変更は 1 回の更新で行い、同じチケットを 2 回処理しない。
 
-チケットの取得・変化の検知・実行待ち・再試行は [change-watch](../../README.md) が、定期起動は
-[Dagu](https://github.com/dagu-org/dagu) が受け持つ（Dagu を使わず cron などから動かしてもよい）。このフォルダには、Redmine に固有の部分を
-足す `redmine_issue.py`（change-watch のプラグインで、チケットを完了にするコマンドも兼ねる）と、設定の例がある。
-[gitlab-issue-agent](../gitlab-issue-agent/README.md) と同じ作りで、エージェント CLI の代わりに決まった処理を動かす。
+起動と条件の分岐は [Dagu](https://github.com/dagu-org/dagu) のワークフローが、Redmine への問い合わせ（いつ取得するか・まとめる・失敗の待ち）と
+「前回見てから新しく現れた・変わったチケット」を返すこと、チケットへの書き込みは [change-watch](../../README.md) が受け持つ
+（change-watch の README の「条件をワークフローで判定する」）。条件とコメントの対は、ワークフローに 1 ステップずつ書いてある。
 
 ```
- Dagu: change-watch-auto-close（毎分起動。Redmine への問い合わせは 15 分ごと）
-   fetch      自分が担当する未完了のチケットを全ページ取得
-   evaluate   条件（対ごとのルール）に当たるチケットを拾う（新しく当たったもの・内容が変わったもの）
-   work       チケットを取り直し、まだ当たっていて担当が自分なら、その対のコメントをしてステータスを完了にする
+ Dagu: change-watch-auto-close（毎分起動。1 回の起動で 1 件。Redmine への問い合わせは 15 分ごと）
+   get          自分が担当する未完了のチケットのうち、新しく現れた・題名などが変わったものを 1 件受け取る
+   auto-close   題名に「自動完了」を含めば → コメントしてステータスを完了にする（change-watch call）   ← 条件（Dagu の preconditions）
+   duplicate    題名に「【重複】」を含めば → 「重複のため完了にしました。」とコメントして完了にする
+   commit       見終えたと記録する
 ```
 
 ## 入れ方
@@ -37,8 +37,9 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
    API キーは Redmine の「個人設定」の「API アクセスキー」（管理者が「REST による Web サービスを有効にする」をオンにしておく）。
    **このキーの持ち主が「自分」になる**（担当の絞り込みと、コメントの書き手）。
 
-3. `~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` の**条件とコメントの対・完了のステータス**を自分のものに直す
-   （下の「決めること」）。例には対が 2 つある（「自動完了」と「【重複】」）。要らない対はルールごと消す。
+3. `~/.config/dagu/dags/change-watch-auto-close.yaml` の**条件とコメントの対**と、`redmine-ticket-agent.env` の**完了のステータスの ID**
+   （`REDMINE_CLOSED_STATUS_ID`）を自分のものに直す（下の「決めること」）。例には対が 2 つある（「自動完了」と「【重複】」）。要らない対はステップごと消す
+   （消したステップを `depends` に書いているステップは、その前のステップに付け替える）。
 
 4. 接続設定（例: `~/.github/connections.yaml`）に Redmine を書く。値は `redmine-ticket-agent.env` から取るので、API キーを 2 か所に書かなくてよい。
 
@@ -49,104 +50,80 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
        token: ${REDMINE_API_KEY}
    ```
 
-5. 環境変数を読み込んで、設定を確かめる。
+5. 環境変数を読み込んで、設定を確かめる（Redmine には問い合わせない）。
 
    ```bash
    set -a; . ~/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env; set +a
    ```
 
    ```bash
-   change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py --connections ~/.github/connections.yaml check
+   change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
-6. Dagu のスケジューラを動かす（`dagu start-all` など）。Dagu の設定（`config.yaml`）に足すものは無い。設定の例は `initial: emit` なので、
-   **最初の取得で、いま当たっているチケットも完了にする**。これから当たるものだけにしたいなら、動かす前に `initial: baseline` にする。
-
-Dagu を使わないなら、ワークフローの代わりに cron などから次を定期的に呼ぶ（インストーラに `--no-dags` を付けるとワークフローを置かない。
-環境変数は先に読み込んでおく）。
-
-```bash
-change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py --connections ~/.github/connections.yaml run --source redmine-my-issues
-```
+6. Dagu のスケジューラを動かす（`dagu start-all` など）。Dagu の設定（`config.yaml`）に足すものは無い。ワークフローの `get` は `--initial emit` なので、
+   **最初の取得で、いま当たっているチケットも完了にする**（1 分に 1 件ずつ）。これから当たるものだけにしたいなら、動かす前に `--initial baseline` にする。
 
 ## 決めること
 
-どれも `~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` に書く。
+条件とコメントの対はワークフロー（`~/.config/dagu/dags/change-watch-auto-close.yaml`）に、それ以外は設定に書く。
 
 | 決めること | 書く場所 | 例 |
 |---|---|---|
-| 条件（対象の文字列など） | 対のルールの `filter` | `{ path: subject, op: contains, value: 【重複】 }` |
-| コメントする文 | 対のルールの受け渡し先 `close` の `command` の `--note` の次 | `重複のため完了にしました。` |
-| 完了にするステータス | `command` の `--status` の次（名前か ID。完了扱いのステータス） | `完了`・`5` |
-| 対象のプロジェクト | 取得元の `query` に `project_id` を足す | `project_id: my-project` |
-| 問い合わせの間隔 | 取得元の `schedule` | `*/15 * * * *` |
+| 条件（対象の文字列など） | 対のステップの `preconditions` | `condition: "${CHANGE.record.subject}"`・`expected: "re:【重複】"` |
+| コメントする文 | 対のステップの `--json` の `notes` | `重複のため完了にしました。` |
+| 完了にするステータス | `redmine-ticket-agent.env` の `REDMINE_CLOSED_STATUS_ID`（完了扱いのステータスの ID） | `5` |
+| 対象のプロジェクト | `change-watch.yaml` の取得元の `query` に `project_id` を足す | `project_id: my-project` |
+| 問い合わせの間隔 | `change-watch.yaml` の取得元の `schedule` | `*/15 * * * *` |
 
-- 対は「ルール 1 本に 1 つ」で、ルールの名前は自由に付けてよい（`auto-close-duplicate` など）。対を足すときは例の
-  `auto-close-duplicate` をまねて、`<<: *auto-close` の下に `filter`（条件）と `targets`（`<<: *close` とコメントの `command`）だけを書く。
-  `filter` には、どの対にも `- { path: status.is_closed, op: falsy }` を入れる。ワークフローは直さなくてよい
-- **1 つのチケットが複数の対に当たったら、上に書いた対のコメントで 1 回だけ完了にする**。下の対は、取り直したときにもう完了なので
-  何もしない。そのため `--status` は完了扱いのステータス（Redmine の「チケットのステータス」で「終了したチケット」に印のあるもの）にする
-- 文字列は大文字・小文字を区別して、そのまま含むかを見る。複数の文字列や大文字・小文字を区別しない比べ方は `op: regex` で書く
-  （例: `value: "(?i)(自動完了|auto-close)"`）。タイトルだけを見るなら、`description` の行を消す
-- 文字列を変えたとき・対を足したときは、新しい条件に当たる今あるチケットも、次の取得で完了にする
-- 取得元の `schedule` を消すなら、代わりに `min_interval_sec` と `busy_wait_sec` を書く（対ごとにルールがあるので、change-watch が求める）
-- コメントが長いときは、文をファイルに書いて `--note` の代わりに `--note-file <ファイルのパス>` にする
-- `command` の `python3` と `redmine_issue.py` はフルパスで書く（`~` は展開されない。インストーラはこの PC のパスにして置く）
-- ステータスの名前は Redmine の「管理」→「チケットのステータス」にあるものと同じにする。無い名前なら、あるものの一覧を出して失敗する
+- 対は「ステップ 1 つに 1 つ」で、ステップの名前は自由に付けてよい。対を足すときは例の `duplicate` をまねて、`preconditions`（条件）と
+  `--json` の `notes`（コメント）を変えたステップを足し、`depends` で前のステップのあとに、`commit` の `depends` をそのステップにする
+- **1 つのチケットが 2 つの対に当たると、両方のコメントが付く**（2 回目の書き込みは完了のステータスへの変更で、コメントだけが増える）。
+  条件は互いに重ならないように書く
+- `expected` の `re:` は正規表現で、大文字・小文字を区別する。説明も見るなら `${CHANGE.record.description}` の条件を別のステップに書く
+  （Dagu の `preconditions` はどれも満たすときだけ動くので、「題名か説明」は 2 つのステップになる）
+- 文字列を変えたとき・対を足したときは、今あるチケットには当たらない（変化したものだけを受け取るため）。今あるものにも当てたいなら、
+  `get` の `--consumer` の名前を変えて（`commit` も同じ名前に）、`--initial emit` で受け取り直す
+- ステータスの ID は Redmine の「管理」→「チケットのステータス」で確かめる（完了扱いのもの）
 
 ## 対象になるチケット
 
 - 担当が自分（API キーの持ち主）のチケットだけ。グループに割り当てたチケットは対象にしない
 - 未完了のステータスのものだけ。完了にしたチケットは次の取得から一覧に出ないので、もう一度処理することはない
-- 次のどれかのとき処理する: 最初の取得で当たった（`initial: emit` のとき）/ 新しく担当になった・作られた / タイトルや説明を直して条件に当たるようになった
-- 処理する直前にチケットを取り直し、**そのときにも当たっていて担当が自分のときだけ**完了にする。待つ間に文字列を消した・担当が替わった・
-  人が先に完了にしたチケットはそのままにする
+- 次のどれかのとき見る: 最初の取得で一覧にあった（`--initial emit` のとき）/ 新しく担当になった・作られた / 題名・説明・ステータス・担当が変わった
+- 完了にする前にチケットを取り直すことはしない。15 分ごとの取得のあいだに、人が先に完了にした・担当が替わったチケットにも書き込むことがある
 
 ## 失敗したとき
 
-ステータスを完了に変えられなかったときは失敗になり、5 分（1 回ごとに倍）たってからやり直す。3 回失敗したら打ち切り、そのチケットが次に
-変化したときにもう一度拾う。複数の対に当たるチケットで上の対が失敗したときは、下の対のコメントで完了になることがある。
+Redmine に書き込めない一時的な失敗（終了コード 3）は、Dagu が 1 分おいて 3 回までやり直す。それでも書き込めないときや、権限が無い・
+ステータスが無いなどの失敗は、Dagu の実行履歴に失敗として残り、`commit` はする（そのチケットが次に変化したときにもう一度見る）。
+失敗の中身は、そのステップのログ（Redmine が返したエラー）で確かめる。
 
-| 失敗の表示 | 直すこと |
+| ログ | 直すこと |
 |---|---|
-| `「完了」に変えられません（ワークフローで選べるもの: …）` | Redmine のワークフローで、自分のロールがそのステータスに変えられるようにする。このときコメントも書かない |
-| `ステータス「…」が Redmine にありません` | `--status` をあるステータスの名前か ID にする |
-| `コメントしましたが、ステータスが「完了」になりませんでした` | 権限とワークフローを確かめる（古い Redmine では書く前に確かめられないので、コメントだけが残る。やり直しでは同じコメントを重ねない） |
+| `422` で失敗 | Redmine のワークフローで、自分のロールがそのステータスに変えられるようにする。`REDMINE_CLOSED_STATUS_ID` があるステータスの ID かも確かめる |
 | `401` で失敗 | API キーと、REST の Web サービスが有効かを確かめる |
 
-| したいこと | コマンド |
-|---|---|
-| 失敗している・打ち切ったものを見る | `change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml events --status send_failed,dead` |
-| 打ち切ったものをすぐやり直す | `change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml retry <受け渡しの ID>` |
+## ルールで判定する形（`examples/rules/`）
 
-## 条件を Dagu で判定する形（`examples/dagu/`）
+条件とコメントの対も change-watch の設定（ルール `rules`）に書き、`redmine_issue.py close` で完了にする形の例。
+入れ方で、`~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` を `examples/rules/change-watch.yaml.example` に、
+`~/.config/dagu/dags/change-watch-auto-close.yaml` を `examples/rules/change-watch-auto-close.yaml.example` に替える（`/home/you` は自分の場所に直す）。
+条件はルールの `filter`、コメントは受け渡し先 `close` の `command` の `--note`、完了のステータスは `--status`（名前か ID）に書く。既定の形との違い:
 
-条件とコメントの対を Dagu のワークフローに 1 ステップずつ書き、change-watch には Redmine への問い合わせ・「前回見てから変わったチケット」を
-返すこと・チケットの書き込み（`call`）だけを任せる形の例。change-watch の設定にルールは書かない
-（change-watch の README の「条件をワークフローで判定する」）。
-
-```
- Dagu: change-watch-auto-close（毎分。1 回の起動で 1 件）
-   get         change-watch get --consumer auto-close --initial emit --one   → CHANGE
-   auto-close  ${CHANGE.record.subject} が「自動完了」を含めば、change-watch call PUT /issues/<ID>.json でコメントして完了にする
-   duplicate   「【重複】」を含めば、重複のコメントで完了にする
-   commit      change-watch commit --consumer auto-close ${CHANGE.key}
-```
-
-入れ方で、`~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` を `examples/dagu/change-watch.yaml.example` に、
-`~/.config/dagu/dags/change-watch-auto-close.yaml` を `examples/dagu/change-watch-auto-close.yaml.example` に替え（`/home/you` は自分の場所に直す）、
-`redmine-ticket-agent.env` に完了のステータスの ID（`REDMINE_CLOSED_STATUS_ID`）を書く。既定の形との違い:
-
-- 条件とコメントの対は、ワークフローのステップを足して書く。1 つのチケットが 2 つの対に当たると両方のコメントが付くので、条件は重ならないように書く
-- 完了のステータスは名前ではなく ID で書く。担当が自分か・既に完了かの確かめ直し（`redmine_issue.py close` がしていること）はしない
+- 完了にする直前にチケットを取り直し、そのときにも当たっていて担当が自分のときだけ完了にする（チェック `redmine.not_mine`）
+- 1 つのチケットが複数の対に当たっても、上に書いた対のコメントで 1 回だけ完了にする
+- 条件や対を変えると、新しい条件に当たる今あるチケットも、次の取得で完了にする
+- 失敗したものは change-watch が待ってから流し直し（`retry_backoff_sec`・`max_attempts`）、`events`・`retry` で見たりやり直したりできる
+- Dagu を使わず、cron などから `change-watch ... --plugin ~/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py run --source redmine-my-issues` で動かせる
 
 ## 設定の置き場所
 
 | ファイル | 書くこと |
 |---|---|
-| `~/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env` | Redmine の URL・API キー |
+| `~/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env` | Redmine の URL・API キー・完了のステータスの ID |
 | `~/.github/connections.yaml` | Redmine の接続（値は上の環境変数から取る） |
-| `~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` | 条件とコメントの対・ステータス・問い合わせの間隔・再試行 |
+| `~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` | 対象のチケットの絞り込み（`query`）・問い合わせの間隔 |
+| `~/.config/dagu/dags/change-watch-auto-close.yaml` | 見る項目（`--watch`）・条件とコメントの対・再試行 |
 
 ## テスト
 

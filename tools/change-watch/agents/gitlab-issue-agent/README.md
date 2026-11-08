@@ -1,27 +1,25 @@
 # gitlab-issue-agent
 
 GitLab の issue を定期的に見に行き、変化があった issue をエージェント CLI（Claude Code / Codex / Kiro / Copilot など）に
-1 件ずつ渡す。**同時に動くエージェント CLI は常に 1 つ**で、同じ変化を 2 回流さない。
+1 件ずつ渡す。**同時に動くエージェント CLI は常に 1 つ**で、エージェント自身のコメントでもう一度起きることはない。
 
-issue の取得・変化の検知・実行待ち・再試行は [change-watch](../../README.md) が、起動とエージェント CLI の実行は
-[Dagu](https://github.com/dagu-org/dagu)（v2.25 以降。`harness.run` を使う）が受け持つ。このフォルダには、GitLab の issue に固有の部分を
-足す change-watch のプラグイン（`gitlab_issue.py`）と、設定の例がある。
+起動・条件の分岐・エージェント CLI の実行・再試行は [Dagu](https://github.com/dagu-org/dagu)（v2.25 以降。`harness.run` を使う）のワークフローが、
+GitLab への問い合わせ（いつ取得するか・まとめる・失敗の待ち）と「前回処理してから変わった issue」を返すことは [change-watch](../../README.md) が
+受け持つ（change-watch の README の「条件をワークフローで判定する」）。どの issue をどう処理するかの条件は、ワークフローに書いてある。
 
 ```
  Dagu: change-watch-issue-agent（毎分起動。1 回の起動で 1 件を処理する）
-   fetch      毎時 0 分の予定のあと、0〜15 分ずらして issue を全ページ取得（予定の時刻のあとに取得済みなら問い合わせない）
-   evaluate   前回と比べて変化した issue を拾う
-   claim      流す issue を 1 件取る。issue を取り直し、処理し終えた状態と同じ・閉じた・別のセッションが実行中なら流さない
-   render     プロンプトを組む（前回処理し終えたときからの変化の箇条書きと、issue の内容）
-   handle     エージェント CLI を動かす（Dagu の harness.run）
-   finish     handle の終了コードを見て、issue を取り直して処理し終えた状態にする（失敗ならあとでやり直す）
+   get      前回処理してから変わった issue を 1 件受け取る（GitLab への問い合わせは毎時 0 分の予定のあと、0〜15 分ずらして 1 回）
+   new      新しい issue で、開いていれば → エージェント CLI に着手させる                ← 条件（Dagu の preconditions）
+   update   変わった issue で、開いていれば → 変わったところ（before・changes）を見て対応させる
+   commit   issue を取り直した姿で、処理し終えたと記録する（エージェント自身のコメントで次に起きない）
 
- 流す issue が無ければ claim のあとは動かない。流すものが複数あれば、次の起動（1 分後）が次の 1 件を取る
+ 変わった issue が無ければ get のあとは動かない。複数あれば、次の起動（1 分後）が次の 1 件を受け取る
 ```
 
 ## 入れ方
 
-1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_issue.py`）・設定の雛形・プロンプト・Dagu のワークフローを、
+1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_issue.py`）・設定の雛形・Dagu のワークフローを、
    どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
    ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
 
@@ -32,17 +30,17 @@ issue の取得・変化の検知・実行待ち・再試行は [change-watch](.
    | 置かれるもの | 場所 |
    |---|---|
    | プログラム | `~/.local/share/change-watch/agents/gitlab-issue-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\gitlab-issue-agent\`） |
-   | 設定（`change-watch.yaml`・`gitlab-issue-agent.env`・`prompt.md`） | `~/.config/change-watch/gitlab-issue-agent/` |
+   | 設定（`change-watch.yaml`・`gitlab-issue-agent.env`） | `~/.config/change-watch/gitlab-issue-agent/` |
    | Dagu のワークフロー（`change-watch-issue-agent.yaml`・整理の `change-watch-gitlab-issue-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
    | 状態 | `~/.local/state/change-watch/gitlab-issue-agent/` |
 
 2. GitLab の URL・プロジェクト・トークンを `~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env` に書く。
    トークンには `read_api` が要る（エージェントが issue にコメントするなら、そのエージェント側の権限も別に要る）。
-   対象の issue の絞り込みは、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` の `query`（取得するもの）とルールの `filter`
-   （実行の直前にもう一度確かめるもの）に書く。
+   取得する issue の絞り込みは `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` の `query` に書く。
 
-3. `~/.config/dagu/dags/change-watch-issue-agent.yaml` の `handle` の `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・
-   作業フォルダ（`working_dir`）を自分のものに直す。CLI はこの PC に入れて、ログインしておく。Dagu の設定（`config.yaml`）に足すものは無い。
+3. `~/.config/dagu/dags/change-watch-issue-agent.yaml` の `new`・`update` の `provider`（`claude` / `codex` / `kiro` / `copilot` など）・フラグ・
+   作業フォルダ（`working_dir`）・`prompt` を自分のものに直す。どの issue を渡すかを変えるなら、そのステップの `preconditions` を直す
+   （下の「条件で分ける」）。CLI はこの PC に入れて、ログインしておく。Dagu の設定（`config.yaml`）に足すものは無い。
 
 4. 接続設定（例: `~/.github/connections.yaml`）に GitLab を書く。値は `gitlab-issue-agent.env` から取るので、トークンを 2 か所に書かなくてよい。
 
@@ -61,70 +59,77 @@ issue の取得・変化の検知・実行待ち・再試行は [change-watch](.
    ```
 
    ```bash
-   change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
+   change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml --connections ~/.github/connections.yaml get --source gitlab-issues --consumer issue-agent --no-jitter
    ```
+
+## 条件で分ける
+
+ワークフローの `new`・`update` は、`get` が出した変化（`CHANGE`）を Dagu の `preconditions` で見て、合ったときだけ動く。
+`${CHANGE.kind}` は `appeared`（新しい issue）・`changed`（変わった issue）・`removed`（一覧から消えた。例では閉じた issue）、
+`${CHANGE.record.*}` は今の issue の項目、`${CHANGE.before.*}` は前回処理したときの issue の項目。
+
+| ステップ | 条件 | エージェントに頼むこと |
+|---|---|---|
+| `new` | `kind` が `appeared`、`state` が `opened` | 新しい issue に着手して、結果を issue にコメントする |
+| `update` | `kind` が `changed`、`state` が `opened` | 変わったところに対応して、結果を issue にコメントする |
+
+分け方を足すなら、同じ形のステップを足して `preconditions` を変え、`commit` の `depends` に足す。例えば、ラベル `bug` が付いた issue だけ
+別のプロンプトにするなら `condition: "${CHANGE.record.labels}"`・`expected: 're:"bug"'`。どのステップにも合わなかった変化も `commit` する
+（`continue_on.skipped`）ので、同じ変化が何度も来ることはない。
 
 ## GitLab への問い合わせの回数
 
 - issue の一覧の取得は **1 時間に 1 回**。予定の時刻（毎時 0 分）から 0〜15 分のあいだでランダムにずらして問い合わせる。
   複数の PC やプロジェクトで動かしても、問い合わせが同じ時刻に重ならない。1 回の取得は 100 件ごとに 1 リクエスト
-- ワークフローは毎分起動するが、予定の時刻のあとに取得し終えていれば一覧は取得しない。毎分の起動で進むのは、失敗したもののやり直しだけ
-- エージェントを 1 回流すたびに 4 リクエスト（実行の前と後に issue を取り直す 2 回と、実行中のほかの人の動きを見る `/user`・コメントの 2 回）。
-  エージェント自身のコメントで出た変化など、前回処理し終えた状態と同じものは取り直しもせずに飛ばす
-- 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）は問い合わせない
+- ワークフローは毎分起動するが、予定の時刻のあとに取得し終えていれば一覧は取得しない（前回の取得結果から次の 1 件を返す）
+- エージェントを 1 回流すたびに 1 リクエスト（処理し終えたときに issue を取り直す `commit --refresh`）
+- 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）は問い合わせない。そのあいだは前回までの取得結果で答える
 
 予定は change-watch の設定の取得元の `schedule`、ずらす幅は `jitter_sec` で変えられる。予定を変えるときは change-watch の設定だけを直せばよく、
 ワークフローは直さなくてよい。
 
 ## 何を「変化」とみなすか
 
-次のどれかが前回から変わったときだけ流す。`updated_at` だけが動いた更新（MR からの言及など）では起こさない。
+次のどれかが前回処理し終えたときから変わったときだけ流す。`updated_at` だけが動いた更新（MR からの言及など）では起こさない。
 
 - 新しい issue / タイトル / 状態（開いた・閉じた）/ ラベル / 担当 / マイルストーン / 期日 / コメント数 / 本文
 
-見る項目は change-watch の設定のルールの `watch` に書いてある。対象は `query` とルールの `filter` で絞る。`filter` は実行の直前に取り直した issue にも
-当てはめるので、実行を待つ間に絞り込みから外れた issue（閉じた・ラベルが外れた）は流さない。
+見る項目はワークフローの `get` の `--watch` に書いてある。
 
 ## 重複させない仕組み
 
-- 実行の直前に issue を取り直し、最新の内容でエージェントに渡す。プロンプトの差分は前回処理し終えたときからの累積
-- 流し終えたら、その時点の issue を取り直して「処理し終えた状態」にする。**エージェント自身のコメントやラベル変更で
-  もう一度起きることはない**（その変化も拾うが、処理し終えた状態と同じなので流さない）
-- 実行を待つ間に同じ issue が何度か変わっても、先に動いた実行が最新の issue でまとめて流し、後ろは飛ばす
-- 実行中に自分以外の人がコメントしたときだけ、処理し終えたのは実行前の状態までにして、次の取得でもう一度流す
-  （自分はトークンの持ち主で判定する。change-watch の設定の `handled_before_if` の `options.self_username` で明示もできる）
+- 「前回処理し終えた姿」は change-watch がこのワークフロー（`--consumer issue-agent`）ごとに覚えていて、`get` はそこから変わった issue だけを返す。
+  `commit` するまで同じ issue を返し続ける
+- `commit --refresh` は、処理し終えたときに issue を取り直し、その姿を「処理し終えた姿」にする。**エージェント自身のコメントやラベル変更で
+  もう一度起きることはない**
+- 処理を待つ間に同じ issue が何度か変わっても、受け取るのは最新の取得結果の姿で、まとめて 1 回流れる
+- 処理の途中で自分以外の人が書いたコメントも、取り直した姿に含めて処理し終えたことにする。拾い直させたいときは、もう一度コメントするか
+  ラベルを変える
 
 ## 1 セッションだけにする仕組み
 
-- ワークフローは 1 回の起動で 1 件だけ処理する。同じワークフローが重ねて起動されることもない
-- change-watch の設定の `lock`（例は `agent-session`）が同じ受け渡し先どうしは、プロジェクトをまたいでも同時に 1 つだけ実行する。
-  空いていなければ「あとで」として試行に数えずに戻し、次の起動でもう一度試す
-- エージェント CLI の時間切れ・失敗では、`finish` が終了コードを見て失敗として記録する
-- ワークフローごと止めた・Dagu ごと落ちたなどで `finish` まで進まなかったときは、`timeout_sec` + 2 分たつと次の起動が取り直す
-  （それまでその issue と `lock` は空かない）
+- ワークフローは 1 回の起動で 1 件だけ処理する。同じワークフローが重ねて起動されることはない（Dagu の既定）
+- 別のプロジェクトのワークフローとも同時に動かさないなら、Dagu のキュー（`queue`）で同じキューに入れ、キューの並列数を 1 にする
 
 ## 失敗したとき
 
-エージェント CLI が 0 以外で終わる・時間切れ・止められると失敗になり、change-watch が受け渡し先の `retry_backoff_sec` 秒（1 回ごとに倍）
-待ってから同じ変化を流し直す。`max_attempts` 回失敗したら打ち切り、その issue が次に変化したときにもう一度拾う。設定例では 3 回・300 秒。
+エージェント CLI が 0 以外で終わる・時間切れになると、Dagu が `retry_policy` のとおり 300 秒おいて 2 回までやり直す。尽きたら
+失敗として Dagu の実行履歴に残り、`commit` はする（同じ変化は流し直さない。その issue が次に変化したときにもう一度拾う）。
+すぐ流し直したいときは、Dagu の画面からそのステップを再実行する。
 
-| したいこと | コマンド |
-|---|---|
-| 失敗している・打ち切った変化を見る | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml events --rule issue-agent --status send_failed,dead` |
-| 打ち切った変化をすぐ流し直す | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml retry <受け渡しの ID>` |
-| 処理し終えた issue をもう一度流させる | `change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yaml forget-handled --rule issue-agent 123`（次に変化を受け取ったとき流す） |
+GitLab に問い合わせられない（一時的な失敗）ときは、`get` が終了コード 3 で終わり、Dagu が 1 分おいてやり直す。
 
 ## エージェント CLI とプロンプト
 
-- エージェント CLI は Dagu の `harness.run` で動かす（ワークフローの `handle` のステップ）。`provider` に `claude` / `codex` / `kiro` / `copilot` / `gemini` などを書き、
+- エージェント CLI は Dagu の `harness.run` で動かす（ワークフローの `new`・`update` のステップ）。`provider` に `claude` / `codex` / `kiro` / `copilot` / `gemini` などを書き、
   `with` のほかの項目は CLI のフラグになる（`dangerously_skip_permissions: true` → `--dangerously-skip-permissions`）。権限の確認で止まらないよう、
   無人で動かせるフラグを付けること
-- プロンプトは `~/.config/change-watch/gitlab-issue-agent/prompt.md`（change-watch の設定の `input_template`）。change-watch のテンプレートで書き、
-  `{{ event.record.iid }}`・`{{ event.record.title }}`・`{{ event.record.web_url }}`・`{{ event.record | json: 2 }}`・`{{ delivery.attempt }}`（何回目か）と、
-  プラグインの `{{ event | gitlab_issue_changes }}`（変化の箇条書き）・`{{ event | gitlab_issue_kind }}`（新規 / 更新）が使える
-- 組んだプロンプトはエージェント CLI の標準入力に渡る（`stdin: "${INPUT}"`）
+- プロンプトはワークフローの `prompt` に書く。`${CHANGE.record.iid}`・`${CHANGE.record.title}`・`${CHANGE.record.web_url}` などで issue の項目を埋め込める
+- 変化の JSON（`key`・`kind`・`record`・`before`・`changes`）はエージェント CLI の標準入力に渡る（`stdin: "${CHANGE}"`）
 
 ## プラグイン（gitlab_issue.py）が足すもの
+
+既定のワークフローでは使わない。下の「gitlab-idd スキルと繋ぐ」と「ルールで判定する形」で使う。
 
 | 名前 | 種類 | すること |
 |---|---|---|
@@ -200,35 +205,26 @@ change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yam
   答えるか、ラベルを `status:open` に戻すと流れる
 - 1 回の実装は長いことがあるので、`timeout_sec` を長めにしている（例は 4200 秒）
 
-## 条件を Dagu で判定する形（`examples/dagu/`）
+## ルールで判定する形（`examples/rules/`）
 
-どの issue をエージェントに渡すかを Dagu のワークフローの条件（`preconditions`）に書き、change-watch には GitLab への問い合わせと
-「前回処理してから変わった issue」を返すことだけを任せる形の例。change-watch の設定にルールは書かない
-（change-watch の README の「条件をワークフローで判定する」）。
-
-```
- Dagu: change-watch-issue-agent（毎分。1 回の起動で 1 件）
-   get     change-watch get --consumer issue-agent --one   → CHANGE（変わった issue 1 件の JSON）
-   handle  preconditions（例: ${CHANGE.record.state} が opened）に合えば、エージェント CLI に CHANGE を渡す
-   commit  change-watch commit --consumer issue-agent --refresh ${CHANGE.key}（取り直した姿で記録し、エージェント自身のコメントで起きない）
-```
-
-入れ方の 3 で、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` を `examples/dagu/change-watch.yaml.example` に、
-`~/.config/dagu/dags/change-watch-issue-agent.yaml` を `examples/dagu/change-watch-issue-agent.yaml.example` に替える（`/home/you` は自分の場所に直す）。
+条件も change-watch の設定（ルール `rules`）に書き、change-watch が issue を選んでプロンプトを組み、実行の前後に issue を取り直す形の例。
+入れ方の 3 で、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` を `examples/rules/change-watch.yaml.example` に、
+`~/.config/dagu/dags/change-watch-issue-agent.yaml` を `examples/rules/change-watch-issue-agent.yaml.example` に替え、
+`examples/rules/prompt.md.example` を `~/.config/change-watch/gitlab-issue-agent/prompt.md` に置く（`/home/you` は自分の場所に直す）。
+5 は `run --rule issue-agent --no-jitter` で取る（`--plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py` を付ける）。
 既定の形との違い:
 
-- 条件は Dagu の `preconditions` に書く（`${CHANGE.record.labels}` などで issue の項目を見られる）。プロンプトは `prompt.md` ではなく
-  ワークフローの `prompt` に書き、issue の JSON は標準入力で渡す
-- 失敗しても `commit` する。やり直しは Dagu の `retry_policy` に任せ、尽きたら失敗として Dagu の履歴に残る
-- 処理の途中で他の人が書いたコメントも、取り直した姿に含めて処理し終えたことにする（既定の形の `gitlab.others_acted` は無い）
-- 同時に 1 つだけ動かすのは、Dagu が同じワークフローを重ねて起動しないことに任せる（プロジェクトをまたぐ `lock` は無い）
+- 実行の直前にも issue を取り直し、絞り込み（ルールの `filter`）から外れた issue は流さない
+- 実行中に自分以外の人がコメントしたときは、処理し終えたのは実行前の状態までにして、次の取得でもう一度流す（チェック `gitlab.others_acted`）
+- change-watch の設定の `lock` で、プロジェクトをまたいでも同時に 1 つだけ実行する
+- 失敗した変化は change-watch が待ってから流し直し（`retry_backoff_sec`・`max_attempts`）、`events`・`retry` で見たり流し直したりできる
 
 ## Windows で使うとき
 
 - インストーラは `python tools\change-watch\install.py install --agent gitlab-issue-agent` で、Dagu から使う Python で動かす。
   ワークフローの `command`（その Python と `change-watch.pyz`）は、インストーラが Windows の形にして置く
 - Dagu の設定フォルダは `C:\Users\<名前>\.config\dagu\` で、ワークフローは `dags\` に置かれる（別の場所ならインストーラに `--dagu-dir`）
-- ワークフローの `handle` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
+- ワークフローの `new`・`update` の `working_dir` は `C:/Users/you/work/project` のように書く（`GITLAB_IDD_LOCAL_REPO` も同じ書き方）
 - gitlab-idd のワーカーの作業用フォルダは、一時フォルダ（`%TEMP%`）の下に作る。git（Git for Windows 2.31 以降）が要る
 
 ## 設定の置き場所
@@ -236,9 +232,8 @@ change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yam
 | ファイル | 書くこと |
 |---|---|
 | `~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env` | GitLab の URL・プロジェクト・トークン |
-| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | 取得の予定・ずらし・監視する項目・絞り込み・再試行・実行の上限・`lock` |
-| `~/.config/change-watch/gitlab-issue-agent/prompt.md` | プロンプト |
-| `~/.config/dagu/dags/change-watch-issue-agent.yaml` | エージェント CLI の種類・フラグ・作業フォルダ（`handle` のステップ） |
+| `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | 取得する issue の絞り込み（`query`）・取得の予定・ずらし・問い合わせの間隔 |
+| `~/.config/dagu/dags/change-watch-issue-agent.yaml` | 見る項目（`--watch`）・条件（`preconditions`）・プロンプト・エージェント CLI の種類・フラグ・作業フォルダ・再試行 |
 
 ## テスト
 

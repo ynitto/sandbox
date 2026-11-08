@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "gitlab_issue.py"
-PROMPT = HERE.parent / "prompt.md.example"
+PROMPT = HERE.parent / "examples" / "rules" / "prompt.md.example"
 CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("gitlab_issue", PLUGIN)
 gi = importlib.util.module_from_spec(spec)
@@ -294,10 +294,10 @@ class _FlowBase(unittest.TestCase):
         return seen[0] if seen else None
 
 
-class DaguSideExampleTest(unittest.TestCase):
-    """examples/dagu/: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
+class DefaultExampleTest(unittest.TestCase):
+    """既定の例: 条件は Dagu の preconditions が判定し（新しい issue と変わった issue で分ける）、change-watch は get / commit だけ。"""
 
-    DIR = HERE.parent / "examples" / "dagu"
+    DIR = HERE.parent
 
     def setUp(self):
         try:
@@ -323,7 +323,8 @@ class DaguSideExampleTest(unittest.TestCase):
         self.cfg.write_text(json.dumps(cfg), encoding="utf-8")
         self.env = {**os.environ, "GITLAB_PROJECT": "g/p"}
 
-    def run_dag(self, agent=None, exit_code: int = 0) -> str | None:
+    def run_dag(self, agent=None, exit_code: int = 0) -> tuple[str, str] | None:
+        """1 回の起動。エージェントを動かしたら (ステップの名前, プロンプト)。"""
         import dagrun
         path = self.DIR / "change-watch-issue-agent.yaml.example"
         dagrun.check_shape(self, dagrun.load(path), path.name)
@@ -331,7 +332,7 @@ class DaguSideExampleTest(unittest.TestCase):
 
         def handle(step, vars):
             self.assertEqual((step["action"], step["with"]["stdin"]), ("harness.run", "${CHANGE}"))
-            seen.append(dagrun._expand(step["with"]["prompt"], vars))
+            seen.append((step["name"], dagrun._expand(step["with"]["prompt"], vars)))
             if agent:
                 agent()
             return exit_code
@@ -339,20 +340,25 @@ class DaguSideExampleTest(unittest.TestCase):
         r = dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)], head=[], handle=handle, env=self.env,
                        paths={"/home/you/.github/connections.yaml": str(self.conn),
                               "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)})
-        self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n != "handle"], [], r)
+        self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n not in ("new", "update")], [], r)
+        self.assertEqual(len(seen) <= 1, True, seen)                         # 分かれた先のどちらか 1 つだけ
         return seen[0] if seen else None
 
     def test_example_runs(self):
         self.assertIsNone(self.run_dag())                                     # 初回は今ある issue を覚えるだけ
         self.gl.put(make_issue(2, labels=["todo"]))
-        prompt = self.run_dag(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
-        self.assertIn("issue #2「issue 2」に変化がありました（appeared）", prompt)
+        step, prompt = self.run_dag(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
+        self.assertEqual(step, "new")                                         # 新しい issue
+        self.assertIn("新しい issue #2「issue 2」", prompt)
         self.assertIsNone(self.run_dag())                                     # エージェント自身のコメントでは起きない
+        self.gl.comment(2, "alice", "2026-11-03T00:00:00Z")
+        step, prompt = self.run_dag()
+        self.assertEqual(step, "update")                                      # 変わった issue は別のステップ
+        self.assertIn("issue #2「issue 2」が変わりました", prompt)
         self.gl.put(make_issue(3, state="closed"))
         self.assertIsNone(self.run_dag())                                     # 条件（opened）に合わない。commit はする
-        self.assertIsNone(self.run_dag())
-        self.gl.comment(2, "alice", "2026-11-03T00:00:00Z")
-        self.assertIsNotNone(self.run_dag(exit_code=1))                       # 失敗しても commit する
+        self.gl.comment(1, "alice", "2026-11-04T00:00:00Z")
+        self.assertEqual(self.run_dag(exit_code=1)[0], "update")              # 失敗しても commit する
         self.assertIsNone(self.run_dag())
 
 
@@ -377,7 +383,7 @@ class FlowTest(_FlowBase):
         self.assertIn("- コメント +1", prompt)            # 前回処理し終えた（実行前の）状態からの差分
 
     def test_example_dag_runs(self):
-        dag = HERE.parent / "change-watch-issue-agent.yaml.example"
+        dag = HERE.parent / "examples" / "rules" / "change-watch-issue-agent.yaml.example"
         self.assertIsNone(self.run_dag(dag))                     # 初回は覚えるだけ
         self.gl.put(make_issue(2, labels=["todo"]))
         self.assertIn("issue #2", self.run_dag(dag, exit_code=1))   # 失敗も finish で記録し、

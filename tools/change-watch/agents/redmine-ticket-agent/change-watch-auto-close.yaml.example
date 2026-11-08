@@ -1,69 +1,130 @@
-# redmine-ticket-agent の Dagu のワークフロー（install.py install --agent redmine-ticket-agent が ~/.config/dagu/dags/change-watch-auto-close.yaml に、この PC のパスにして置く）。
-# 毎分起動する: fetch → evaluate（filter に当たるチケットを拾う）→ work（取り直し、まだ当たれば redmine_issue.py close）。
-# evaluate と work は取得元 redmine-my-issues のルールを全部回すので、設定にルール（条件とコメントの対）を足してもここは直さなくてよい。
-# Redmine にいつ問い合わせるかは change-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
+# redmine-ticket-agent の Dagu のワークフロー（install.py install --agent redmine-ticket-agent が
+# ~/.config/dagu/dags/change-watch-auto-close.yaml に、この PC のパスにして置く）。どのチケットを完了にするかは、ここ（Dagu）の条件で決める。
+# 毎分起動し、1 回の起動で 1 件を見る:
+#   get        前回 commit してから新しく現れた・変わったチケットを 1 件受け取る（Redmine に問い合わせるかは change-watch が決める）
+#   auto-close 「自動完了」を含むなら、コメントして完了にする        ← 条件とコメントの対は、ここに 1 ステップずつ書く
+#   duplicate  「【重複】」を含むなら、重複のコメントで完了にする
+#   commit     見終えたと記録する
+# 書き込み（完了にする）は change-watch call で送る（取得と同じ API キー・同じ要求の間隔）。.env の REDMINE_CLOSED_STATUS_ID に
+# 完了のステータスの ID を書く（Redmine の「管理」→「チケットのステータス」で確かめる）。
+# 1 つのチケットが 2 つの対に当たると両方のコメントが付くので、条件は互いに重ならないように書く。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
 # Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
-description: "redmine-my-issues を取得し、そのルールで判定して、当たったチケットを完了にする"
+description: "自分が担当する Redmine のチケットの変化を受け取り、条件に合えばコメントして完了にする"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
 dotenv:
   - "/home/you/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env"
 steps:
-  - name: fetch
+  - name: get
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--config"
         - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
-        - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
-        - "fetch"
+        - "get"
         - "--source"
         - "redmine-my-issues"
-    timeout_sec: 1020            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec（300）
+        - "--consumer"
+        - "auto-close"           # commit と同じ名前
+        - "--watch"              # 題名・説明・ステータス・担当が変わったときだけ変化にする
+        - "subject"
+        - "--watch"
+        - "description"
+        - "--watch"
+        - "status.id"
+        - "--watch"
+        - "assigned_to.id"
+        - "--initial"
+        - "emit"                 # 初めて動かしたときにあるチケットも見る
+        - "--one"
+    timeout_sec: 720
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
       interval_sec: 60
-      backoff: true
-      max_interval_sec: 600
       exit_code: [3]
-  - name: evaluate
-    depends: [fetch]
+    output: CHANGE
+  - name: auto-close
+    depends: [get]
+    preconditions:              # 条件（Dagu）: 新しく現れた・変わったチケットで、題名に「自動完了」を含む
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.subject}"
+        expected: "re:自動完了"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--config"
         - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
-        - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
-        - "evaluate"
+        - "call"
+        - "PUT"
+        - "/issues/${CHANGE.key}.json"      # / で始まる URL は接続の url に足す
         - "--source"
         - "redmine-my-issues"
-    timeout_sec: 600
+        - "--json"
+        - '{"issue": {"status_id": ${REDMINE_CLOSED_STATUS_ID}, "notes": "自動で完了にしました。"}}'
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: duplicate
+    depends: [auto-close]
+    preconditions:              # 2 つ目の対: 題名に「【重複】」を含む
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.subject}"
+        expected: "re:【重複】"
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "/issues/${CHANGE.key}.json"      # / で始まる URL は接続の url に足す
+        - "--source"
+        - "redmine-my-issues"
+        - "--json"
+        - '{"issue": {"status_id": ${REDMINE_CLOSED_STATUS_ID}, "notes": "重複のため完了にしました。"}}'
+    timeout_sec: 120
     retry_policy:
-      limit: 2
-      interval_sec: 10
-  - name: work
-    depends: [evaluate]
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [duplicate]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--config"
         - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
-        - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py"
         - "--connections"
         - "/home/you/.github/connections.yaml"
-        - "work"
+        - "commit"
         - "--source"
         - "redmine-my-issues"
-    # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない
+        - "--consumer"
+        - "auto-close"
+        - "${CHANGE.key}"
+    timeout_sec: 600

@@ -150,7 +150,7 @@ class AgentInstallTest(unittest.TestCase):
                              .read_text(encoding="utf-8"))
         step = dag["steps"][0]["with"]
         args = step["args"]
-        argv = [step["command"]] + args[:args.index("fetch")] + ["check"]     # ワークフローのとおりの argv で設定を確かめる
+        argv = [step["command"]] + args[:args.index("get")] + ["check"]     # ワークフローのとおりの argv で設定を確かめる
         p = run(argv, env=self.osenv)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("問題ありません", p.stdout + p.stderr)
@@ -180,14 +180,14 @@ class AgentInstallTest(unittest.TestCase):
         import install
         home, bin_dir = Path("C:/Users/me"), Path("C:/Users/me/AppData/Local/Programs/change-watch")
         kw = dict(windows=True, home=home, bin_dir=bin_dir, python="C:/Python311/python.exe")
-        dag = install.render((install.AGENTS / "redmine-ticket-agent" / "change-watch-auto-close.yaml.example")
+        dag = install.render((install.AGENTS / "redmine-ticket-agent" / "examples" / "rules" / "change-watch-auto-close.yaml.example")
                              .read_text(encoding="utf-8"), is_dag=True, **kw)
         self.assertNotIn("/home/you/.local/bin", dag)
         self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'
                       '        - "C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz"\n'
                       '        - "--config"\n        - "C:/Users/me/.config/change-watch/redmine-ticket-agent/change-watch.yaml"', dag)
         self.assertIn("C:/Users/me/AppData/Local/Programs/change-watch/agents/redmine-ticket-agent/redmine_issue.py", dag)
-        cfg = install.render((install.AGENTS / "redmine-ticket-agent" / "change-watch.yaml.example")
+        cfg = install.render((install.AGENTS / "redmine-ticket-agent" / "examples" / "rules" / "change-watch.yaml.example")
                              .read_text(encoding="utf-8"), is_dag=False, **kw)
         self.assertIn("          - C:/Python311/python.exe\n          - C:/Users/me/AppData/Local/Programs/change-watch/agents/", cfg)
         env = install.render((install.AGENTS / "gitlab-mr-review-agent" / "gitlab-mr-review-agent.env.example")

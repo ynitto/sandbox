@@ -1,22 +1,22 @@
 # change-watch
 
-任意の Web API（またはフォルダ）を [Dagu](https://github.com/dagu-org/dagu)（v2）の定期実行からポーリングし、レコードの追加・変更・
-条件の成立を検知して、設定した Dagu のワークフロー（DAG）へ渡す。フォルダを見るときは、ファイル 1 つが 1 件のレコードになる（「フォルダを見る」）。外から受ける口は持たず、こちらから API を見に行く。
-起動・キュー・並列数・再試行・ログ・実行履歴は Dagu に任せ、このツールは常駐しない。
-API にいつ問い合わせるかは、起動されたときに change-watch が取得元ごとに決める（取得元の `schedule`・`min_interval_sec` など。
-書かなければ起動されるたびに取得する＝Dagu の起動間隔どおり）。
+任意の Web API（またはフォルダ）へのアクセスを、[Dagu](https://github.com/dagu-org/dagu)（v2）のワークフローから受け持つ。
+どのレコードをどう処理するか（条件）はワークフローに書き、ワークフローの各ステップが change-watch を呼んで、前回処理し終えてから変わった
+レコードを受け取り（`get`）、処理し終えたら記録し（`commit`）、必要なら API へ書き込む（`call`）。フォルダを見るときは、ファイル 1 つが 1 件の
+レコードになる（「フォルダを見る」）。外から受ける口は持たず、こちらから API を見に行く。
+起動・条件の分岐・並列数・再試行・ログ・実行履歴は Dagu に任せ、このツールは常駐しない。change-watch が受け持つのは、API への問い合わせを
+まとめること: いつ問い合わせるか（取得元の `schedule`・`min_interval_sec` など。書かなければ呼ばれるたびに取得する）、同じ取得元を呼ぶ
+ワークフローがいくつあっても問い合わせを 1 回にまとめること、要求の間隔・失敗の待ち・取得結果の保存。
 
 ```
- Dagu: change-watch-<取得元>（毎分。取得するかは取得元の schedule を見て change-watch が決める）
-   fetch     API を全ページ取得して保存        ← 1 つの取得元への問い合わせは、ルールがいくつあっても 1 回
-   evaluate  保存した取得結果をルールごとに判定  ← API には問い合わせない
-   dispatch  検知した変更を DAG のキューへ入れる  ← 実行 ID = 受け渡しの ID（渡し直しても 1 回だけ実行される）
-                                 │
-                                 ▼
- Dagu: 受け渡し先の DAG（キューで並列に実行。失敗は Dagu で再試行・復旧）── 終わったら ack
- Dagu: change-watch-dispatch（毎分）  未判定の取得結果の判定・渡せなかった変更の再送
- Dagu: change-watch-maintenance（毎日） 保持期間を過ぎたものの整理
+ Dagu: <ワークフロー>（毎分。1 回の起動で 1 件）
+   get      change-watch get --source S --consumer C --one   ← 取得は取得元の予定ごとに 1 回。前回 commit してから変わったレコードを 1 件返す
+   <処理>   preconditions で ${CHANGE.record.*} を見て分ける     ← 条件は Dagu に書く。API へ書き込むなら change-watch call
+   commit   change-watch commit --source S --consumer C ${CHANGE.key}
+ Dagu: change-watch-maintenance（毎日）  保持期間を過ぎたものの整理
 ```
+
+条件も change-watch に書く形（ルール `rules` で判定し、合ったものを Dagu の DAG やコマンドへ渡す）もある（「ルールで判定するときの設定例」）。
 
 - Python 3.10 以降。YAML の設定を使うなら PyYAML（`pip install pyyaml`）。JSON の設定なら標準ライブラリだけで動く
 - Windows（ネイティブ）・WSL2・Linux で動く。状態は 1 つの SQLite ファイルに持つ
@@ -46,9 +46,7 @@ API にいつ問い合わせるかは、起動されたときに change-watch �
 
 例のワークフローも、`--plugin dagu` は `dispatch`・`reconcile` のステップにだけ付けてある。
 
-1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
-ルールを書かず、条件の判定はワークフロー（Dagu）に任せて、change-watch には API へのアクセスだけを受け持たせる形もある
-（「条件をワークフローで判定する」）。
+ルールで判定する形では、1 本のワークフローの中で取得から処理まで済ませることもできる（「1 つのワークフローで取得から処理まで」）。
 
 ### プラグインの口
 
@@ -90,7 +88,8 @@ Dagu を使わないときは、起動を cron・タスク スケジューラな
    置き場所は `--dir`。zip だけ作るなら `install.py build --out <パス>`（`python3 <パス> ...` で動く）、消すなら `install.py uninstall`
    （状態と設定は残す）。ソースの木から直接 `python3 tools/change-watch/change_watch.py ...` で動かしてもよい。
 
-2. 設定を書く。`change-watch.yaml.example` を `~/.config/change-watch/change-watch.yaml` にコピーして取得元とルールを書く。
+2. 設定を書く。`change-watch.yaml.example` を `~/.config/change-watch/change-watch.yaml` にコピーして取得元（見に行く API）を書く。
+   条件はここに書かない（ワークフローに書く）。ルールで判定する形なら `change-watch.rules.yaml.example` をコピーする。
 
    ```bash
    mkdir -p ~/.config/change-watch
@@ -124,34 +123,31 @@ Dagu を使わないときは、起動を cron・タスク スケジューラな
    change-watch --plugin dagu --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
-5. 一度手で回す。初回は今あるレコードを基準値として覚えるだけで、受け渡し先は起こさない（ルールの `initial: emit` なら起こす）。
+5. 一度手で呼んで、取得できるか確かめる。初めての consumer は今あるレコードを基準として覚えるだけで、何も返さない（`--initial emit` なら全部を返す）。
 
    ```bash
-   change-watch --plugin dagu --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run
+   change-watch --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml get --source gitlab-issues
    ```
 
    ```bash
    change-watch --config ~/.config/change-watch/change-watch.yaml status
    ```
 
-6. Dagu のワークフローを置く。`dags/` の例をコピーし、名前とパスを直す（下の「Dagu のワークフロー」）。
-   取得元ごとのワークフロー・再送のワークフロー・整理のワークフローを置く。
+6. Dagu のワークフローを置く。`dags/change-watch-get.example.yaml` をコピーし、取得元・consumer の名前と、分かれた先の条件と処理を
+   自分のものに直す（下の「条件をワークフローで判定する」）。整理のワークフローも置く。
 
    ```bash
-   cp tools/change-watch/dags/change-watch-source.example.yaml ~/.config/dagu/dags/change-watch-<取得元>.yaml
-   ```
-
-   ```bash
-   cp tools/change-watch/dags/change-watch-dispatch.example.yaml ~/.config/dagu/dags/change-watch-dispatch.yaml
+   cp tools/change-watch/dags/change-watch-get.example.yaml ~/.config/dagu/dags/change-watch-<名前>.yaml
    ```
 
    ```bash
    cp tools/change-watch/dags/change-watch-maintenance.example.yaml ~/.config/dagu/dags/change-watch-maintenance.yaml
    ```
 
-7. 受け渡し先の DAG を用意する（下の「受け渡し先の DAG」）。Dagu のスケジューラを動かせば（`dagu start-all` など）以後は自動で回る。
+7. Dagu のスケジューラを動かせば（`dagu start-all` など）以後は自動で回る。
 
-Dagu を使わないときは、6・7 の代わりに cron などから `change-watch ... run` を定期的に呼び、`delivery.adapter: command` で受け渡す（`--plugin` は要らない）。
+ルールで判定する形は、6・7 で取得元ごと・ルールごとのワークフローと受け渡し先の DAG を置く（「ルールで判定するときの設定例」）。
+Dagu を使わないときは、cron などから `change-watch ... run` を定期的に呼び、`delivery.adapter: command` で受け渡す（`--plugin` は要らない）。
 
 ### Windows で使うとき
 
@@ -173,7 +169,7 @@ python3 tools/change-watch/install.py install --agent redmine-ticket-agent
 | 置かれるもの | 場所 | 入れ直したとき |
 |---|---|---|
 | プログラム（プラグイン兼コマンドの `.py`） | `~/.local/share/change-watch/agents/<名前>/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\<名前>\`） | 新しくする |
-| 設定（`change-watch.yaml`・`<名前>.env`・プロンプト） | `~/.config/change-watch/<名前>/` | 既にあれば触らない |
+| 設定（`change-watch.yaml`・`<名前>.env`） | `~/.config/change-watch/<名前>/` | 既にあれば触らない |
 | Dagu のワークフロー（処理と、整理の `change-watch-<名前>-maintenance.yaml`） | `~/.config/dagu/dags/`（`--dagu-dir` で変える。`--no-dags` で置かない） | 既にあれば触らない |
 | 状態 | `~/.local/state/change-watch/<名前>/`（設定の `state_dir`） | — |
 
@@ -181,13 +177,100 @@ python3 tools/change-watch/install.py install --agent redmine-ticket-agent
 - 置いたワークフローと設定のパス（change-watch・プログラム・設定・接続設定 `~/.github/connections.yaml`）は、この PC のものになっている。
   Windows では、ワークフローの `command` を Python に、`args` の先頭を `change-watch.pyz` にして置く。作業フォルダなど自分で決めるものは
   `/home/you` のまま残し、インストールの最後に「自分のものに直すところ」として出す
+- 置かれるワークフローは「条件をワークフローで判定する」形。条件はワークフローの `preconditions` に書いてあり、直すならそこを直す。
+  ルールで判定する形の例は `agents/<名前>/examples/rules/` にある
 - 新しい版の雛形を見たいときは、置いた設定を別名にしてから入れ直すか、`agents/<名前>/` の `.example` と見比べる
 - 消すときは `install.py uninstall --agent <名前>`（プログラムだけを消し、設定・状態・ワークフローは残す）
 
 使い方は各エージェントの README の「入れ方」にある。
 
-## Dagu での設定例
+## 条件をワークフローで判定する（`get` / `commit` / `call`）
 
+ルール（`rules`）を書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形。
+change-watch が受け持つのは、取得をまとめること（取得元の `schedule`・`min_interval_sec`・`busy_wait_sec`・失敗の待ち・`rate_limit`。同じ取得元を
+呼ぶワークフローがいくつあっても、問い合わせはまとまる）と、「前回処理し終えてから変わったレコード」を返すこと、それに書き込みを同じ接続・
+同じ要求の間隔で送ること。
+
+```
+ Dagu: <ワークフロー>（毎分。1 回の起動で 1 件）
+   get      change-watch get --source S --consumer C --one   → output: CHANGE（前回 commit してから変わったレコード 1 件）
+   <処理>   preconditions で ${CHANGE.record.*} を見て、合えば処理する   ← 条件は Dagu に書く
+   commit   change-watch commit --source S --consumer C ${CHANGE.key}
+```
+
+| コマンド | すること | 標準出力 |
+|---|---|---|
+| `get --source S` | 取得して（するかは取得元の予定・間隔で決める）、レコードを出す。取得が失敗しても前回までの取得結果で答える | JSON の配列 |
+| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
+| `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない） | — |
+| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON |
+
+変化は `{"key", "kind", "record", "before", "changes"}` の形。`kind` は `appeared`（新しく現れた）・`changed`（`--watch` の項目が変わった）・
+`removed`（一覧から消えた）、`record` は今のレコード（`removed` なら最後の姿）、`before` は前回 `commit` したときの姿（`changed` のときだけ）、
+`changes` は変わった項目。Dagu では `${CHANGE.record.state}` のように中の値を条件に使える。
+
+- consumer はワークフローごとに名前を付ける。consumer ごとに別々に変化を受け取るので、同じ取得元を複数のワークフローで使っても互いに邪魔しない
+- 取得元に `key` が要る。取得条件・認証を変えたら（取得元の指紋が変わったら）、consumer の基準も取り直す
+- 失敗した処理も commit まで進める（分かれた先に `continue_on.failure`）。やり直しは Dagu の `retry_policy` に任せ、尽きたら Dagu の履歴に失敗として残る。
+  commit しないでおくと、次の起動でも同じ変化が返り、毎分やり直し続ける
+- 処理の中で自分が書き込む（コメントを付けるなど）なら `commit --refresh` にする。書き込んだ後の姿を基準にするので、自分の書き込みを次の変化にしない
+- エージェントの例（インストーラが置くもの）も、どれもこの形（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
+  [gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
+
+### 条件で分けるワークフローの例
+
+`dags/change-watch-get.example.yaml`。取得元 `items` の `status` が変わったレコードを 1 件受け取り、`urgent` ならスクリプトを動かし、
+`done` になったら `call` で API に書き込み、最後に commit する（抜粋）。
+
+```yaml
+schedule: "* * * * *"
+type: graph
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args: [--connections, /home/you/.github/connections.yaml, get, --source, items,
+             --consumer, triage, --watch, status, --one]
+    retry_policy: { limit: 3, interval_sec: 60, exit_code: [3] }   # 一時的な失敗（終了コード 3）だけ再試行する
+    output: CHANGE
+  - name: urgent
+    depends: [get]
+    preconditions:                       # 条件は Dagu に書く
+      - condition: "${CHANGE.record.status}"
+        expected: "urgent"
+    continue_on: { skipped: true, failure: true }   # 合わなくても、失敗しても commit へ進む
+    action: exec
+    with: { command: python3, args: [/path/to/urgent.py, "${CHANGE}"] }
+  - name: archive
+    depends: [urgent]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "changed"
+      - condition: "${CHANGE.record.status}"
+        expected: "done"
+    continue_on: { skipped: true, failure: true }
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args: [--connections, /home/you/.github/connections.yaml, call, POST, "/items/${CHANGE.key}/archive",
+             --source, items, --json, '{"reason": "done"}']
+  - name: commit
+    depends: [archive]
+    preconditions:                       # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args: [--connections, /home/you/.github/connections.yaml, commit, --source, items, --consumer, triage, "${CHANGE.key}"]
+```
+
+
+
+## ルールで判定するときの設定例
+
+条件も change-watch の設定（ルール `rules`）に書き、合った変化を Dagu の DAG へ渡す形。設定の全体は `change-watch.rules.yaml.example`。
 GitLab の issue を 10 分ごとに見て、新しい issue・状態やラベルの変化を `issue-handler` という DAG へ渡す例。
 Linux・WSL2 のパスで書く（Windows は最後の「Windows のとき」）。Dagu の設定と DAG の置き場所は Dagu の既定
 （`~/.config/dagu/config.yaml`・`~/.config/dagu/dags/`）にしている。
@@ -385,8 +468,10 @@ dagu:
 
 ### Windows のとき
 
-Windows（ネイティブ）で、フォルダに置かれたファイルをその場でスクリプトに渡し、GitLab の issue の変化を Dagu の DAG へ渡す例。
-設定の全体は `change-watch.windows.yaml.example`。`you` は自分のユーザー名に直す。
+Windows（ネイティブ）で、フォルダに置かれたファイルをその場でスクリプトに渡し、GitLab の issue の変化を Dagu の DAG へ渡す例（ルールで判定する形）。
+取得元の書き方は `change-watch.windows.yaml.example` にあり、ここではそれにルールと受け渡しを足す。`you` は自分のユーザー名に直す。
+条件をワークフローで判定する形なら、`change-watch.windows.yaml.example` をそのまま使い、`dags/change-watch-get.example.yaml` の
+`command` を `python` に、`args` の先頭を `change-watch.pyz` のフルパスにする。
 
 | もの | 置き場所 |
 |---|---|
@@ -682,36 +767,6 @@ change-watch は実行の前後だけを受け持ち、処理そのもの（エ�
 - `rate_limit.min_interval_sec`・`per_minute` を group の全部の要求で数える（group の中では同じ値を書く。違えば設定の誤り）
 - どれかの取得が失敗したら、group の全部が `failure_backoff_sec` のあいだ問い合わせない
 
-## 条件をワークフローで判定する（`get` / `commit` / `call`）
-
-ルール（`rules`）を書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形。
-change-watch が受け持つのは、取得をまとめること（取得元の `schedule`・`min_interval_sec`・`busy_wait_sec`・失敗の待ち・`rate_limit`。同じ取得元を
-呼ぶワークフローがいくつあっても、問い合わせはまとまる）と、「前回処理し終えてから変わったレコード」を返すこと、それに書き込みを同じ接続・
-同じ要求の間隔で送ること。
-
-```
- Dagu: <ワークフロー>（毎分。1 回の起動で 1 件）
-   get      change-watch get --source S --consumer C --one   → output: CHANGE（前回 commit してから変わったレコード 1 件）
-   <処理>   preconditions で ${CHANGE.record.*} を見て、合えば処理する   ← 条件は Dagu に書く
-   commit   change-watch commit --source S --consumer C ${CHANGE.key}
-```
-
-| コマンド | すること | 標準出力 |
-|---|---|---|
-| `get --source S` | 取得して（するかは取得元の予定・間隔で決める）、レコードを出す。取得が失敗しても前回までの取得結果で答える | JSON の配列 |
-| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
-| `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない） | — |
-| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON |
-
-変化は `{"key", "kind", "record", "before", "changes"}` の形。`kind` は `appeared`（新しく現れた）・`changed`（`--watch` の項目が変わった）・
-`removed`（一覧から消えた）、`record` は今のレコード（`removed` なら最後の姿）、`before` は前回 `commit` したときの姿（`changed` のときだけ）、
-`changes` は変わった項目。Dagu では `${CHANGE.record.state}` のように中の値を条件に使える。
-
-- consumer はワークフローごとに名前を付ける。consumer ごとに別々に変化を受け取るので、同じ取得元を複数のワークフローで使っても互いに邪魔しない
-- 取得元に `key` が要る。取得条件・認証を変えたら（取得元の指紋が変わったら）、consumer の基準も取り直す
-- エージェントごとの例は、各エージェントの `examples/dagu/`（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
-  [gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
-
 ## 設定
 
 ### 取得元（sources）
@@ -925,6 +980,7 @@ change-watch を動かす Dagu のワークフローは、`dags/` の例をコ�
 
 | 例 | 置く名前 | 使うとき | ステップ |
 |---|---|---|---|
+| `change-watch-get.example.yaml` | `change-watch-<名前>.yaml` | 条件をワークフローで判定する（ルールを書かない） | get → 条件で分かれた処理 → commit |
 | `change-watch-source.example.yaml` | `change-watch-<取得元>.yaml` | `workflow` の受け渡し先（Dagu の DAG へ渡す）を持つルールがある | fetch → evaluate → dispatch |
 | `change-watch-rule.example.yaml` | `change-watch-<ルール>.yaml` | `command` の受け渡し先を持つルール | fetch → evaluate → work |
 | `change-watch-external.example.yaml` | `change-watch-<ルール>.yaml` | `external` の受け渡し先を持つルール | fetch → evaluate → claim → render → handle → finish |

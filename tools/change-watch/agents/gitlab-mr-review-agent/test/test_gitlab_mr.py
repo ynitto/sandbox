@@ -646,13 +646,13 @@ class FlowTest(_GitLabBase):
         super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        cfg = yaml.safe_load((ROOT / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "examples" / "rules" / "change-watch.yaml.example").read_text(encoding="utf-8"))
         cfg["state_dir"] = str(self.tmp / "state")
         src = cfg["sources"]["gitlab-mrs"]
         src.pop("schedule")
         src.update(jitter_sec=0, failure_backoff_sec=0, retry={"attempts": 1})
         tgt = cfg["rules"]["mr-review"]["targets"][0]
-        tgt.update(input_template=str(ROOT / "prompt.md.example"), retry_backoff_sec=0)
+        tgt.update(input_template=str(ROOT / "examples" / "rules" / "prompt.md.example"), retry_backoff_sec=0)
         self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.json"
@@ -792,7 +792,7 @@ class FlowTest(_GitLabBase):
         """例の Dagu のワークフローを Dagu と同じ順で本物の change-watch に流す（kiro-cli の代わりにテストがレビューする）。"""
         sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
-        dag = ROOT / "change-watch-mr-review.yaml.example"
+        dag = ROOT / "examples" / "rules" / "change-watch-mr-review.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         self.gl.put(make_mr(1))
         prompts: list[str] = []
@@ -823,11 +823,11 @@ class FlowTest(_GitLabBase):
             "/home/you/.github/connections.yaml": str(self.conn),
             "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
-    def test_dagu_side_example(self):
-        """examples/dagu/: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
+    def test_default_example(self):
+        """既定の例: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
         sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
-        d = ROOT / "examples" / "dagu"
+        d = ROOT
         cfg = yaml.safe_load((d / "change-watch.yaml.example").read_text(encoding="utf-8"))
         self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
         cfg["state_dir"] = str(self.tmp / "state-dagu")

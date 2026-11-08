@@ -15,8 +15,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `--consumer` なら C が前回 `commit` してから変わったレコード（`key`・`kind`・`record`・`before`・`changes`）。`--watch`・`--initial`・`--one`
 - `commit --source S --consumer C KEY… [--refresh]`: 処理し終えたと記録する。`--refresh` は取得元の新しい項目 `item`（1 件を取り直す要求）を使う
 - `call METHOD URL --source S [--json …]`: 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ（書き込みにも使える。GET 以外は自分では再試行しない）
-- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent に、この形の Dagu のワークフローと設定の例（`examples/dagu/`）を足す。
-  インストーラが置くものは変えない
+- 設定の例をこの形にする。`change-watch.yaml.example`・`change-watch.windows.yaml.example` は取得元だけ（ルールなし）にし、
+  ルールで判定する形の例は `change-watch.rules.yaml.example` に移す。条件で分けるワークフローの例 `dags/change-watch-get.example.yaml` を足す
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent のインストーラが置く設定とワークフローをこの形にする。条件はワークフローの
+  `preconditions` に書く（gitlab-issue-agent は新しい issue と変わった issue で分け、redmine-ticket-agent は条件とコメントの対をステップに分ける）。
+  プロンプトはワークフローの `prompt` に書く。ルールで判定する形の例（とプロンプト）は各エージェントの `examples/rules/` に移す。
+  既に入れた設定とワークフローは上書きしないので、そのまま動く
 
 ### change-watch: エージェントを `tools/change-watch/agents/` にまとめ、インストーラで同じ場所に入れる（0.5.0）
 
