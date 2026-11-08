@@ -50,8 +50,36 @@ def _parse_literal(text: str) -> Any:
         return text
 
 
+def _split_pipes(expr: str) -> list[str]:
+    """`|` で区切る。引用符（" または '）の中の `|` は区切りにしない（| default: "a|b" と書けるように）。"""
+    parts: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(expr):
+        c = expr[i]
+        if quote:
+            buf.append(c)
+            if c == "\\" and quote == '"' and i + 1 < len(expr):
+                i += 1
+                buf.append(expr[i])
+            elif c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+            buf.append(c)
+        elif c == "|":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(c)
+        i += 1
+    parts.append("".join(buf))
+    return [p.strip() for p in parts]
+
+
 def evaluate(expr: str, ctx: dict) -> Any:
-    parts = [p.strip() for p in expr.split("|")]
+    parts = _split_pipes(expr)
     value = _lookup(ctx, parts[0])
     for f in parts[1:]:
         name, _, arg = f.partition(":")
@@ -108,7 +136,7 @@ def references(value: Any) -> list[str]:
     """値の中で参照している式の一覧（検査用）。"""
     out: list[str] = []
     if isinstance(value, str):
-        out.extend(m.group(1).split("|")[0].strip() for m in _EXPR.finditer(value))
+        out.extend(_split_pipes(m.group(1))[0] for m in _EXPR.finditer(value))
     elif isinstance(value, list):
         for v in value:
             out.extend(references(v))

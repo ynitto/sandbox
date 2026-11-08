@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: 設定の `{{ x | default: "a|b" }}` のように、引用符の中の `|` でフィルタが分かれてしまうのを直す（0.6.1）
+
+- フィルタの引数の引用符（`"` `'`）の中にある `|` を区切りと見なさない。以前は「知らないフィルタです」で止まっていた
+
 ### change-watch: 条件をワークフローで判定する形（`get`・`commit`・`call`）を足す（0.6.0）
 
 - ルールを書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形を足す。
