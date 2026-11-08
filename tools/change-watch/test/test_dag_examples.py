@@ -37,11 +37,44 @@ class DagExampleTest(unittest.TestCase):
     def test_every_example_has_the_right_shape(self):
         names = sorted(p.name for p in DAGS.glob("change-watch-*.example.yaml"))
         self.assertEqual(names, ["change-watch-dispatch.example.yaml", "change-watch-external.example.yaml",
+                                 "change-watch-get.example.yaml",
                                  "change-watch-handler.example.yaml", "change-watch-maintenance.example.yaml",
                                  "change-watch-rule.example.yaml", "change-watch-source.example.yaml"])
         for n in names:
             with self.subTest(n):
                 dagrun.check_shape(self, dagrun.load(DAGS / n), n)
+
+    def test_get_branches_in_dagu(self):
+        """change-watch-get: 条件は Dagu が判定し、change-watch は get / call / commit だけ。"""
+        handler = self.env.tmp / "h.py"
+        handler.write_text("import json, sys\nc = json.loads(sys.argv[2])\n"
+                           "open(sys.argv[1], 'a').write(c['key'] + ' ' + c['record']['status'] + '\\n')\n", encoding="utf-8")
+        self.env.write_config({"items": self.env.source("/all", key="id")}, {}, delivery=None)
+        self.env.api.put(1, status="open")
+
+        import yaml
+        dag = yaml.safe_load((DAGS / "change-watch-get.example.yaml").read_text(encoding="utf-8"))
+        for s in dag["steps"]:
+            if s["with"]["command"] == "python3":
+                s["with"]["command"] = sys.executable
+                s["with"]["args"] = [str(handler), str(self.log)] + s["with"]["args"][1:]
+        path = self.env.tmp / "change-watch-get.yaml"
+        path.write_text(yaml.safe_dump(dag, allow_unicode=True), encoding="utf-8")
+
+        def run():
+            return dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.env.config_path)],
+                              paths={"/home/you/.github/connections.yaml": str(self.env.conn_file)})
+        self.assertEqual(run(), {"get": 0, "urgent": None, "normal": None, "archive": None, "commit": None})  # 初回は覚えるだけ
+        self.env.api.put(2, status="urgent")
+        self.env.api.put(3, status="open")
+        self.assertEqual(run(), {"get": 0, "urgent": 0, "normal": None, "archive": None, "commit": 0})
+        self.assertEqual(run(), {"get": 0, "urgent": None, "normal": 0, "archive": None, "commit": 0})
+        self.env.api.put(1, status="done")
+        self.assertEqual(run(), {"get": 0, "urgent": None, "normal": None, "archive": 0, "commit": 0})
+        self.assertEqual(self.env.api.items[1]["status"], "archived")                 # call で書き込んだ
+        self.assertEqual(self.log.read_text(encoding="utf-8").split("\n")[:2], ["2 urgent", "3 open"])
+        run()                                                                        # 書き込んだ分（archived）を見終える
+        self.assertEqual(run()["commit"], None)
 
     def test_source_dispatch_and_maintenance(self):
         self.write({"r": {"source": "items", "id": "id", "watch": ["status"], "targets": ["handler"]}})

@@ -122,13 +122,14 @@ class SourceSpec:
     resume_max_age_sec: float
     lease_sec: float
     folder: foldermod.FolderSpec | None = None   # フォルダの取得元（request の代わり）。レコードはファイル 1 件ずつ
+    item: "RefreshSpec | None" = None            # レコードを 1 件取り直す要求（commit --refresh。{{ key }} が使える）
 
     def fingerprint(self, conn: dict | None) -> str:
         """取得条件・認証の指紋。変わったら別のデータとして扱い、過去の取得結果や位置を使わない。"""
         cfg = {k: v for k, v in self.raw.items()
                if k not in ("schedule", "min_interval_sec", "jitter_sec", "busy_wait_sec", "failure_backoff_sec",
                             "failure_max_backoff_sec", "rate_limit", "retry",
-                            "resume", "resume_max_age_sec", "lease_sec", "conditional", "description")}
+                            "resume", "resume_max_age_sec", "lease_sec", "conditional", "description", "item")}
         cred = sha(canonical(conn), 32) if conn else None
         return sha(canonical({"cfg": cfg, "conn": list(self.connection) if self.connection else None, "cred": cred}), 32)
 
@@ -337,11 +338,11 @@ def _source(name: str, d: Any, base: Path | None = None) -> SourceSpec:
     _known(d, {"description", "connection", "request", "folder", "records", "key", "pagination", "incremental", "schedule",
                "min_interval_sec", "jitter_sec", "busy_wait_sec", "failure_backoff_sec", "failure_max_backoff_sec",
                "rate_limit", "retry", "conditional", "resume",
-               "resume_max_age_sec", "lease_sec"}, where)
+               "resume_max_age_sec", "lease_sec", "item"}, where)
     fold = None
     if "folder" in d:
         _expect("request" not in d, f"{where}: request（API）と folder（フォルダ）はどちらか一方にしてください")
-        for k in ("connection", "records", "key", "pagination", "incremental", "conditional", "rate_limit", "retry"):
+        for k in ("connection", "records", "key", "pagination", "incremental", "conditional", "rate_limit", "retry", "item"):
             _expect(k not in d, f"{where}.{k}: folder の取得元には書けません")
         fold = foldermod.parse(d["folder"], f"{where}.folder", base or Path.cwd())
         d = dict(d, request={"method": "LIST", "url": str(fold.path)}, key=foldermod.KEY)
@@ -405,6 +406,7 @@ def _source(name: str, d: Any, base: Path | None = None) -> SourceSpec:
         resume_max_age_sec=_num(d, "resume_max_age_sec", 3600, where),
         lease_sec=_num(d, "lease_sec", 300, where, 10),
         folder=fold,
+        item=_refresh(d.get("item"), f"{where}.item", names=("key", "conn", "env")),
     )
 
 
@@ -480,7 +482,7 @@ def _checks(v: Any, where: str) -> list:
     return out
 
 
-def _refresh(d: Any, where: str) -> RefreshSpec | None:
+def _refresh(d: Any, where: str, names: tuple[str, ...] = ("event", "conn", "env")) -> RefreshSpec | None:
     if d is None:
         return None
     _expect(isinstance(d, dict) and isinstance(d.get("url"), str),
@@ -493,8 +495,8 @@ def _refresh(d: Any, where: str) -> RefreshSpec | None:
     records = d.get("records", "$")
     jpath.parse(records)
     for ref in template.references([d["url"], headers or {}, query]):
-        _expect(ref.split(".")[0] in ("event", "conn", "env"),
-                f"{where}: 使えるのは event.* / conn.* / env.* です: {ref}")
+        _expect(ref.split(".")[0] in names,
+                f"{where}: 使えるのは {' / '.join(n + '.*' if n != 'key' else n for n in names)} です: {ref}")
     t = d.get("timeout_sec")
     return RefreshSpec(method=str(d.get("method", "GET")).upper(), url=d["url"], headers=headers, query=query,
                        records=records, timeout_sec=None if t is None else _num(d, "timeout_sec", 30, where, 1))

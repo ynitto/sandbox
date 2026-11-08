@@ -20,7 +20,7 @@ from . import folder, jpath, template
 from .config import Config, SourceSpec
 from .httpclient import Client, Request, build_url
 from .store import Store
-from .util import (REDACT, PermanentError, TransientError, canonical, is_secret_name, key_string, log, now, pack, sha,
+from .util import (REDACT, ConfigError, PermanentError, TransientError, canonical, is_secret_name, key_string, log, now, pack, sha,
                    unpack)
 
 
@@ -388,6 +388,48 @@ class Fetcher:
         except (TransientError, PermanentError) as e:
             self._cool_down(src, REDACT(str(e)), getattr(e, "retry_after", None))
             raise
+
+    def call(self, src: SourceSpec, method: str, url: str, body: Any = None, query: dict | None = None,
+             headers: dict | None = None) -> tuple[int, Any]:
+        """取得元の接続（認証）で API を 1 回呼ぶ（call。書き込みにも使う）。(HTTP の状態, 本文の JSON か None) を返す。
+
+        url・query・headers は取得元と同じテンプレート（{{ conn.* }}・{{ env.* }}）。相対の url は取得元の接続の url に足す。
+        要求の間隔・1 分あたりの上限・失敗の待ちは取得元（と rate_limit.group）と分け合う。GET 以外は二重に書かないよう
+        自分では再試行しない（再試行はワークフローに任せる）。"""
+        conn = self.cfg.resolve_connection(src.connection)
+        cooling = self._cooling(src, src.fingerprint(conn))
+        if cooling:
+            raise Deferred(cooling.message)
+        ctx = self._context(src, conn, None)
+        hdrs = {str(k): str(v) for k, v in template.render(src.headers, ctx).items() if v is not None}
+        hdrs.update({str(k): str(v) for k, v in (headers or {}).items()})
+        for k, v in hdrs.items():
+            if is_secret_name(k) or k.lower() in ("authorization", "cookie"):
+                REDACT.add(v)
+                if " " in v:
+                    REDACT.add(v.split(" ", 1)[1])
+        target = str(template.render(url, ctx))
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target):
+            base = str((conn or {}).get("url") or "")
+            if not base:
+                raise ConfigError(f"相対の URL です: {target}（取得元の接続に url が無いので、絶対の URL を書いてください）")
+            target = base.rstrip("/") + "/" + target.lstrip("/")
+        data = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            hdrs.setdefault("Content-Type", "application/json")
+        req = Request(method=method.upper(), url=build_url(target, dict(template.render(query or {}, ctx))),
+                      headers=hdrs, body=data, timeout=src.timeout_sec)
+        client = self._client(src)
+        if req.method not in ("GET", "HEAD"):
+            client.attempts = 1
+        try:
+            resp = client.send(req, ok_status=(200, 201, 202, 203, 204))
+        except (TransientError, PermanentError) as e:
+            if isinstance(e, TransientError):
+                self._cool_down(src, REDACT(str(e)), getattr(e, "retry_after", None))
+            raise
+        return resp.status, (resp.json() if resp.body else None)
 
     def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
         """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。"""

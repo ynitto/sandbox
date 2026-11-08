@@ -15,6 +15,8 @@
     handled_records 受け渡し先（refresh のある command）× レコードの、最後に処理し終えた状態
     events          検知した変更（ルール × レコード × 取得 で 1 件）
     deliveries      イベント × 受け渡し先 ごとの受け渡し状態
+    consumers       get --consumer で変化を受け取るワークフローごとの基準（取得元の世代）
+    consumer_records consumer × レコードの、commit で処理し終えたと記録した姿
     leases          取得・判定の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
 """
 from __future__ import annotations
@@ -170,6 +172,21 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS deliveries_key ON deliveries(rule, target, rkey, seq);
+CREATE TABLE IF NOT EXISTS consumers (   -- get --consumer で変化を受け取るワークフロー（Dagu 側）ごとの基準
+    consumer TEXT NOT NULL,
+    source TEXT NOT NULL,
+    epoch INTEGER NOT NULL,     -- 取得元の epoch。変わったら（取得条件が変わったら）基準を取り直す
+    created_at REAL NOT NULL,
+    PRIMARY KEY (consumer, source)
+);
+CREATE TABLE IF NOT EXISTS consumer_records (   -- consumer が commit で「処理し終えた」と記録したレコードの姿
+    consumer TEXT NOT NULL,
+    source TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    data BLOB NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (consumer, source, rkey)
+);
 CREATE TABLE IF NOT EXISTS leases (
     name TEXT PRIMARY KEY,
     owner TEXT NOT NULL,

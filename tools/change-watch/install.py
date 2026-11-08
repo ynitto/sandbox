@@ -27,8 +27,8 @@ agents/ の下のエージェント（change-watch の上で動くもの）も�
 
 使い方（入れたあと）:
 
-    change-watch --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml run
-    change-watch --plugin dagu --connections ... fetch --source <取得元>   （Dagu のワークフローの例は dags/*.example.yaml）
+    change-watch --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml get --source <取得元>
+    （Dagu のワークフローの例は dags/*.example.yaml。条件をワークフローで判定する形は dags/change-watch-get.example.yaml）
 
 標準ライブラリだけで動く。
 """

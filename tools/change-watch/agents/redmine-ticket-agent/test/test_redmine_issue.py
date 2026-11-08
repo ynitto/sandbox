@@ -24,7 +24,7 @@ except ImportError:      # pragma: no cover
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "redmine_issue.py"
-EXAMPLE = HERE.parent / "change-watch.yaml.example"
+EXAMPLE = HERE.parent / "examples" / "rules" / "change-watch.yaml.example"
 CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("redmine_issue", PLUGIN)
 ri = importlib.util.module_from_spec(spec)
@@ -377,7 +377,7 @@ class FlowTest(unittest.TestCase):
         sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
         self.rm.put(make_issue(1, "【自動完了】ログの整理"))
-        dag = HERE.parent / "change-watch-auto-close.yaml.example"
+        dag = HERE.parent / "examples" / "rules" / "change-watch-auto-close.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         r = dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
                        paths={"/home/you/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py": str(PLUGIN),
@@ -390,6 +390,52 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
             "/home/you/.github/connections.yaml": str(self.conn),
             "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
+
+
+class DefaultExampleTest(unittest.TestCase):
+    """既定の例: 条件は Dagu の preconditions が判定し、change-watch は get / call / commit だけを受け持つ形。"""
+
+    def setUp(self):
+        if yaml is None:
+            self.skipTest("例の設定・DAG を読むのに PyYAML が要る")
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
+        self.tmp = Path(tempfile.mkdtemp())
+        self.rm = FakeRedmine()
+        self.addCleanup(self.rm.close)
+        d = HERE.parent
+        cfg = yaml.safe_load((d / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
+        cfg["state_dir"] = str(self.tmp / "state")
+        src = cfg["sources"]["redmine-my-issues"]
+        for k in ("schedule", "jitter_sec"):
+            src.pop(k)
+        src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        self.cfg = self.tmp / "change-watch.yaml"
+        self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        self.conn = self.tmp / "connections.yaml"
+        self.conn.write_text("redmine:\n  - label: default\n    url: ${REDMINE_URL}\n    token: ${REDMINE_API_KEY}\n",
+                             encoding="utf-8")
+        self.env = {**os.environ, "REDMINE_URL": self.rm.url, "REDMINE_API_KEY": KEY, "REDMINE_CLOSED_STATUS_ID": "5"}
+        self.dag = d / "change-watch-auto-close.yaml.example"
+
+    def run_dag(self) -> dict:
+        import dagrun
+        dagrun.check_shape(self, dagrun.load(self.dag), self.dag.name)
+        return dagrun.run(self.dag, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env,
+                          paths={"/home/you/.github/connections.yaml": str(self.conn),
+                                 "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml": str(self.cfg)})
+
+    def test_closes_matching_tickets_once(self):
+        self.rm.put(make_issue(1, "【自動完了】ログの整理"))
+        self.rm.put(make_issue(2, "【重複】ログの整理"))
+        self.rm.put(make_issue(3, "ふつうのチケット"))
+        self.assertEqual(self.run_dag(), {"get": 0, "auto-close": 0, "duplicate": None, "commit": 0})
+        runs = [self.run_dag() for _ in range(5)]                        # 1 回の起動で 1 件（完了にして一覧から消えた分も見る）
+        self.assertIn({"get": 0, "auto-close": None, "duplicate": 0, "commit": 0}, runs)
+        self.assertEqual(runs[-1]["commit"], None)                       # 見終えたら、もう何もしない
+        self.assertEqual(self.rm.notes, {1: ["自動で完了にしました。"], 2: ["重複のため完了にしました。"]})
+        self.assertEqual({i: self.rm.issues[i]["status"]["id"] for i in (1, 2, 3)}, {1: 5, 2: 5, 3: 1})
+        self.assertEqual(len(self.rm.puts), 2)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent / "gitlab_issue.py"
-PROMPT = HERE.parent / "prompt.md.example"
+PROMPT = HERE.parent / "examples" / "rules" / "prompt.md.example"
 CHANGE_WATCH = HERE.parents[2] / "change_watch.py"   # tools/change-watch/agents/<エージェント>/test
 spec = importlib.util.spec_from_file_location("gitlab_issue", PLUGIN)
 gi = importlib.util.module_from_spec(spec)
@@ -294,6 +294,74 @@ class _FlowBase(unittest.TestCase):
         return seen[0] if seen else None
 
 
+class DefaultExampleTest(unittest.TestCase):
+    """既定の例: 条件は Dagu の preconditions が判定し（新しい issue と変わった issue で分ける）、change-watch は get / commit だけ。"""
+
+    DIR = HERE.parent
+
+    def setUp(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("例の設定・DAG を読むのに PyYAML が要る")
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
+        self.tmp = Path(tempfile.mkdtemp())
+        self.gl = FakeGitLab()
+        self.addCleanup(self.gl.close)
+        self.gl.put(make_issue(1))
+        self.conn = self.tmp / "connections.json"
+        self.conn.write_text(json.dumps({"gitlab": [{"label": "default", "url": self.gl.url, "token": "t0ken"}]}),
+                             encoding="utf-8")
+        cfg = yaml.safe_load((self.DIR / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        self.assertNotIn("rules", cfg)                     # 条件は change-watch に書かない
+        cfg["state_dir"] = str(self.tmp / "aw-state")
+        src = cfg["sources"]["gitlab-issues"]
+        for k in ("schedule", "jitter_sec", "busy_wait_sec"):  # 試験ではいつでも取得する
+            src.pop(k)
+        src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        self.cfg = self.tmp / "change-watch.json"
+        self.cfg.write_text(json.dumps(cfg), encoding="utf-8")
+        self.env = {**os.environ, "GITLAB_PROJECT": "g/p"}
+
+    def run_dag(self, agent=None, exit_code: int = 0) -> tuple[str, str] | None:
+        """1 回の起動。エージェントを動かしたら (ステップの名前, プロンプト)。"""
+        import dagrun
+        path = self.DIR / "change-watch-issue-agent.yaml.example"
+        dagrun.check_shape(self, dagrun.load(path), path.name)
+        seen = []
+
+        def handle(step, vars):
+            self.assertEqual((step["action"], step["with"]["stdin"]), ("harness.run", "${CHANGE}"))
+            seen.append((step["name"], dagrun._expand(step["with"]["prompt"], vars)))
+            if agent:
+                agent()
+            return exit_code
+
+        r = dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)], head=[], handle=handle, env=self.env,
+                       paths={"/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)})
+        self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n not in ("new", "update")], [], r)
+        self.assertEqual(len(seen) <= 1, True, seen)                         # 分かれた先のどちらか 1 つだけ
+        return seen[0] if seen else None
+
+    def test_example_runs(self):
+        self.assertIsNone(self.run_dag())                                     # 初回は今ある issue を覚えるだけ
+        self.gl.put(make_issue(2, labels=["todo"]))
+        step, prompt = self.run_dag(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
+        self.assertEqual(step, "new")                                         # 新しい issue
+        self.assertIn("新しい issue #2「issue 2」", prompt)
+        self.assertIsNone(self.run_dag())                                     # エージェント自身のコメントでは起きない
+        self.gl.comment(2, "alice", "2026-11-03T00:00:00Z")
+        step, prompt = self.run_dag()
+        self.assertEqual(step, "update")                                      # 変わった issue は別のステップ
+        self.assertIn("issue #2「issue 2」が変わりました", prompt)
+        self.gl.put(make_issue(3, state="closed"))
+        self.assertIsNone(self.run_dag())                                     # 条件（opened）に合わない。commit はする
+        self.gl.comment(1, "alice", "2026-11-04T00:00:00Z")
+        self.assertEqual(self.run_dag(exit_code=1)[0], "update")              # 失敗しても commit する
+        self.assertIsNone(self.run_dag())
+
+
 @unittest.skipUnless(CHANGE_WATCH.is_file(), "change-watch が無い")
 class FlowTest(_FlowBase):
     def test_new_issue_runs_once_and_own_comment_does_not_retrigger(self):
@@ -315,7 +383,7 @@ class FlowTest(_FlowBase):
         self.assertIn("- コメント +1", prompt)            # 前回処理し終えた（実行前の）状態からの差分
 
     def test_example_dag_runs(self):
-        dag = HERE.parent / "change-watch-issue-agent.yaml.example"
+        dag = HERE.parent / "examples" / "rules" / "change-watch-issue-agent.yaml.example"
         self.assertIsNone(self.run_dag(dag))                     # 初回は覚えるだけ
         self.gl.put(make_issue(2, labels=["todo"]))
         self.assertIn("issue #2", self.run_dag(dag, exit_code=1))   # 失敗も finish で記録し、
@@ -366,63 +434,89 @@ class FlowTest(_FlowBase):
 
 EXAMPLE = HERE.parent / "examples" / "gitlab-idd"
 try:
-    import yaml  # noqa: F401
+    import yaml
     HAVE_YAML = True
 except ImportError:
     HAVE_YAML = False
 
 
 @unittest.skipUnless(CHANGE_WATCH.is_file() and HAVE_YAML, "change-watch か PyYAML が無い")
-class IddExampleTest(_FlowBase):
-    """設定の例をそのまま使い、gitlab-idd のロールが入れ替わりながら 1 つのイシューが進むことを確かめる。"""
+class IddExampleTest(unittest.TestCase):
+    """設定とワークフローの例をそのまま使い、Dagu の条件（ラベル）でワーカーとレビュアーに分かれながら 1 つのイシューが進むことを確かめる。"""
 
-    def write_config(self, projects=None):
-        self.cfg = self.tmp / "change-watch.yaml"
-        self.cfg.write_text((EXAMPLE / "change-watch.yaml.example").read_text(encoding="utf-8"), encoding="utf-8")
-        (self.tmp / "idd.prompt.md").write_text((EXAMPLE / "idd.prompt.md.example").read_text(encoding="utf-8"),
-                                                encoding="utf-8")
+    def setUp(self):
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
+        self.tmp = Path(tempfile.mkdtemp())
+        self.gl = FakeGitLab()
+        self.addCleanup(self.gl.close)
+        self.gl.put(make_issue(1))
+        self.conn = self.tmp / "connections.json"
         self.conn.write_text(json.dumps({"gitlab": [{"label": "watch", "url": self.gl.url, "token": "t0ken"},
                                                     {"label": "default", "url": self.gl.url + "/g/p", "token": "t0ken"}]}),
                              encoding="utf-8")
+        cfg = yaml.safe_load((EXAMPLE / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        self.assertNotIn("rules", cfg)                     # 絞り込みと分岐は change-watch に書かない
+        cfg["state_dir"] = str(self.tmp / "aw-state")
+        src = cfg["sources"]["gitlab-issues"]
+        for k in ("schedule", "jitter_sec", "busy_wait_sec"):  # 試験ではいつでも取得する
+            src.pop(k)
+        src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        self.cfg = self.tmp / "change-watch.json"
+        self.cfg.write_text(json.dumps(cfg), encoding="utf-8")
+        self.env = {**os.environ, "GITLAB_PROJECT": "g/p"}
 
-    def cycle(self, agent=None, exit_code="0"):
-        return super().cycle("idd", agent=agent, exit_code=exit_code)
+    def run_dag(self, **agents) -> list[tuple[str, str]]:
+        """1 回の起動。動いたエージェントのステップと、そのプロンプトの一覧。agents はステップの名前ごとのエージェントの動き。"""
+        import dagrun
+        path = EXAMPLE / "change-watch-idd.yaml.example"
+        dagrun.check_shape(self, dagrun.load(path), path.name)
+        seen = []
+
+        def handle(step, vars):
+            self.assertEqual(step["action"], "harness.run")
+            seen.append((step["name"], dagrun._expand(step["with"]["prompt"], vars)))
+            if step["name"] in agents:
+                agents[step["name"]]()
+            return 0
+
+        r = dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)], head=[], handle=handle, env=self.env,
+                       paths={"/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)})
+        self.assertEqual([n for n, c in r.items() if c not in (None, 0)], [], r)
+        return seen
 
     def test_worker_reviewer_rework_and_approval(self):
-        self.assertEqual(self.cycle(), (None, None))
+        self.assertEqual(self.run_dag(), [])                                   # 初回は覚えるだけ
         self.gl.put(make_issue(2, labels=["status:open", "assignee:any"]))
-        # ワーカー: 実装して status:review-ready にする（自分の書き込みだが、ロールが変わるので次はレビュアー）
-        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T01:00:00Z", ["status:review-ready"]))
-        self.assertIn("gitlab-idd スキルのワーカーロールで、このイシュー #2 だけを処理してください", prompt)
-        # レビュアー: 差し戻す（status:needs-rework）
-        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T02:00:00Z", ["status:needs-rework"]))
-        self.assertIn("レビュアーロールで", prompt)
-        self.assertIn("ラベル追加: status:review-ready", prompt)
-        # ワーカー: 直してもう一度 status:review-ready に
-        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T03:00:00Z", ["status:review-ready"]))
-        self.assertIn("ワーカーロールで", prompt)
-        # レビュアー: 承認する（status:approved。マージは人）
-        d, prompt = self.cycle(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T04:00:00Z", ["status:approved"]))
-        self.assertIn("レビュアーロールで", prompt)
-        self.assertEqual(self.cycle(), (None, None))    # status:approved は filter から外れる
+        # ワーカー: 実装して status:review-ready にする。自分の書き込みでも、レビュアーの側には変化として届く（同じ起動で動く）
+        seen = self.run_dag(work=lambda: self.gl.comment(2, "bot", "2026-11-02T01:00:00Z", ["status:review-ready"]),
+                            review=lambda: self.gl.comment(2, "bot", "2026-11-02T02:00:00Z", ["status:needs-rework"]))
+        self.assertEqual([n for n, _ in seen], ["work", "review"])
+        self.assertIn("イシュー #2「issue 2」を、gitlab-idd スキルのワーカーロールで処理してください", seen[0][1])
+        self.assertIn("レビュアーロールで", seen[1][1])
+        # レビュアーが差し戻した（status:needs-rework）ので、次はワーカー。直して status:review-ready に → レビュアーが承認
+        seen = self.run_dag(work=lambda: self.gl.comment(2, "bot", "2026-11-02T03:00:00Z", ["status:review-ready"]),
+                            review=lambda: self.gl.comment(2, "bot", "2026-11-02T04:00:00Z", ["status:approved"]))
+        self.assertEqual([n for n, _ in seen], ["work", "review"])
+        self.assertEqual(self.run_dag(), [])                                   # status:approved はどちらの条件にも合わない
+        self.assertEqual(self.run_dag(), [])
 
     def test_clarification_waits_for_an_answer(self):
-        self.cycle()
+        self.run_dag()
         self.gl.put(make_issue(3, labels=["status:open", "assignee:any"]))
         # ワーカー: 曖昧なので質問して status:needs-clarification に（ロールは同じワーカーなので、自分の書き込みでは起きない）
-        self.cycle(agent=lambda: self.gl.comment(3, "bot", "2026-11-03T01:00:00Z", ["status:needs-clarification"]))
-        self.assertEqual(self.cycle(), (None, None))
-        self.gl.comment(3, "alice", "2026-11-03T02:00:00Z")   # 依頼者が答えた
-        d, prompt = self.cycle()
-        self.assertIn("ワーカーロールで", prompt)
-        self.assertIn("- コメント +1", prompt)
+        seen = self.run_dag(work=lambda: self.gl.comment(3, "bot", "2026-11-03T01:00:00Z", ["status:needs-clarification"]))
+        self.assertEqual([n for n, _ in seen], ["work"])
+        self.assertEqual(self.run_dag(), [])
+        self.gl.comment(3, "alice", "2026-11-03T02:00:00Z")                   # 依頼者が答えた
+        self.assertEqual([n for n, _ in self.run_dag()], ["work"])
 
-    def test_example_dag_runs(self):
-        self.assertEqual(self.run_dag(EXAMPLE / "change-watch-idd.yaml.example"), None)    # 初回は覚えるだけ
-        self.gl.put(make_issue(2, labels=["status:open", "assignee:any"]))
-        self.aw("fetch", "--force")                              # 取得元の schedule の予定の時刻まで、ワークフローの fetch は問い合わせない
-        prompt = self.run_dag(EXAMPLE / "change-watch-idd.yaml.example")
-        self.assertIn("ワーカーロールで、このイシュー #2 だけを処理してください", prompt)
+    def test_other_labels_are_not_handled(self):
+        self.run_dag()
+        self.gl.put(make_issue(4, labels=["status:in-progress"]))
+        self.assertEqual(self.run_dag(), [])
+        self.gl.put(make_issue(4, labels=["status:review-ready"]))             # 人がレビュー待ちにした
+        self.assertEqual([n for n, _ in self.run_dag()], ["review"])
 
 
 if __name__ == "__main__":

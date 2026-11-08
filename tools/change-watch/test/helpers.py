@@ -164,6 +164,12 @@ class FakeAPI:
             with self.lock:
                 it = self.items.get(int(p.split("/")[2]))
             return self._send(h, 200, it) if it is not None else self._send(h, 404, {"message": "not found"})
+        if p.startswith("/items/") and p.endswith("/archive"):   # 書き込みの口（call の例）: status を archived にする
+            i = int(p.split("/")[2])
+            if i not in self.items:
+                return self._send(h, 404, {"message": "not found"})
+            self.put(i, status="archived")
+            return self._send(h, 201, {"id": i, "status": "archived"})
         if p == "/_put":                                # 試験のコマンドが API 側のレコードを書き換える（書き込みの代わり）
             self.put(int(q.pop("id")), **q)
             return self._send(h, 200, {})

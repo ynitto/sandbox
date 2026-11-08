@@ -742,6 +742,11 @@ rules:
         from changewatch import config  # noqa: E402
         cfg = config.load(ROOT / "change-watch.yaml.example")   # 接続設定は使う時点まで読まない
         self.assertEqual(sorted(cfg.sources), ["gitlab-issues", "tickets"])
+        self.assertEqual(cfg.rules, {})                           # 条件は Dagu のワークフローに書く
+        self.assertEqual(cfg.sources["gitlab-issues"].item.url,
+                         "{{ conn.url }}/api/v4/projects/123/issues/{{ key }}")
+        cfg = config.load(ROOT / "change-watch.rules.yaml.example")
+        self.assertEqual(sorted(cfg.sources), ["gitlab-issues", "tickets"])
         self.assertEqual(cfg.rules["urgent-tickets"].targets[1].name, "ticket-audit")
         self.assertEqual(cfg.rules["bug-labeled"].on, ["entered"])          # YAML 1.1 で on: が true にならない
 
@@ -754,8 +759,8 @@ rules:
         cfg = config.load(ROOT / "change-watch.windows.yaml.example")
         self.assertEqual(sorted(cfg.sources), ["inbox", "issues"])
         self.assertEqual(cfg.sources["inbox"].folder.include, ["**/*.csv", "**/*.xlsx"])
-        self.assertEqual(cfg.rules["new-file"].targets[0].command[0], "python")
-        self.assertEqual(cfg.rules["issue-changed"].targets[0].workflow, "issue-handler")
+        self.assertEqual(cfg.sources["inbox"].key, "rel")         # get --consumer で新しく置かれたファイルを受け取れる
+        self.assertEqual(cfg.rules, {})
 
 
 if __name__ == "__main__":

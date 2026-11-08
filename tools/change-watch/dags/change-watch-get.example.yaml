@@ -1,0 +1,121 @@
+# 条件を Dagu で判定するワークフローの例: get → 条件で分ける → commit。change-watch の設定にルールは書かない。
+# change-watch は取得をまとめ（取得元の schedule・min_interval_sec・busy_wait_sec・失敗の待ち。同じ取得元を get するワークフローが
+# いくつあっても問い合わせはまとまる）、「前回 commit してから変わったレコード」を 1 件返すだけ。どれをどう処理するかはここに書く。
+# change-watch-<名前>.yaml として置き、items を取得元、triage を consumer（このワークフローの名前）に書き換え、
+# 分かれた先（urgent・normal・archive）を自分の処理と条件に置き換える。分け方を足すなら同じ形のステップを足し、commit の depends に足す。
+#   urgent   status が urgent のレコード → その場でコマンドを動かす（CHANGE の JSON を引数で渡す）
+#   normal   status が open のレコード → 別のコマンド
+#   archive  status が done になったレコード → change-watch call で API に書き込む（取得と同じ接続・要求の間隔）
+# 分かれた先が失敗しても commit する（Dagu の retry_policy でやり直し、尽きたら失敗として Dagu の履歴に残る）。
+# command は install.py install が置いた change-watch（exec は ~ を展開しないので絶対パスで書く）。Windows なら command を python に、
+# args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
+# 設定は既定の ~/.config/change-watch/change-watch.yaml を読む。別の場所なら args の先頭に "--config" と <パス> を足す。
+description: "items の変化を 1 件受け取り、status で分けて処理する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "items"
+        - "--consumer"
+        - "triage"               # commit と同じ名前。ワークフローごとに別の名前にする
+        - "--watch"              # この項目が変わったときだけ変化にする（省略するとレコード全体）
+        - "status"
+        - "--one"                # 1 件を JSON（key・kind・record・before・changes）で出す。無ければ何も出さない
+    timeout_sec: 720             # 要求の上限 × 再試行 + Retry-After の待ち。取得元の jitter_sec・busy_wait_sec を書いたらその分を足す
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: urgent
+    depends: [get]
+    preconditions:              # 条件（Dagu）。${CHANGE.record.*} はレコードの項目
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.status}"
+        expected: "urgent"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # 失敗しても commit する
+    retry_policy:
+      limit: 2
+      interval_sec: 60
+    action: exec
+    with:
+      command: python3
+      args:
+        - /path/to/urgent.py
+        - "${CHANGE}"
+  - name: normal
+    depends: [urgent]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.status}"
+        expected: "open"
+    continue_on:
+      skipped: true
+      failure: true
+    retry_policy:
+      limit: 2
+      interval_sec: 60
+    action: exec
+    with:
+      command: python3
+      args:
+        - /path/to/normal.py
+        - "${CHANGE}"
+  - name: archive
+    depends: [normal]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "changed"
+      - condition: "${CHANGE.record.status}"
+        expected: "done"
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "/items/${CHANGE.key}/archive"   # / で始まる URL は取得元の接続の url に足す
+        - "--source"
+        - "items"
+        - "--json"
+        - '{"reason": "done"}'
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [archive]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "items"
+        - "--consumer"
+        - "triage"
+        - "${CHANGE.key}"
+    timeout_sec: 600
