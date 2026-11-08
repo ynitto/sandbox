@@ -294,6 +294,68 @@ class _FlowBase(unittest.TestCase):
         return seen[0] if seen else None
 
 
+class DaguSideExampleTest(unittest.TestCase):
+    """examples/dagu/: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
+
+    DIR = HERE.parent / "examples" / "dagu"
+
+    def setUp(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("例の設定・DAG を読むのに PyYAML が要る")
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
+        self.tmp = Path(tempfile.mkdtemp())
+        self.gl = FakeGitLab()
+        self.addCleanup(self.gl.close)
+        self.gl.put(make_issue(1))
+        self.conn = self.tmp / "connections.json"
+        self.conn.write_text(json.dumps({"gitlab": [{"label": "default", "url": self.gl.url, "token": "t0ken"}]}),
+                             encoding="utf-8")
+        cfg = yaml.safe_load((self.DIR / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        self.assertNotIn("rules", cfg)                     # 条件は change-watch に書かない
+        cfg["state_dir"] = str(self.tmp / "aw-state")
+        src = cfg["sources"]["gitlab-issues"]
+        for k in ("schedule", "jitter_sec", "busy_wait_sec"):  # 試験ではいつでも取得する
+            src.pop(k)
+        src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        self.cfg = self.tmp / "change-watch.json"
+        self.cfg.write_text(json.dumps(cfg), encoding="utf-8")
+        self.env = {**os.environ, "GITLAB_PROJECT": "g/p"}
+
+    def run_dag(self, agent=None, exit_code: int = 0) -> str | None:
+        import dagrun
+        path = self.DIR / "change-watch-issue-agent.yaml.example"
+        dagrun.check_shape(self, dagrun.load(path), path.name)
+        seen = []
+
+        def handle(step, vars):
+            self.assertEqual((step["action"], step["with"]["stdin"]), ("harness.run", "${CHANGE}"))
+            seen.append(dagrun._expand(step["with"]["prompt"], vars))
+            if agent:
+                agent()
+            return exit_code
+
+        r = dagrun.run(path, aw=[sys.executable, str(CHANGE_WATCH)], head=[], handle=handle, env=self.env,
+                       paths={"/home/you/.github/connections.yaml": str(self.conn),
+                              "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml": str(self.cfg)})
+        self.assertEqual([n for n, c in r.items() if c not in (None, 0) and n != "handle"], [], r)
+        return seen[0] if seen else None
+
+    def test_example_runs(self):
+        self.assertIsNone(self.run_dag())                                     # 初回は今ある issue を覚えるだけ
+        self.gl.put(make_issue(2, labels=["todo"]))
+        prompt = self.run_dag(agent=lambda: self.gl.comment(2, "bot", "2026-11-02T00:00:00Z"))
+        self.assertIn("issue #2「issue 2」に変化がありました（appeared）", prompt)
+        self.assertIsNone(self.run_dag())                                     # エージェント自身のコメントでは起きない
+        self.gl.put(make_issue(3, state="closed"))
+        self.assertIsNone(self.run_dag())                                     # 条件（opened）に合わない。commit はする
+        self.assertIsNone(self.run_dag())
+        self.gl.comment(2, "alice", "2026-11-03T00:00:00Z")
+        self.assertIsNotNone(self.run_dag(exit_code=1))                       # 失敗しても commit する
+        self.assertIsNone(self.run_dag())
+
+
 @unittest.skipUnless(CHANGE_WATCH.is_file(), "change-watch が無い")
 class FlowTest(_FlowBase):
     def test_new_issue_runs_once_and_own_comment_does_not_retrigger(self):

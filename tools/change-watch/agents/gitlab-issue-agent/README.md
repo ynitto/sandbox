@@ -200,6 +200,29 @@ change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yam
   答えるか、ラベルを `status:open` に戻すと流れる
 - 1 回の実装は長いことがあるので、`timeout_sec` を長めにしている（例は 4200 秒）
 
+## 条件を Dagu で判定する形（`examples/dagu/`）
+
+どの issue をエージェントに渡すかを Dagu のワークフローの条件（`preconditions`）に書き、change-watch には GitLab への問い合わせと
+「前回処理してから変わった issue」を返すことだけを任せる形の例。change-watch の設定にルールは書かない
+（change-watch の README の「条件をワークフローで判定する」）。
+
+```
+ Dagu: change-watch-issue-agent（毎分。1 回の起動で 1 件）
+   get     change-watch get --consumer issue-agent --one   → CHANGE（変わった issue 1 件の JSON）
+   handle  preconditions（例: ${CHANGE.record.state} が opened）に合えば、エージェント CLI に CHANGE を渡す
+   commit  change-watch commit --consumer issue-agent --refresh ${CHANGE.key}（取り直した姿で記録し、エージェント自身のコメントで起きない）
+```
+
+入れ方の 3 で、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` を `examples/dagu/change-watch.yaml.example` に、
+`~/.config/dagu/dags/change-watch-issue-agent.yaml` を `examples/dagu/change-watch-issue-agent.yaml.example` に替える（`/home/you` は自分の場所に直す）。
+既定の形との違い:
+
+- 条件は Dagu の `preconditions` に書く（`${CHANGE.record.labels}` などで issue の項目を見られる）。プロンプトは `prompt.md` ではなく
+  ワークフローの `prompt` に書き、issue の JSON は標準入力で渡す
+- 失敗しても `commit` する。やり直しは Dagu の `retry_policy` に任せ、尽きたら失敗として Dagu の履歴に残る
+- 処理の途中で他の人が書いたコメントも、取り直した姿に含めて処理し終えたことにする（既定の形の `gitlab.others_acted` は無い）
+- 同時に 1 つだけ動かすのは、Dagu が同じワークフローを重ねて起動しないことに任せる（プロジェクトをまたぐ `lock` は無い）
+
 ## Windows で使うとき
 
 - インストーラは `python tools\change-watch\install.py install --agent gitlab-issue-agent` で、Dagu から使う Python で動かす。

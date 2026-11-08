@@ -4,14 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import VERSION, adapters, config as configmod, hooks, plugins
+from . import VERSION, access, adapters, config as configmod, hooks, plugins
 from .deliver import Dispatcher
 from .detect import Evaluator, log_outcomes
-from .fetch import Fetcher, load_records
+from .fetch import Deferred, Fetcher, load_records
 from .maint import forget_rule, gc, print_status, status
 from .store import ALL_STATUSES, Store
-from .util import (EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, EXIT_TRANSIENT, EXIT_USAGE, ConfigError, REDACT, log,
-                   setup_stdio, unpack, warn)
+from .util import (EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, EXIT_TRANSIENT, EXIT_USAGE, ConfigError, PermanentError,
+                   REDACT, TransientError, log, setup_stdio, unpack, warn)
 
 
 
@@ -445,6 +445,90 @@ def cmd_forget_rule(cfg, store, a) -> int:
     return EXIT_OK
 
 
+def _fetch_quietly(cfg, store, name: str, a) -> int:
+    """get の前の取得。取得元の予定・間隔・取得中の待ち・失敗の待ちはそのまま効く（問い合わせるかは change-watch が決める）。
+    失敗しても、前回までの取得結果で答える（ワークフローは止めない）。"""
+    if getattr(a, "no_fetch", False):
+        return EXIT_OK
+    o = Fetcher(cfg, store).run(cfg.sources[name], jitter=not getattr(a, "no_jitter", False))
+    log(f"[{name}] {o.status}: {o.message}")
+    if o.status == "failed":
+        warn(f"[{name}] 取得に失敗したので、前回までの取得結果で答えます")
+    return EXIT_OK
+
+
+def cmd_get(cfg, store, a) -> int:
+    name = _sources(cfg, [a.source])[0]
+    src = cfg.sources[name]
+    if a.consumer is None and (a.watch or a.one or a.initial):
+        raise ConfigError("--watch・--one・--initial は --consumer と一緒に使ってください")
+    _fetch_quietly(cfg, store, name, a)
+    if a.consumer is None:
+        out: object = access.records(store, src)
+    else:
+        found = access.changes(store, src, a.consumer, a.watch or [], a.initial or "baseline")
+        log(f"[{name}] {a.consumer} が前回 commit してから変わったレコード: {len(found)} 件")
+        if a.one:
+            if not found:
+                return EXIT_OK          # 何も出さない（ワークフローは空の出力で後ろのステップを飛ばす）
+            out = found[0]
+        else:
+            out = found
+    print(json.dumps(out, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_commit(cfg, store, a) -> int:
+    name = _sources(cfg, [a.source])[0]
+    keys = [k for k in a.keys if k != ""]
+    if not keys:
+        log("処理し終えたレコードがありません")
+        return EXIT_OK
+    try:
+        done = access.commit(Fetcher(cfg, store), cfg.sources[name], a.consumer, keys, a.refresh)
+    except Deferred as e:
+        warn(str(e))
+        return EXIT_TRANSIENT
+    log(f"[{name}] {a.consumer} が処理し終えたと記録しました: {', '.join(done)}")
+    return EXIT_OK
+
+
+def cmd_call(cfg, store, a) -> int:
+    name = _sources(cfg, [a.source])[0]
+    body = None
+    if a.json is not None and a.json_file is not None:
+        raise ConfigError("--json と --json-file はどちらか一方にしてください")
+    try:
+        if a.json is not None:
+            body = json.loads(a.json)
+        elif a.json_file is not None:
+            with open(a.json_file, encoding="utf-8-sig") as f:
+                body = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"送る JSON を読めません: {e}") from e
+    query = {}
+    for q in a.query or []:
+        k, sep, v = q.partition("=")
+        if not sep:
+            raise ConfigError(f"--query は 名前=値 で書いてください: {q}")
+        query[k] = v
+    try:
+        status, resp = Fetcher(cfg, store).call(cfg.sources[name], a.method, a.url, body, query)
+    except Deferred as e:
+        warn(str(e))
+        return EXIT_TRANSIENT
+    except TransientError as e:
+        warn(str(e))
+        return EXIT_TRANSIENT
+    except PermanentError as e:
+        warn(str(e))
+        return EXIT_ERROR
+    log(f"[{name}] {a.method.upper()} → HTTP {status}")
+    if resp is not None:
+        print(json.dumps(resp, ensure_ascii=False))
+    return EXIT_OK
+
+
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--plugin", action="append", default=[],
                    help="読み込むプラグイン。同梱のものは名前（例: dagu）、ほかは .py のパス。繰り返し可")
@@ -469,6 +553,29 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--source", action="append")
     sp.add_argument("--force", action="store_true", help="min_interval_sec・jitter_sec を無視する")
     sp.add_argument("--no-jitter", action="store_true", help="jitter_sec でずらさない（手で叩くとき）")
+    sp = add("get", cmd_get, "取得元のレコードを JSON で出す（--consumer なら、前回 commit してから変わったものだけ）。"
+                             "取得するかは取得元の予定・間隔で決め、失敗しても前回までの結果で答える")
+    sp.add_argument("--source", required=True)
+    sp.add_argument("--consumer", help="変化を受け取るワークフローの名前（commit と同じ名前にする）")
+    sp.add_argument("--watch", action="append", help="変化として見るパス（繰り返し可。省略するとレコード全体）")
+    sp.add_argument("--initial", choices=access.INITIAL,
+                    help="初めて呼ばれたとき: baseline はいまの姿を覚えるだけ（既定）、emit は全部を appeared で返す")
+    sp.add_argument("--one", action="store_true", help="1 件だけを JSON のオブジェクトで出す（無ければ何も出さない）")
+    sp.add_argument("--no-fetch", action="store_true", help="取得せず、保存済みの取得結果で答える")
+    sp.add_argument("--no-jitter", action="store_true", help="jitter_sec でずらさない（手で叩くとき）")
+    sp = add("commit", cmd_commit, "get --consumer で受け取ったレコードを、処理し終えたと記録する（次の get で返さない）")
+    sp.add_argument("--source", required=True)
+    sp.add_argument("--consumer", required=True)
+    sp.add_argument("--refresh", action="store_true",
+                    help="取得元の item でレコードを 1 件取り直し、その姿で記録する（処理の中で自分が書き込んだ分を変化にしない）")
+    sp.add_argument("keys", nargs="*", help="レコードの key（get の出力の key）")
+    sp = add("call", cmd_call, "取得元の接続（認証）と要求の間隔の制限で API を 1 回呼び、応答の JSON を出す（書き込みにも使える）")
+    sp.add_argument("method", help="GET / POST / PUT / PATCH / DELETE")
+    sp.add_argument("url", help="URL（{{ conn.* }}・{{ env.* }} が使える。/ で始まれば接続の url に足す）")
+    sp.add_argument("--source", required=True, help="接続・要求の間隔の制限・失敗の待ちを分け合う取得元")
+    sp.add_argument("--json", help="送る本文（JSON の文字列）")
+    sp.add_argument("--json-file", help="送る本文（JSON のファイル）")
+    sp.add_argument("--query", action="append", help="名前=値（繰り返し可）")
     sp = add("evaluate", cmd_evaluate, "未判定の取得結果をルールで判定する（API には問い合わせない）")
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
@@ -582,7 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     try:
         code = a.fn(cfg, store, a)
-        if a.cmd in ("fetch", "run") and cfg.retention.auto_gc and code in (EXIT_OK, EXIT_PARTIAL):
+        if a.cmd in ("fetch", "run", "get") and cfg.retention.auto_gc and code in (EXIT_OK, EXIT_PARTIAL):
             gc(cfg, store)
         return code
     except ConfigError as e:

@@ -47,6 +47,8 @@ API にいつ問い合わせるかは、起動されたときに change-watch �
 例のワークフローも、`--plugin dagu` は `dispatch`・`reconcile` のステップにだけ付けてある。
 
 1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
+ルールを書かず、条件の判定はワークフロー（Dagu）に任せて、change-watch には API へのアクセスだけを受け持たせる形もある
+（「条件をワークフローで判定する」）。
 
 ### プラグインの口
 
@@ -680,6 +682,36 @@ change-watch は実行の前後だけを受け持ち、処理そのもの（エ�
 - `rate_limit.min_interval_sec`・`per_minute` を group の全部の要求で数える（group の中では同じ値を書く。違えば設定の誤り）
 - どれかの取得が失敗したら、group の全部が `failure_backoff_sec` のあいだ問い合わせない
 
+## 条件をワークフローで判定する（`get` / `commit` / `call`）
+
+ルール（`rules`）を書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形。
+change-watch が受け持つのは、取得をまとめること（取得元の `schedule`・`min_interval_sec`・`busy_wait_sec`・失敗の待ち・`rate_limit`。同じ取得元を
+呼ぶワークフローがいくつあっても、問い合わせはまとまる）と、「前回処理し終えてから変わったレコード」を返すこと、それに書き込みを同じ接続・
+同じ要求の間隔で送ること。
+
+```
+ Dagu: <ワークフロー>（毎分。1 回の起動で 1 件）
+   get      change-watch get --source S --consumer C --one   → output: CHANGE（前回 commit してから変わったレコード 1 件）
+   <処理>   preconditions で ${CHANGE.record.*} を見て、合えば処理する   ← 条件は Dagu に書く
+   commit   change-watch commit --source S --consumer C ${CHANGE.key}
+```
+
+| コマンド | すること | 標準出力 |
+|---|---|---|
+| `get --source S` | 取得して（するかは取得元の予定・間隔で決める）、レコードを出す。取得が失敗しても前回までの取得結果で答える | JSON の配列 |
+| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
+| `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない） | — |
+| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON |
+
+変化は `{"key", "kind", "record", "before", "changes"}` の形。`kind` は `appeared`（新しく現れた）・`changed`（`--watch` の項目が変わった）・
+`removed`（一覧から消えた）、`record` は今のレコード（`removed` なら最後の姿）、`before` は前回 `commit` したときの姿（`changed` のときだけ）、
+`changes` は変わった項目。Dagu では `${CHANGE.record.state}` のように中の値を条件に使える。
+
+- consumer はワークフローごとに名前を付ける。consumer ごとに別々に変化を受け取るので、同じ取得元を複数のワークフローで使っても互いに邪魔しない
+- 取得元に `key` が要る。取得条件・認証を変えたら（取得元の指紋が変わったら）、consumer の基準も取り直す
+- エージェントごとの例は、各エージェントの `examples/dagu/`（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
+  [gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
+
 ## 設定
 
 ### 取得元（sources）
@@ -693,7 +725,8 @@ change-watch は実行の前後だけを受け持ち、処理そのもの（エ�
 | `request.body` / `body_form` | — | JSON の本文（辞書・配列）か文字列 / フォームの本文 |
 | `request.timeout_sec` | 30 | 1 回の要求の制限時間 |
 | `records` | `$` | 応答の中のレコードの配列の場所（例 `data.items`）。オブジェクトなら 1 件として扱う |
-| `key` | — | レコードを一意に指す項目。増分取得の取得元では書いておく（全体の姿を組み立て、基準値の取り直しに使う） |
+| `key` | — | レコードを一意に指す項目。増分取得の取得元と、`get --consumer` で変化を受け取る取得元では書いておく（全体の姿を組み立て、基準値の取り直しに使う） |
+| `item.url` / `headers` / `query` / `records` | — | レコードを 1 件取り直す要求（`commit --refresh`）。`{{ key }}`・`{{ conn.* }}`・`{{ env.* }}` が使える。`headers` が無ければ取得元のもの |
 | `pagination` | なし | 下の表 |
 | `incremental` | なし | 下の表 |
 | `schedule` | なし | 問い合わせの予定（cron。この PC の時刻）。起動されても、直近の予定の時刻のあとに取得し終えていれば取得しない。無ければ起動されるたびに取得する（Dagu の起動間隔に任せる）。`fetch --force` で無視。上の「いつ取得するか」 |

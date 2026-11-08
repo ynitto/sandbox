@@ -1,0 +1,128 @@
+# redmine-ticket-agent の Dagu のワークフロー（条件は Dagu が判定し、change-watch は API へのアクセスだけを受け持つ形）。
+# ~/.config/dagu/dags/change-watch-auto-close.yaml をこれに替え、設定も同じフォルダの change-watch.yaml.example に替える。
+# 毎分起動し、1 回の起動で 1 件を見る:
+#   get        前回 commit してから新しく現れた・変わったチケットを 1 件受け取る（Redmine に問い合わせるかは change-watch が決める）
+#   auto-close 「自動完了」を含むなら、コメントして完了にする        ← 条件とコメントの対は、ここに 1 ステップずつ書く
+#   duplicate  「【重複】」を含むなら、重複のコメントで完了にする
+#   commit     見終えたと記録する
+# 書き込み（完了にする）は change-watch call で送る（取得と同じ API キー・同じ要求の間隔）。.env の REDMINE_CLOSED_STATUS_ID に
+# 完了のステータスの ID を書く（Redmine の「管理」→「チケットのステータス」で確かめる）。
+# 1 つのチケットが 2 つの対に当たると両方のコメントが付くので、条件は互いに重ならないように書く。
+# command は install.py install が置いた change-watch。/home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする。
+description: "自分が担当する Redmine のチケットの変化を受け取り、条件に合えばコメントして完了にする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "redmine-my-issues"
+        - "--consumer"
+        - "auto-close"           # commit と同じ名前
+        - "--watch"              # 題名・説明・ステータス・担当が変わったときだけ変化にする
+        - "subject"
+        - "--watch"
+        - "description"
+        - "--watch"
+        - "status.id"
+        - "--watch"
+        - "assigned_to.id"
+        - "--initial"
+        - "emit"                 # 初めて動かしたときにあるチケットも見る
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: auto-close
+    depends: [get]
+    preconditions:              # 条件（Dagu）: 新しく現れた・変わったチケットで、題名に「自動完了」を含む
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.subject}"
+        expected: "re:自動完了"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "/issues/${CHANGE.key}.json"      # / で始まる URL は接続の url に足す
+        - "--source"
+        - "redmine-my-issues"
+        - "--json"
+        - '{"issue": {"status_id": ${REDMINE_CLOSED_STATUS_ID}, "notes": "自動で完了にしました。"}}'
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: duplicate
+    depends: [auto-close]
+    preconditions:              # 2 つ目の対: 題名に「【重複】」を含む
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.subject}"
+        expected: "re:【重複】"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "/issues/${CHANGE.key}.json"      # / で始まる URL は接続の url に足す
+        - "--source"
+        - "redmine-my-issues"
+        - "--json"
+        - '{"issue": {"status_id": ${REDMINE_CLOSED_STATUS_ID}, "notes": "重複のため完了にしました。"}}'
+    timeout_sec: 120
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [duplicate]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "redmine-my-issues"
+        - "--consumer"
+        - "auto-close"
+        - "${CHANGE.key}"
+    timeout_sec: 600

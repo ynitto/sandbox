@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: 条件をワークフローで判定する形（`get`・`commit`・`call`）を足す（0.6.0）
+
+- ルールを書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形を足す。
+  いまのルール（判定・受け渡し）はそのまま使える
+- `get --source S [--consumer C]`: 取得して（するかは取得元の予定・間隔・取得中の待ち・失敗の待ちで決める）レコードを JSON で出す。
+  `--consumer` なら C が前回 `commit` してから変わったレコード（`key`・`kind`・`record`・`before`・`changes`）。`--watch`・`--initial`・`--one`
+- `commit --source S --consumer C KEY… [--refresh]`: 処理し終えたと記録する。`--refresh` は取得元の新しい項目 `item`（1 件を取り直す要求）を使う
+- `call METHOD URL --source S [--json …]`: 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ（書き込みにも使える。GET 以外は自分では再試行しない）
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent に、この形の Dagu のワークフローと設定の例（`examples/dagu/`）を足す。
+  インストーラが置くものは変えない
+
 ### change-watch: エージェントを `tools/change-watch/agents/` にまとめ、インストーラで同じ場所に入れる（0.5.0）
 
 - gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent を `tools/<名前>/` から `tools/change-watch/agents/<名前>/` へ移す

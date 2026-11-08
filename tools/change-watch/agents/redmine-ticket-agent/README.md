@@ -119,6 +119,27 @@ change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.y
 | 失敗している・打ち切ったものを見る | `change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml events --status send_failed,dead` |
 | 打ち切ったものをすぐやり直す | `change-watch --config ~/.config/change-watch/redmine-ticket-agent/change-watch.yaml retry <受け渡しの ID>` |
 
+## 条件を Dagu で判定する形（`examples/dagu/`）
+
+条件とコメントの対を Dagu のワークフローに 1 ステップずつ書き、change-watch には Redmine への問い合わせ・「前回見てから変わったチケット」を
+返すこと・チケットの書き込み（`call`）だけを任せる形の例。change-watch の設定にルールは書かない
+（change-watch の README の「条件をワークフローで判定する」）。
+
+```
+ Dagu: change-watch-auto-close（毎分。1 回の起動で 1 件）
+   get         change-watch get --consumer auto-close --initial emit --one   → CHANGE
+   auto-close  ${CHANGE.record.subject} が「自動完了」を含めば、change-watch call PUT /issues/<ID>.json でコメントして完了にする
+   duplicate   「【重複】」を含めば、重複のコメントで完了にする
+   commit      change-watch commit --consumer auto-close ${CHANGE.key}
+```
+
+入れ方で、`~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` を `examples/dagu/change-watch.yaml.example` に、
+`~/.config/dagu/dags/change-watch-auto-close.yaml` を `examples/dagu/change-watch-auto-close.yaml.example` に替え（`/home/you` は自分の場所に直す）、
+`redmine-ticket-agent.env` に完了のステータスの ID（`REDMINE_CLOSED_STATUS_ID`）を書く。既定の形との違い:
+
+- 条件とコメントの対は、ワークフローのステップを足して書く。1 つのチケットが 2 つの対に当たると両方のコメントが付くので、条件は重ならないように書く
+- 完了のステータスは名前ではなく ID で書く。担当が自分か・既に完了かの確かめ直し（`redmine_issue.py close` がしていること）はしない
+
 ## 設定の置き場所
 
 | ファイル | 書くこと |

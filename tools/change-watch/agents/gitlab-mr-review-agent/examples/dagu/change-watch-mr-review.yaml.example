@@ -1,0 +1,96 @@
+# gitlab-mr-review-agent の Dagu のワークフロー（条件は Dagu が判定し、change-watch は API へのアクセスだけを受け持つ形）。
+# ~/.config/dagu/dags/change-watch-mr-review.yaml をこれに替え、設定も同じフォルダの change-watch.yaml.example に替える。
+# 毎分起動し、1 回の起動で 1 件をレビューする:
+#   get     前回 commit してから新しいコミットが積まれた MR を 1 件受け取る（GitLab に問い合わせるかは change-watch が決める）
+#   review  条件（preconditions）に合えば、kiro-cli にレビューさせる   ← 条件はここに書く
+#   commit  レビューし終えたと記録する（次は、この姿からの変化だけを受け取る）
+# review が失敗しても commit する（Dagu の retry_policy でやり直し、尽きたら失敗として Dagu の履歴に残る）。
+# 次のコミットが積まれれば、また流れる。
+# command は install.py install が置いた change-watch。/home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする。
+description: "GitLab の MR に積まれたコミットを受け取り、条件に合えば kiro-cli で 1 件をレビューする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-mrs"
+        - "--consumer"
+        - "mr-review"            # commit と同じ名前
+        - "--watch"              # 新しいコミット・ドラフトの解除・向き先の変更だけを変化にする（コメントでは起こさない）
+        - "sha"
+        - "--watch"
+        - "draft"
+        - "--watch"
+        - "target_branch"
+        - "--initial"
+        - "emit"                 # 初めて動かしたときに開いている MR もレビューする
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: review
+    id: review
+    depends: [get]
+    preconditions:              # どの MR をレビューするか（Dagu の条件。${CHANGE.record.*} は MR の項目）
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.draft}"
+        expected: "false"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # 失敗しても commit する
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+    timeout_sec: 1800
+    # kiro-cli の動かし方（Dagu v2 の harness.run）。kiro-cli はプロンプトを引数で受け取る
+    action: harness.run
+    # kiro-cli を動かすフォルダ。.env の MR_REVIEW_WORKTREE と同じにする（context が MR の今のコミットを取り出す）
+    working_dir: /home/you/work/project.mr-review
+    with:
+      provider: kiro
+      prompt: >-
+        GitLab のマージリクエスト !${CHANGE.record.iid}「${CHANGE.record.title}」をレビューしてください。
+        URL: ${CHANGE.record.web_url} 。
+        GitLab への読み書きは ${MR_REVIEW_CLI} のサブコマンドだけで行い、git の commit・push・承認・マージはしないでください。
+        まず `${MR_REVIEW_CLI} context ${CHANGE.record.iid} --since=${CHANGE.before.sha}` で概要・前回までの指摘・差分を見て、
+        「レビューし終えています」と出たら何もせずに終えてください。前回までの未解決の指摘が直っていれば resolve で閉じ、
+        新しく見つけた問題だけを comment で指摘し（ファイルは show で読む）、最後に summary を 1 回だけ書いてください。
+        本文は日本語の Markdown で、--body-file に渡すファイルは一時フォルダに書いてください。
+      trust_all_tools: true                  # gitlab_mr.py を確認なしで実行させる（無人で動かすため）
+  - name: commit
+    depends: [review]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-mrs"
+        - "--consumer"
+        - "mr-review"
+        - "${CHANGE.key}"
+    timeout_sec: 600

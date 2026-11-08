@@ -1,0 +1,25 @@
+# redmine-ticket-agent を「条件は Dagu が判定し、change-watch は API へのアクセスだけを受け持つ」形で動かすときの change-watch の設定
+# （~/.config/change-watch/redmine-ticket-agent/change-watch.yaml をこれに替える）。ルール（rules）は書かない。
+# ワークフローは同じフォルダの change-watch-auto-close.yaml.example。
+#
+# change-watch が受け持つのは、Redmine への問い合わせの予定・間隔・取得中の待ち・失敗の待ちと、「前回 commit してから変わった
+# チケット」を返すこと、それにチケットの書き込み（call）を同じ API キー・同じ要求の間隔で送ることだけ。
+# どのチケットを完了にするか（条件とコメントの対）は、ワークフローに書く。
+version: 1
+state_dir: ~/.local/state/change-watch/redmine-ticket-agent   # エージェントごとに分ける
+
+sources:
+  redmine-my-issues:
+    connection: redmine
+    request:
+      url: "{{ conn.url }}/issues.json"
+      headers:
+        X-Redmine-API-Key: "{{ conn.token }}"
+      query: { assigned_to_id: me, status_id: open, sort: id }   # 自分が担当する未完了のチケット
+    records: issues
+    key: id                    # get --consumer が変化を見分ける key
+    pagination: { type: offset, size_param: limit, size: 100, total_path: total_count }
+    schedule: "*/15 * * * *"
+    jitter_sec: 300
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: redmine }

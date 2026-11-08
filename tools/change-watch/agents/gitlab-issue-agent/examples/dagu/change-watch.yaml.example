@@ -1,0 +1,36 @@
+# gitlab-issue-agent を「条件は Dagu が判定し、change-watch は API へのアクセスだけを受け持つ」形で動かすときの change-watch の設定
+# （~/.config/change-watch/gitlab-issue-agent/change-watch.yaml をこれに替える）。ルール（rules）は書かない。
+# ワークフローは同じフォルダの change-watch-issue-agent.yaml.example。
+#
+# change-watch が受け持つのは、GitLab への問い合わせの予定・間隔・取得中の待ち・失敗の待ち（同じ取得元を呼ぶワークフローが
+# いくつあっても問い合わせは予定の時刻ごとに 1 回）と、「前回 commit してから変わった issue」を返すことだけ。
+# どの issue をエージェントに渡すかは、ワークフローの preconditions に書く。
+#
+# GitLab の URL・プロジェクト・トークンは ~/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env にだけ書く。
+# connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
+#
+#   gitlab:
+#     - label: default
+#       url: ${GITLAB_URL}
+#       token: ${GITLAB_TOKEN}
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-issue-agent   # エージェントごとに分ける
+
+sources:
+  gitlab-issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, scope: all, order_by: updated_at, sort: asc }
+    key: iid                   # get --consumer が変化を見分ける key
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "0 * * * *"      # GitLab に問い合わせる予定（ワークフローが毎分起動しても、予定の時刻ごとに 1 回）
+    jitter_sec: 900
+    busy_wait_sec: 600
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+    # issue を 1 件取り直す要求（commit --refresh）。エージェントが処理の中で書いたコメントを、次の変化にしないため
+    item:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ key }}"

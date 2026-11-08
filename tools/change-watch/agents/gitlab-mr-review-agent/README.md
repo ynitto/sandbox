@@ -174,6 +174,28 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 | `gitlab_mr.changed_during_review` | チェック | レビューのあいだにコミット・ドラフト・対象ブランチが変わったか（`handled_before_if` に書く） |
 | `gitlab_mr.already_reviewed` | チェック | 今の差分の中身を既にレビューし終えているか（`skip_if` に書く。真なら kiro-cli を起こさない） |
 
+## 条件を Dagu で判定する形（`examples/dagu/`）
+
+どの MR をレビューするか（ドラフトを除くなど）を Dagu のワークフローの条件（`preconditions`）に書き、change-watch には GitLab への問い合わせと
+「前回レビューしてから新しいコミットが積まれた MR」を返すことだけを任せる形の例。change-watch の設定にルールは書かない
+（change-watch の README の「条件をワークフローで判定する」）。
+
+```
+ Dagu: change-watch-mr-review（毎分。1 回の起動で 1 件）
+   get     change-watch get --consumer mr-review --watch sha --watch draft --watch target_branch --one   → CHANGE
+   review  preconditions（${CHANGE.record.draft} が false）に合えば、kiro-cli にレビューさせる
+           （context の --since は ${CHANGE.before.sha}。前回レビューしたコミット）
+   commit  change-watch commit --consumer mr-review ${CHANGE.key}
+```
+
+入れ方で、`~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml` を `examples/dagu/change-watch.yaml.example` に、
+`~/.config/dagu/dags/change-watch-mr-review.yaml` を `examples/dagu/change-watch-mr-review.yaml.example` に替える（`/home/you` は自分の場所に直す）。
+既定の形との違い:
+
+- プロンプトは `prompt.md` ではなくワークフローの `prompt` に書く
+- 失敗しても `commit` する。やり直しは Dagu の `retry_policy` に任せ、尽きたら失敗として Dagu の履歴に残る
+- レビューの途中で積まれたコミットは、次の `get` で新しい変化として受け取る（既定の形の `gitlab_mr.changed_during_review` は要らない）
+
 ## Windows で使うとき
 
 - インストーラは `python tools\change-watch\install.py install --agent gitlab-mr-review-agent` で、Dagu から使う Python で動かす。

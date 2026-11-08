@@ -3,7 +3,8 @@
 例の DAG が本物の change-watch で動くことを確かめるためのもの。Dagu の次の動きだけをまねる:
 
 - steps を depends の順に 1 つずつ動かす（type: graph。例はどれも一本道）
-- output: VAR はそのステップの標準出力（前後の空白を除く）を ${VAR} にする。${<id>.exit_code} はそのステップの終了コード
+- output: VAR はそのステップの標準出力（前後の空白を除く）を ${VAR} にする。${<id>.exit_code} はそのステップの終了コード。
+  出力が JSON なら ${VAR.a.b} でその中の値（真偽は true / false）
 - preconditions の condition を展開し、expected（re: なら正規表現）に合わなければそのステップを飛ばす
 - retry_policy は exit_code に当たる終了コードのとき limit 回まで（待たずに）やり直す
 - 失敗したら、continue_on.failure が無ければそこで止める
@@ -73,8 +74,32 @@ def check_shape(test, dag: dict, where: str) -> None:
             test.assertEqual(h["with"]["command"], EXAMPLE_COMMAND, f"{where}: handler_on.{event} は change-watch を直接 command にする")
 
 
+def _lookup(name: str, vars: dict[str, str]) -> str:
+    """${VAR} と、出力が JSON のときの ${VAR.path.to.field}（Dagu の JSON パスの参照）。無ければ空。"""
+    if name in vars:
+        return vars[name]
+    head, _, rest = name.partition(".")
+    if not rest or head not in vars:
+        return ""
+    import json
+    try:
+        v = json.loads(vars[head])
+    except ValueError:
+        return ""
+    for part in rest.split("."):
+        if isinstance(v, dict) and part in v:
+            v = v[part]
+        elif isinstance(v, list) and part.isdigit() and int(part) < len(v):
+            v = v[int(part)]
+        else:
+            return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return "" if v is None else (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+
+
 def _expand(value: str, vars: dict[str, str]) -> str:
-    return re.sub(r"\$\{([A-Za-z0-9_.]+)\}", lambda m: vars.get(m.group(1), ""), str(value))
+    return re.sub(r"\$\{([A-Za-z0-9_.]+)\}", lambda m: _lookup(m.group(1), vars), str(value))
 
 
 def _ok(pre: list | None, vars: dict[str, str]) -> bool:
@@ -109,7 +134,7 @@ def run(dag_path: Path, *, aw: list[str], head: list[str], paths: dict[str, str]
         handle: Callable[[dict, dict], int] | None = None, env: dict | None = None) -> dict[str, int | None]:
     """DAG を 1 回動かし、ステップごとの終了コード（飛ばしたら None）を返す。止まったところより後は入らない。"""
     dag = load(dag_path)
-    vars: dict[str, str] = {}
+    vars: dict[str, str] = dict(env or {})      # dotenv で読む値（${REDMINE_CLOSED_STATUS_ID} など）
     result: dict[str, int | None] = {}
     for s in dag["steps"]:
         if not _ok(s.get("preconditions"), vars):
