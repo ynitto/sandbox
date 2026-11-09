@@ -14,6 +14,10 @@
         issue に足すコメントの本文を {"body": "..."} の JSON で出す（change-watch call の --json に渡す）。
         本文が空なら何も出さない。コマンドが失敗したら何も出さず、その終了コードで終わる。
 
+    python3 <このファイル> fields title="【完了】${CHANGE.record.title}" add_labels=完了
+        issue の更新の JSON（{"title": "...", "add_labels": "..."}）を出す（change-watch call PUT の --json に渡す）。
+        値はすべて文字列。Dagu の引数に、引用符を含む題などをそのまま渡せる。
+
 本文の中身は決めない（ワークフローとそのコマンドが決める）。ここですることは、Dagu の引数に任意の文（改行・引用符）を JSON として
 渡せるようにすることと、書き込む文に混ざった GitLab のクイックアクション（行頭の /close など）を効かなくすることだけ。
 どの変化をどう扱うかの条件は持たない（Dagu のワークフローの preconditions に書く）。HTTP は送らない（取得・書き込み・認証・
@@ -114,15 +118,32 @@ def cmd_note(a) -> int:
     return OK                               # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
 
 
+def cmd_fields(a) -> int:
+    out: dict[str, str] = {}
+    for item in a.pairs:
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            print(f"項目は 名前=値 で書いてください: {item!r}", file=sys.stderr)
+            return USAGE
+        out[key.strip()] = disarm(value) if key.strip() == "description" else value
+    if not out:
+        print("項目がありません（title=... のように渡してください）", file=sys.stderr)
+        return USAGE
+    print(json.dumps(out, ensure_ascii=False))
+    return OK
+
+
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="gitlab_hub.py", description="ハブの issue に足すコメントの本文（JSON）を出す")
+    p = argparse.ArgumentParser(prog="gitlab_hub.py", description="ハブの issue に書くもの（コメントの本文・更新の項目）を JSON で出す")
     sub = p.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("note", help="コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）")
     n.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
     n.add_argument("--text-file", help="本文のファイル（UTF-8）")
     n.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
+    f = sub.add_parser("fields", help="issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）")
+    f.add_argument("pairs", nargs="+", metavar="名前=値", help="title=...・add_labels=...・description=...・state_event=close など")
     a = p.parse_args(argv)
-    return cmd_note(a)
+    return cmd_note(a) if a.cmd == "note" else cmd_fields(a)
 
 
 if __name__ == "__main__":

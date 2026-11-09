@@ -45,3 +45,6 @@ sources:
     jitter_sec: 60
     failure_backoff_sec: 300
     rate_limit: { min_interval_sec: 1, group: gitlab }
+    # 取り直す要求（commit --refresh）。ワークフローが issue を変えたあとの姿を基準にして、自分の変更を次の変化にしないため
+    item:
+      url: "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}"

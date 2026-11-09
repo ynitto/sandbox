@@ -1,6 +1,6 @@
 """gitlab-issue-hub-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_hub.py のフィルタ gitlab_issue_api・note と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
+gitlab_hub.py のフィルタ gitlab_issue_api・note・fields と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
 Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -195,6 +195,18 @@ class NoteTest(unittest.TestCase):
 # 例の設定とワークフローを本物の change-watch で回す
 # ---------------------------------------------------------------------------
 
+class FieldsTest(unittest.TestCase):
+    def test_pairs_become_a_json_object(self):
+        code, out, _ = run_main("fields", 'title=【完了】"引用"の題', "add_labels=完了,済", "description=/close\n本文", "a=b=c")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"title": '【完了】"引用"の題', "add_labels": "完了,済",
+                                           "description": "\\/close\n本文", "a": "b=c"})
+
+    def test_bad_pairs_are_refused(self):
+        self.assertEqual(run_main("fields", "title")[0], gh.USAGE)
+        self.assertEqual(run_main("fields", "=x")[0], gh.USAGE)
+
+
 class ExampleFlowTest(unittest.TestCase):
     def setUp(self):
         if yaml is None:
@@ -223,7 +235,7 @@ class ExampleFlowTest(unittest.TestCase):
 
     def run_dag(self, name: str, **params) -> dict:
         import dagrun
-        dag = self.tmp / name                                            # python3 はこの Python に（Windows に python3 が無いことがある）
+        dag = self.tmp / Path(name).name                                            # python3 はこの Python に（Windows に python3 が無いことがある）
         dag.write_text((AGENT / name).read_text(encoding="utf-8").replace('"python3"', json.dumps(Path(sys.executable).as_posix())),
                        encoding="utf-8")
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
@@ -285,6 +297,26 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual((change["kind"], change["record"]["labels"], change["before"]["labels"]), ("changed", ["完了"], []))
         cw("commit", "--source", "gitlab-hub-issue", "--consumer", "pa", change["key"])
         self.assertEqual(cw(*get), "")
+
+    def test_get_post_example(self):
+        dag = "examples/change-watch-issue-hub-get-post.yaml.example"
+        self.assertEqual(self.run_dag(dag)["get"], 0)                    # 初回は今の issue を覚えるだけ
+        with self.gl.lock:
+            self.gl.issue["description"] = "説明を足した"
+        self.assertEqual(self.run_dag(dag), {"get": 0, "compose": None, "comment": None, "fields": None,
+                                             "retitle": None, "commit": 0})   # 条件に合わない変化は見るだけ
+        with self.gl.lock:
+            self.gl.issue["labels"] = ["完了"]
+            self.gl.issue["title"] = 'メール連携の"ハブ"'
+        self.assertEqual(self.run_dag(dag), {"get": 0, "compose": 0, "comment": 0, "fields": 0, "retitle": 0, "commit": 0})
+        self.assertEqual(self.gl.posted, ['「メール連携の"ハブ"」が完了になりました。'])
+        self.assertEqual(self.gl.updates, [{"title": '【完了】メール連携の"ハブ"'}])
+        self.assertEqual(self.gl.issue["title"], '【完了】メール連携の"ハブ"')
+        self.assertEqual(self.run_dag(dag)["commit"], None)              # 自分が変えた題では次に起きない（commit --refresh）
+        with self.gl.lock:
+            self.gl.issue["description"] = "もう一度変えた"
+        self.assertEqual(self.run_dag(dag)["comment"], None)             # 題が【完了】で始まるので、二度は書かない
+        self.assertEqual(len(self.gl.posted), 1)
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})

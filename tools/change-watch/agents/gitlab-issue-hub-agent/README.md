@@ -111,21 +111,24 @@
 dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
 ```
 
-ラベル・説明・状態などを変えるなら、ワークフローに次のようなステップを書く（`--json` は GitLab の issue の編集の項目:
-`add_labels`・`remove_labels`・`description`・`title`・`state_event` など）。何を書くかはワークフローで決める。
+ラベル・題・説明・状態などを変えるなら、ワークフローに `gitlab_hub.py fields`（更新の JSON を `名前=値` から作る）と
+`change-watch call PUT` のステップを書く（項目は GitLab の issue の編集のもの: `title`・`add_labels`・`remove_labels`・`description`・`state_event` など）。
+何を書くかはワークフローで決める。
 
-```yaml
-  - name: label
-    action: exec
-    with:
-      command: "/home/you/.local/bin/change-watch"
-      args: [--plugin, /home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py,
-             --config, /home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml,
-             --connections, /home/you/.github/connections.yaml,
-             call, PUT, "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}", --source, gitlab-hub-issue,
-             --json, '{"add_labels": "夜間バッチ完了"}']
-    retry_policy: { limit: 3, interval_sec: 60, exit_code: [3] }
-```
+## CLI で get と post をする例（`examples/change-watch-issue-hub-get-post.yaml.example`）
+
+Dagu のワークフローから change-watch の CLI を呼んで、ハブの issue を get し、post（コメントを足す・題を変える）する一通りの例。
+インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `get` | `change-watch get --source gitlab-hub-issue --consumer get-post --watch title --watch labels --watch description --one` | issue の変化と中身を 1 件受け取る（`${CHANGE.record.*}`・`${CHANGE.before.*}`） |
+| `compose` → `comment` | `gitlab_hub.py note --text=…` → `change-watch call POST "<issue の API>/notes" --json "${NOTE}"` | 条件（例: ラベル「完了」が付き、題がまだ【完了】で始まらない）に合えばコメントを足す |
+| `fields` → `retitle` | `gitlab_hub.py fields "title=【完了】${CHANGE.record.title}"` → `change-watch call PUT "<issue の API>" --json "${UPDATE}"` | 同じ条件で題を変える |
+| `commit` | `change-watch commit --source gitlab-hub-issue --consumer get-post --refresh ${CHANGE.key}` | 見終えたと記録する。自分が変えたあとの姿を基準にするので、自分の変更では次に起きない |
+
+change-watch のステップには、どれも `--plugin <gitlab_hub.py>` を付ける（`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
+change-watch が issue の URL から作る）。コメントを見るなら `get` を `--source gitlab-hub-notes` にする。
 
 変わったことは GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める。
 

@@ -25,7 +25,7 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 |---|---|---|
 | ハブの issue の取得・変化を返す・書き込み | change-watch | 取得元 `gitlab-hub-notes`（`GET <issue の API>/notes`、page のページング）と `gitlab-hub-issue`（`GET <issue の API>`、1 件）、どちらも 5 分ごと。`get --consumer`・`commit`・`call`（POST notes / PUT issue） |
 | 起動・条件の分岐・何を書くか・再試行・履歴 | Dagu | 例の `change-watch-issue-hub`（毎分。get → request → reply → commit）、例の `change-watch-issue-hub-update`（params の COMMENT で呼ばれる。compose → comment）、整理 |
-| GitLab に固有のこと | `gitlab_hub.py` | フィルタ `gitlab_issue_api`（プラグイン）と `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）。条件も本文の形も持たない。HTTP は送らない |
+| GitLab に固有のこと | `gitlab_hub.py` | フィルタ `gitlab_issue_api`（プラグイン）と `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）。条件も本文の形も持たない。HTTP は送らない |
 
 `note` が要るのは、Dagu の引数に任意の文（改行・引用符を含む）を JSON として埋め込むと壊れるため。認証と要求の間隔は change-watch の
 `call` に一本化する。
@@ -47,7 +47,13 @@ Dagu: change-watch-issue-hub（毎分。例）
 Dagu: change-watch-issue-hub-update（予定なし。dagu start … -- COMMENT=…。例）
   compose  python3 gitlab_hub.py note --text=${params.COMMENT}                                       → NOTE
   comment  preconditions: NOTE が ^{"body"。change-watch call POST "<issue の API>/notes" --json "${NOTE}"
-  （issue の更新は、同じ形で call PUT "<issue の API>" --json '{"add_labels": …}' のステップを書く。README に例）
+  （issue の更新は、同じ形で gitlab_hub.py fields title=… → call PUT "<issue の API>" --json "${UPDATE}" のステップを書く）
+
+examples/change-watch-issue-hub-get-post（インストーラは置かない。get と post の一通りの例）
+  get      change-watch get --source gitlab-hub-issue --consumer get-post --watch title --watch labels --watch description --one
+  compose → comment   条件（例: ラベル「完了」・題がまだ【完了】で始まらない）で note → call POST …/notes
+  fields → retitle    同じ条件で fields title=【完了】… → call PUT <issue の API>
+  commit   commit --refresh（取得元 gitlab-hub-issue の item で取り直し、自分の変更を次の変化にしない）
 ```
 
 ### 3.1 自分の書き込みでループしない
@@ -98,13 +104,14 @@ issue が閉じられる。`note` は本文の行頭の `/` を `\/` にする�
 GET・PUT。プロジェクトは `group/hub` で `%2F` になること）、設定の例とワークフローの例をそのまま本物の change-watch と `test/dagrun.py` で回す。
 
 - `gitlab_issue_api`: issue の URL（下のグループ・`#note_…`・旧形式の `/issues/`・`work_items`）と API の URL、ほかの URL は止める
+- `fields`: `名前=値` を JSON にする（引用符を含む題・`=` を含む値、`description` のクイックアクション）、形の誤りは止める
 - `note`: 本文をそのまま、クイックアクションを効かなくする、`-` で始まる本文・ファイル・コマンドの出力。空なら何も出さない。
   コマンドの失敗は何も出さずに終了コードを返す。本文の渡し方は 1 つだけ
 - 例のワークフロー: 初回は今あるコメントを覚えるだけ。条件に合う新しいコメントにだけ 1 回コメントし、ふつうのコメント・記録・自分の
   コメントには反応しない。同じトークンで書かれたものも条件だけで決まる。コマンドが失敗したらコメントせず、やり直さない。
-  書き込みのワークフローがコメントを足し、空なら書かない。issue そのものの変化（ラベル）を `gitlab-hub-issue` で受け取り、`call PUT` で変えられる。整理が動く
+  書き込みのワークフローがコメントを足し、空なら書かない。issue そのものの変化（ラベル）を `gitlab-hub-issue` で受け取り、`call PUT` で変えられる。get と post の例が、条件に合う変化でコメントを足して題を変え、自分の変更では起きず、二度は書かない。整理が動く
 - `test_install.py`: 4 つのエージェントが同じ決まりで置かれる。Windows でワークフローの Python が置き換わる
-- 3 つのワークフローの例を Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、エラー 0 件を確認した（2026-11-09、手元）
+- 4 つのワークフローの例を Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、エラー 0 件を確認した（2026-11-09、手元）
 
 ## 6. 限界
 
