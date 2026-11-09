@@ -10,12 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
 
 - ハブは issue の URL 1 つで決める（`GITLAB_HUB_ISSUE_URL`）。プラグインのフィルタ `gitlab_issue_api` が API の URL にする
-- 頼まれる側: issue に新しく付いたコメントとその中身を返し、「【依頼】」のコメント（メールを受けた Power Automate が書く想定）で決めたコマンドを
-  動かして、その出力を「【返信】」でコメントする
-- 頼む側: `change-watch-issue-hub-update` で issue にコメントを足す・ラベルや説明や状態を更新する。変わったことは GitLab の通知メールで届き、
-  何をするかは Power Automate が決める。`install.py install --agent gitlab-issue-hub-agent` で入れる
-- 取得と書き込みは change-watch の `get`・`commit`・`call`、条件は Dagu の `preconditions` に書く。本文の JSON は `gitlab_hub.py` が作り、
-  書き込む文の行頭の `/`（クイックアクション）を効かなくする
+- エージェントは変化の検知（issue に新しく付いたコメント・issue そのものの変化を `get` で返す）と、issue を変えること（`call` でコメント・更新）
+  だけを受け持つ。どの変化に反応するか・何を書くかはワークフローに書く。例のワークフローは、1 行目が「【依頼】」のコメント（メールを受けた
+  Power Automate が書く想定）でコマンドを動かし、その出力をコメントする。変わったことは GitLab の通知メールで届き、何をするかは Power Automate が決める
+- `gitlab_hub.py note` が、文・ファイル・コマンドの出力から `call --json` に渡すコメントの本文を作り、行頭の `/`（クイックアクション）を効かなくする。
+  `install.py install --agent gitlab-issue-hub-agent` で入れる
 - インストーラ: Windows で、ワークフローの `command: "python3"` もインストーラを動かした Python に置き換える
 
 ### change-watch: 条件をワークフローで判定する形（`get`・`commit`・`call`）を足す（0.6.0）

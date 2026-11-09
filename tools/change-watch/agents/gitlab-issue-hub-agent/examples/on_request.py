@@ -1,18 +1,16 @@
-"""依頼で動かすコマンドの例（ワークフローの request の最後の引数に書いたもの。/home/you/work/hub/on_request.py に置いて直す）。
+"""ハブの issue に付いたコメントで動かすコマンドの例（ワークフローの request に書いたもの。/home/you/work/hub/on_request.py に置いて直す）。
 
-依頼のコメントは、標準入力（change-watch get の出した変化の JSON）と環境変数で届く:
-    HUB_SUBJECT  1 行目から【依頼】を除いたもの（メールの件名）
-    HUB_TEXT     2 行目から後（メールの本文）
-    HUB_AUTHOR   書いた人のユーザー名
-標準出力に書いたものが返信の本文になる（何も書かなければ返信しない）。0 以外で終わると「処理できませんでした」と返信する。
+引数に、受け取ったコメントの変化（change-watch get の出した JSON。record が GitLab のコメント）が届く。
+標準出力に書いたものが、ハブの issue に足すコメントの本文になる（何も書かなければコメントしない）。
+0 以外で終わるとコメントせず、Dagu の実行履歴に失敗として残る。
 """
 import json
-import os
 import sys
 
-change = json.load(sys.stdin)
-subject = os.environ.get("HUB_SUBJECT", "")
-text = os.environ.get("HUB_TEXT", "")
+change = json.loads(sys.argv[1])
+note = change["record"]
+lines = str(note.get("body") or "").strip().splitlines()
+subject = lines[0].removeprefix("【依頼】").strip() if lines else ""
 
-# ここに依頼ごとの処理を書く。例: 件名で分けて、決まったスクリプトを動かす
-print(f"「{subject}」を受け付けました（{len(text.splitlines())} 行）。")
+# ここに処理を書く。例: 件名で分けて、決まったスクリプトを動かす
+print(f"【返信】{subject}\n\n{note['author']['username']} さんの依頼を受け付けました（{len(lines) - 1} 行）。")

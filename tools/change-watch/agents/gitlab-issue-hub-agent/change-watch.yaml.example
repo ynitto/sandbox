@@ -2,8 +2,9 @@
 # install.py install --agent gitlab-issue-hub-agent が無ければ置く）。ルール（rules）は書かない。どのコメントを依頼として扱うかは
 # Dagu のワークフロー（change-watch-issue-hub.yaml.example）に書く。
 #
-# change-watch が受け持つのは、ハブの issue のコメントの取得（予定・間隔・失敗の待ち）と、「前回 commit してから新しく付いた
-# コメント」を返すこと、それにコメントの書き込み（call）を同じトークン・同じ要求の間隔で送ることだけ。
+# change-watch が受け持つのは、ハブの issue の取得（予定・間隔・失敗の待ち。取得するか前回の取得結果で答えるかも決める）と、
+# 「前回 commit してから変わったもの」を返すこと、それに issue への書き込み（call）を同じトークン・同じ要求の間隔で送ることだけ。
+# 取得元は 2 つ: issue に付いたコメント（gitlab-hub-notes）と、issue そのもの（gitlab-hub-issue。題・説明・ラベル・状態など）。
 #
 # ハブの issue の URL とトークンは ~/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env にだけ書く。
 # URL から API の URL を作るフィルタ gitlab_issue_api は gitlab_hub.py のもの（change-watch を --plugin gitlab_hub.py で呼ぶ）。
@@ -28,6 +29,19 @@ sources:
     key: id                    # get --consumer が変化を見分ける key（コメントの ID）
     pagination: { type: page, size_param: per_page, size: 100 }
     schedule: "*/5 * * * *"    # GitLab に問い合わせる予定（ワークフローが毎分起動しても、予定の時刻ごとに 1 回）
+    jitter_sec: 60
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+
+  gitlab-hub-issue:
+    connection: gitlab
+    request:
+      # ハブの issue そのもの（1 件。get --watch で見る項目を決める: title・description・labels・state など）
+      url: "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+    key: iid
+    schedule: "*/5 * * * *"
     jitter_sec: 60
     failure_backoff_sec: 300
     rate_limit: { min_interval_sec: 1, group: gitlab }

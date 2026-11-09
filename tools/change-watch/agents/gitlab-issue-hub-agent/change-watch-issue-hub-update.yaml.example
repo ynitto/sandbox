@@ -1,28 +1,21 @@
-# gitlab-issue-hub-agent の、ハブの issue を変えるワークフロー（install.py install --agent gitlab-issue-hub-agent が
+# gitlab-issue-hub-agent の、ハブの issue を変えるワークフローの例（install.py install --agent gitlab-issue-hub-agent が
 # ~/.config/dagu/dags/change-watch-issue-hub-update.yaml に、この PC のパスにして置く）。
-# 予定では動かさない。ほかのワークフローやコマンド行から、変えたいことを COMMENT・UPDATE で渡して動かす:
+# 予定では動かさない。ほかのワークフローやコマンド行から、足すコメントを COMMENT で渡して動かす:
 #   dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
-#   dagu start change-watch-issue-hub-update -- UPDATE='{"add_labels": "完了"}'
-# COMMENT はコメントとして足し、UPDATE（JSON）は issue の更新（GitLab の「issue を編集」の項目: add_labels・remove_labels・
-# description・title・state_event など）として送る。両方渡せばコメントを足してから更新する。
+# 何を書くかはワークフローが決める。ラベル・説明・状態などを変えるなら、comment と同じ形で call PUT "{{ … | gitlab_issue_api }}" の
+# ステップを書く（--json に GitLab の issue の編集の項目: add_labels・remove_labels・description・title・state_event など）。
 # 変わったことは GitLab がこの issue を見ている人へメールで知らせ、それを受けて何をするかは Power Automate が決める。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
 # Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
-description: "GitLab のハブの issue にコメントを足す・issue を更新する（変わったことはメールで届く）"
+description: "GitLab のハブの issue にコメントを足す（変わったことはメールで届く）"
 type: graph
 hist_retention_days: 14
 dotenv:
   - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
 params:
-  - COMMENT: ""                 # 足すコメント（空なら足さない）
-  - UPDATE: ""                  # issue の更新（JSON。空なら更新しない）
+  - COMMENT: ""                 # 足すコメント
 steps:
   - name: compose
-    preconditions:              # コメントがあるときだけ
-      - condition: "${params.COMMENT}"
-        expected: "re:\\S"
-    continue_on:
-      skipped: true
     action: exec
     with:
       command: "python3"
@@ -34,11 +27,9 @@ steps:
     output: NOTE
   - name: comment
     depends: [compose]
-    preconditions:              # コメントの本文を作れたときだけ
+    preconditions:              # 本文があるときだけ（COMMENT が空なら書かない）
       - condition: "${NOTE}"
         expected: 're:^\{"body"'
-    continue_on:
-      skipped: true
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
@@ -58,33 +49,6 @@ steps:
         - "${NOTE}"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
-      limit: 3
-      interval_sec: 60
-      exit_code: [3]
-  - name: update
-    depends: [comment]
-    preconditions:              # 更新があるときだけ
-      - condition: "${params.UPDATE}"
-        expected: "re:^\\s*\\{"
-    action: exec
-    with:
-      command: "/home/you/.local/bin/change-watch"
-      args:
-        - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
-        - "--config"
-        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
-        - "--connections"
-        - "/home/you/.github/connections.yaml"
-        - "call"
-        - "PUT"
-        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}"
-        - "--source"
-        - "gitlab-hub-notes"
-        - "--json"
-        - "${params.UPDATE}"
-    timeout_sec: 120
-    retry_policy:
       limit: 3
       interval_sec: 60
       exit_code: [3]

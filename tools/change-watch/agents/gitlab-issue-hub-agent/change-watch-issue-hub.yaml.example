@@ -1,14 +1,15 @@
 # gitlab-issue-hub-agent の Dagu のワークフロー（install.py install --agent gitlab-issue-hub-agent が
 # ~/.config/dagu/dags/change-watch-issue-hub.yaml に、この PC のパスにして置く）。どのコメントを依頼として扱うかは、ここ（Dagu）の条件で決める。
-# 毎分起動し、1 回の起動でハブの issue の新しいコメントを 1 件見る:
-#   get      前回 commit してから新しく付いたコメントを 1 件受け取る（GitLab に問い合わせるかは change-watch が決める）
-#   request  1 行目が【依頼】のコメントなら、決めたコマンドを動かし、その出力を返信の本文にする   ← 条件（Dagu の preconditions）
-#   reply    返信をハブの issue にコメントする（change-watch call）。GitLab がこの issue を見ている人へメールで知らせる
+# 毎分起動し、1 回の起動でハブの issue に新しく付いたコメントを 1 件見る:
+#   get      前回 commit してから新しく付いたコメントを 1 件受け取る（GitLab に問い合わせるか、前回の取得結果で答えるかは change-watch が決める）
+#   request  条件に合えば、決めたコマンドを動かし、その出力をコメントの本文にする   ← 条件（Dagu の preconditions）。例の条件は自分のものに直す
+#   reply    出力があれば、ハブの issue にコメントする（change-watch call）。GitLab がこの issue を見ている人へメールで知らせる
 #   commit   見終えたと記録する
-# 返信のコメントは 1 行目が【返信】なので、もう一度依頼として扱うことはない（change-watch-issue-hub-update で足すコメントも、【依頼】で始めなければ依頼にならない）。
+# 例の条件は「新しく付いた、人が書いた、1 行目が【依頼】のコメント」。コマンドの出力を【依頼】で始めなければ、自分の書いたコメントには当たらない。
+# issue そのもの（題・説明・ラベル・状態）の変化を見るなら、get を --source gitlab-hub-issue --watch labels のようにした別のワークフローにする。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
 # Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
-description: "GitLab のハブの issue に付いた依頼のコメントを受け取り、コマンドを動かして返信する"
+description: "GitLab のハブの issue に新しく付いたコメントを受け取り、条件に合えばコマンドを動かしてその出力をコメントする"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
@@ -42,7 +43,7 @@ steps:
     output: CHANGE
   - name: request
     depends: [get]
-    preconditions:              # 条件（Dagu）: 新しく付いた、人が書いたコメントで、1 行目が【依頼】
+    preconditions:              # 条件（Dagu。例）: 新しく付いた、人が書いたコメントで、1 行目が【依頼】
       - condition: "${CHANGE.kind}"
         expected: "appeared"
       - condition: "${CHANGE.record.system}"
@@ -50,23 +51,23 @@ steps:
       - condition: "${CHANGE.record.body}"
         expected: "re:^【依頼】"
     continue_on:
-      skipped: true             # 依頼でなくても commit する
-      failure: true             # コマンドが失敗しても「処理できませんでした」と返信し、commit する（Dagu の履歴に失敗として残る）
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
     action: exec
     with:
       command: "python3"
       args:
         - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
-        - "reply"
-        - "${CHANGE}"
+        - "note"
         - "--"
-        - "python3"             # ↓ 依頼で動かすコマンド。依頼の中身は標準入力（JSON）と HUB_SUBJECT・HUB_TEXT で届き、標準出力が返信になる
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
         - "/home/you/work/hub/on_request.py"
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
     timeout_sec: 1800
     output: NOTE
   - name: reply
     depends: [request]
-    preconditions:              # 返信の本文があるときだけ
+    preconditions:              # コメントの本文があるときだけ
       - condition: "${NOTE}"
         expected: 're:^\{"body"'
     continue_on:

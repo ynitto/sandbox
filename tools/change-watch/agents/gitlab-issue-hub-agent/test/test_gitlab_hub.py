@@ -1,6 +1,6 @@
 """gitlab-issue-hub-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_hub.py のフィルタ gitlab_issue_api・note・reply と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
+gitlab_hub.py のフィルタ gitlab_issue_api・note と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
 Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -47,12 +48,13 @@ def run_main(*argv) -> tuple[int, str, str]:
 
 
 class FakeGitLab:
-    """GET・POST /api/v4/projects/group%2Fhub/issues/42/notes（page・per_page）と PUT …/issues/42。書くのはトークンの持ち主（BOT）。"""
+    """GET・POST /api/v4/projects/group%2Fhub/issues/42/notes（page・per_page）と GET・PUT …/issues/42。書くのはトークンの持ち主（BOT）。"""
 
     def __init__(self):
         self.notes: list[dict] = []
         self.posted: list[str] = []
         self.updates: list[dict] = []
+        self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
         self.lock = threading.Lock()
         outer = self
         issue_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{ISSUE}"
@@ -66,6 +68,9 @@ class FakeGitLab:
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
                 u = urlparse(self.path)
+                if u.path == issue_path:
+                    with outer.lock:
+                        return self._send(200, dict(outer.issue))
                 if u.path != path:
                     return self._send(404, {"message": "404 Not found"})
                 q = parse_qs(u.query)
@@ -93,7 +98,11 @@ class FakeGitLab:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 with outer.lock:
                     outer.updates.append(body)
-                self._send(200, {"iid": ISSUE, **body})
+                    if "add_labels" in body:
+                        outer.issue["labels"] = sorted(set(outer.issue["labels"]) | set(body["add_labels"].split(",")))
+                    outer.issue.update({k: v for k, v in body.items() if k in ("title", "description")})
+                    issue = dict(outer.issue)
+                self._send(200, issue)
 
             def _send(self, code, body):
                 raw = json.dumps(body, ensure_ascii=False).encode()
@@ -160,41 +169,26 @@ class NoteTest(unittest.TestCase):
         f.write_text("ファイルの本文\n", encoding="utf-8")
         self.assertEqual(json.loads(run_main("note", "--text-file", str(f))[1])["body"], "ファイルの本文")
 
-    def test_nothing_to_write_is_a_usage_error(self):
-        self.assertEqual(run_main("note")[0], gh.USAGE)
-        self.assertEqual(run_main("note", "--text= ")[0], gh.USAGE)
-        self.assertEqual(run_main("note", "--text=a", "--text-file", "x")[0], gh.USAGE)
+    def test_command_output_becomes_the_text(self):
+        code, out, _ = run_main("note", "--", sys.executable, "-c", "import sys; print('結果: ' + sys.argv[1]); print('/close')", "{}")
+        self.assertEqual((code, json.loads(out)["body"]), (0, "結果: {}\n\\/close"))
 
-
-class ReplyTest(unittest.TestCase):
-    def change(self, body: str) -> str:
-        return json.dumps({"key": "1001", "kind": "appeared",
-                           "record": {"id": 1001, "body": body, "author": ALICE, "system": False}}, ensure_ascii=False)
-
-    def test_handler_gets_the_request_and_its_output_becomes_the_reply(self):
-        script = Path(tempfile.mkdtemp()) / "h.py"
-        script.write_text("import json, os, sys\nc = json.load(sys.stdin)\n"
-                          "print(os.environ['HUB_SUBJECT'], os.environ['HUB_AUTHOR'], os.environ['HUB_NOTE_ID'], c['key'])\n"
-                          "print(os.environ['HUB_TEXT'])\nprint('/close')\n", encoding="utf-8")
-        code, out, _ = run_main("reply", self.change("【依頼】売上の集計\n\n先月分を\nお願いします"), "--",
-                                sys.executable, str(script))
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out)["body"],
-                         "【返信】売上の集計\n\n売上の集計 alice 1001 1001\n先月分を\nお願いします\n\\/close")
-
-    def test_failure_replies_without_details_and_keeps_the_exit_code(self):
-        code, out, err = run_main("reply", self.change("【依頼】x"), "--", sys.executable, "-c",
-                                  "import sys; print('secret'); print('oops', file=sys.stderr); sys.exit(4)")
-        self.assertEqual(code, 4)
-        self.assertEqual(json.loads(out)["body"], "【返信】x\n\n処理できませんでした（終了コード 4）。")
+    def test_failed_command_writes_nothing_and_keeps_the_exit_code(self):
+        code, out, err = run_main("note", "--", sys.executable, "-c",
+                                  "import sys; print('途中'); print('oops', file=sys.stderr); sys.exit(4)")
+        self.assertEqual((code, out), (4, ""))
         self.assertIn("oops", err)
+        code, out, _ = run_main("note", "--", str(Path(tempfile.mkdtemp()) / "nope"))
+        self.assertEqual((code, out), (gh.NOT_FOUND, ""))
 
-    def test_missing_command_and_silent_handler(self):
-        code, out, _ = run_main("reply", self.change("【依頼】x"), "--", str(Path(tempfile.mkdtemp()) / "nope"))
-        self.assertEqual(code, gh.NOT_FOUND)
-        self.assertIn("処理できませんでした", json.loads(out)["body"])
-        self.assertEqual(run_main("reply", self.change("【依頼】x"), "--", sys.executable, "-c", "pass")[:2], (0, ""))
-        self.assertEqual(run_main("reply", "not json", "--", "x")[0], gh.USAGE)
+    def test_empty_text_writes_nothing(self):
+        self.assertEqual(run_main("note", "--text= ")[:2], (0, ""))
+        self.assertEqual(run_main("note", "--", sys.executable, "-c", "pass")[:2], (0, ""))
+
+    def test_text_must_come_from_exactly_one_place(self):
+        self.assertEqual(run_main("note")[0], gh.USAGE)
+        self.assertEqual(run_main("note", "--text=a", "--text-file", "x")[0], gh.USAGE)
+        self.assertEqual(run_main("note", "--text=a", "--", "echo")[0], gh.USAGE)
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +206,10 @@ class ExampleFlowTest(unittest.TestCase):
         cfg = yaml.safe_load((AGENT / "change-watch.yaml.example").read_text(encoding="utf-8"))
         self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
         cfg["state_dir"] = str(self.tmp / "state")
-        src = cfg["sources"]["gitlab-hub-notes"]
-        for k in ("schedule", "jitter_sec"):
-            src.pop(k)
-        src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        for src in cfg["sources"].values():
+            for k in ("schedule", "jitter_sec"):
+                src.pop(k)
+            src.update(retry={"attempts": 1}, failure_backoff_sec=0)
         self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.yaml"
@@ -236,7 +230,7 @@ class ExampleFlowTest(unittest.TestCase):
         env = {**self.env, **{f"params.{k}": v for k, v in params.items()}}
         return dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=env, paths=self.paths)
 
-    def test_replies_to_requests_only_once(self):
+    def test_replies_to_matching_comments_only_once(self):
         self.gl.add("前からあるコメント")
         self.gl.add("【依頼】前からある依頼")
         hub = "change-watch-issue-hub.yaml.example"
@@ -246,41 +240,51 @@ class ExampleFlowTest(unittest.TestCase):
         self.gl.add("【依頼】売上の集計\n先月分をお願いします")          # メールから Power Automate が書いたもの
         self.gl.add("ふつうのコメント")
         self.gl.add("added ~1 label", system=True)
-        self.gl.add("【依頼】在庫の確認", author=BOT)                    # Power Automate がエージェントと同じトークンで書いても依頼になる
+        self.gl.add("【依頼】在庫の確認", author=BOT)                    # エージェントと同じトークンで書いても、条件は 1 行目だけ
         runs = [self.run_dag(hub) for _ in range(8)]
         self.assertIn({"get": 0, "request": 0, "reply": 0, "commit": 0}, runs)
         self.assertIn({"get": 0, "request": None, "reply": None, "commit": 0}, runs)
-        self.assertEqual(runs[-1]["commit"], None)                       # 見終えたら、もう何もしない（自分の返信には返信しない）
-        self.assertEqual(self.gl.posted, ["【返信】売上の集計\n\n「売上の集計」を受け付けました（1 行）。",
-                                          "【返信】在庫の確認\n\n「在庫の確認」を受け付けました（0 行）。"])
+        self.assertEqual(runs[-1]["commit"], None)                       # 見終えたら、もう何もしない（自分のコメントには当たらない）
+        self.assertEqual(self.gl.posted, ["【返信】売上の集計\n\nalice さんの依頼を受け付けました（1 行）。",
+                                          "【返信】在庫の確認\n\nhub-bot さんの依頼を受け付けました（0 行）。"])
 
-    def test_failed_request_is_answered_and_not_retried(self):
-        self.run_dag("change-watch-issue-hub.yaml.example")
+    def test_failed_command_comments_nothing_and_is_not_retried(self):
+        hub = "change-watch-issue-hub.yaml.example"
+        self.run_dag(hub)
         bad = self.tmp / "bad.py"
-        bad.write_text("import sys; sys.exit(5)\n", encoding="utf-8")
+        bad.write_text("import sys; print('途中'); sys.exit(5)\n", encoding="utf-8")
         self.paths["/home/you/work/hub/on_request.py"] = str(bad)
         self.gl.add("【依頼】壊れる依頼")
-        r = self.run_dag("change-watch-issue-hub.yaml.example")
-        self.assertEqual(r, {"get": 0, "request": 5, "reply": 0, "commit": 0})
-        self.assertEqual(self.gl.posted, ["【返信】壊れる依頼\n\n処理できませんでした（終了コード 5）。"])
-        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example"),                  # 次は自分の返信を見て、何もしない
-                         {"get": 0, "request": None, "reply": None, "commit": 0})
-        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["commit"], None)   # 失敗した依頼はやり直さない
-        self.assertEqual(len(self.gl.posted), 1)
+        self.assertEqual(self.run_dag(hub), {"get": 0, "request": 5, "reply": None, "commit": 0})
+        self.assertEqual(self.gl.posted, [])
+        self.assertEqual(self.run_dag(hub)["commit"], None)               # やり直さない
 
-    def test_update_adds_a_comment_and_edits_the_issue(self):
+    def test_update_adds_a_comment(self):
         dag = "change-watch-issue-hub-update.yaml.example"
-        self.assertEqual(self.run_dag(dag, COMMENT="夜間バッチが終わりました\n/close", UPDATE=""),
-                         {"compose": 0, "comment": 0, "update": None})
+        self.assertEqual(self.run_dag(dag, COMMENT="夜間バッチが終わりました\n/close"), {"compose": 0, "comment": 0})
         self.assertEqual(self.gl.posted, ["夜間バッチが終わりました\n\\/close"])
-        self.assertEqual(self.run_dag(dag, COMMENT="", UPDATE='{"add_labels": "完了"}'),
-                         {"compose": None, "comment": None, "update": 0})
+        self.assertEqual(self.run_dag(dag, COMMENT=""), {"compose": 0, "comment": None})   # 空なら書かない
+        self.assertEqual(len(self.gl.posted), 1)
+        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["get"], 0)
+        self.gl.add("あとから付いたコメント")
+        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["request"], None)
+
+    def test_issue_itself_changes_are_detected_and_it_can_be_edited(self):
+        def cw(*args):
+            p = subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PROGRAM), "--config", str(self.cfg),
+                                "--connections", str(self.conn), *args], capture_output=True, text=True, encoding="utf-8",
+                               env=self.env)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return p.stdout.strip()
+        get = ("get", "--source", "gitlab-hub-issue", "--consumer", "pa", "--watch", "labels", "--watch", "description", "--one")
+        self.assertEqual(cw(*get), "")                                   # 初回は覚えるだけ
+        cw("call", "PUT", "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}", "--source", "gitlab-hub-notes",
+           "--json", '{"add_labels": "完了"}')
         self.assertEqual(self.gl.updates, [{"add_labels": "完了"}])
-        self.assertEqual(self.run_dag(dag, COMMENT="両方", UPDATE='{"state_event": "close"}'),
-                         {"compose": 0, "comment": 0, "update": 0})
-        self.assertEqual((self.gl.posted[-1], self.gl.updates[-1]), ("両方", {"state_event": "close"}))
-        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["get"], 0)       # 足したコメントは依頼にならない
-        self.assertEqual([self.run_dag("change-watch-issue-hub.yaml.example")["request"] for _ in range(3)], [None, None, None])
+        change = json.loads(cw(*get))
+        self.assertEqual((change["kind"], change["record"]["labels"], change["before"]["labels"]), ("changed", ["完了"], []))
+        cw("commit", "--source", "gitlab-hub-issue", "--consumer", "pa", change["key"])
+        self.assertEqual(cw(*get), "")
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})
