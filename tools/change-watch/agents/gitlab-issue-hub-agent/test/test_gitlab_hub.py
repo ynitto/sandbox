@@ -1,6 +1,6 @@
 """gitlab-issue-hub-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_hub.py の note・reply と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
+gitlab_hub.py のフィルタ gitlab_issue_api・note・reply と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
 Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ gh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gh)
 
 TOKEN = "glpat-test"
-PROJECT = "123"
+PROJECT = "group/hub"
 ISSUE = 42
 BOT = {"id": 1, "username": "hub-bot"}
 ALICE = {"id": 2, "username": "alice"}
@@ -47,14 +47,16 @@ def run_main(*argv) -> tuple[int, str, str]:
 
 
 class FakeGitLab:
-    """GET・POST /api/v4/projects/123/issues/42/notes（page・per_page）。POST はトークンの持ち主（BOT）が書く。"""
+    """GET・POST /api/v4/projects/group%2Fhub/issues/42/notes（page・per_page）と PUT …/issues/42。書くのはトークンの持ち主（BOT）。"""
 
     def __init__(self):
         self.notes: list[dict] = []
         self.posted: list[str] = []
+        self.updates: list[dict] = []
         self.lock = threading.Lock()
         outer = self
-        path = f"/api/v4/projects/{PROJECT}/issues/{ISSUE}/notes"
+        issue_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{ISSUE}"
+        path = issue_path + "/notes"
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -82,6 +84,16 @@ class FakeGitLab:
                     outer.posted.append(body)
                     note = outer._add(body, BOT)
                 self._send(201, note)
+
+            def do_PUT(self):
+                if self.headers.get("PRIVATE-TOKEN") != TOKEN:
+                    return self._send(401, {"message": "401 Unauthorized"})
+                if urlparse(self.path).path != issue_path:
+                    return self._send(404, {"message": "404 Not found"})
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                with outer.lock:
+                    outer.updates.append(body)
+                self._send(200, {"iid": ISSUE, **body})
 
             def _send(self, code, body):
                 raw = json.dumps(body, ensure_ascii=False).encode()
@@ -114,25 +126,43 @@ class FakeGitLab:
 # gitlab_hub.py
 # ---------------------------------------------------------------------------
 
+class IssueApiTest(unittest.TestCase):
+    def test_issue_url_becomes_the_api_url(self):
+        f = gh.gitlab_issue_api
+        self.assertEqual(f("https://gl.example.com/group/sub/proj/-/issues/42"),
+                         "https://gl.example.com/api/v4/projects/group%2Fsub%2Fproj/issues/42")
+        self.assertEqual(f("https://gl.example.com/g/p/-/issues/7#note_3"), "https://gl.example.com/api/v4/projects/g%2Fp/issues/7")
+        self.assertEqual(f("https://gl.example.com/g/p/issues/7/"), "https://gl.example.com/api/v4/projects/g%2Fp/issues/7")
+        self.assertEqual(f("https://gl.example.com/g/p/-/work_items/5?x=1"), "https://gl.example.com/api/v4/projects/g%2Fp/issues/5")
+        self.assertEqual(f("https://gl.example.com/gitlab/api/v4/projects/9/issues/1/"),   # API の URL はそのまま
+                         "https://gl.example.com/gitlab/api/v4/projects/9/issues/1")
+
+    def test_other_urls_are_refused(self):
+        for bad in ("", "https://gl.example.com/g/p/-/merge_requests/1", "gl.example.com/g/p/-/issues/1"):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                gh.gitlab_issue_api(bad)
+
+
 class NoteTest(unittest.TestCase):
-    def test_notify_has_the_mark_and_title_on_the_first_line(self):
-        code, out, _ = run_main("note", "--title=夜間バッチ", "--text=終わりました\n2 件")
+    def test_note_is_the_text_as_is(self):
+        code, out, _ = run_main("note", "--text=夜間バッチが終わりました\n2 件\n")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), {"body": "【通知】夜間バッチ\n\n終わりました\n2 件"})
+        self.assertEqual(json.loads(out), {"body": "夜間バッチが終わりました\n2 件"})
 
     def test_quick_actions_are_disarmed(self):
-        code, out, _ = run_main("note", "--title=t", "--text=/close\n  /assign @me\npath a/b")
-        self.assertEqual(json.loads(out)["body"], "【通知】t\n\n\\/close\n  \\/assign @me\npath a/b")
+        code, out, _ = run_main("note", "--text=/close\n  /assign @me\npath a/b")
+        self.assertEqual(json.loads(out)["body"], "\\/close\n  \\/assign @me\npath a/b")
         self.assertEqual(gh.disarm("/label ~x"), "\\/label ~x")
 
     def test_text_starting_with_dash_and_text_file(self):
-        self.assertEqual(json.loads(run_main("note", "--text=-x")[1])["body"], "【通知】\n\n-x")
+        self.assertEqual(json.loads(run_main("note", "--text=-x")[1])["body"], "-x")
         f = Path(tempfile.mkdtemp()) / "b.txt"
         f.write_text("ファイルの本文\n", encoding="utf-8")
-        self.assertEqual(json.loads(run_main("note", "--title=t", "--text-file", str(f))[1])["body"], "【通知】t\n\nファイルの本文")
+        self.assertEqual(json.loads(run_main("note", "--text-file", str(f))[1])["body"], "ファイルの本文")
 
     def test_nothing_to_write_is_a_usage_error(self):
         self.assertEqual(run_main("note")[0], gh.USAGE)
+        self.assertEqual(run_main("note", "--text= ")[0], gh.USAGE)
         self.assertEqual(run_main("note", "--text=a", "--text-file", "x")[0], gh.USAGE)
 
 
@@ -190,8 +220,8 @@ class ExampleFlowTest(unittest.TestCase):
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.yaml"
         self.conn.write_text("gitlab:\n  - label: default\n    url: ${GITLAB_URL}\n    token: ${GITLAB_TOKEN}\n", encoding="utf-8")
-        self.env = {**os.environ, "GITLAB_URL": self.gl.url, "GITLAB_TOKEN": TOKEN, "GITLAB_PROJECT": PROJECT,
-                    "GITLAB_HUB_ISSUE": str(ISSUE)}
+        self.env = {**os.environ, "GITLAB_URL": "http://127.0.0.1:9", "GITLAB_TOKEN": TOKEN,   # 接続の url は使わない
+                    "GITLAB_HUB_ISSUE_URL": f"{self.gl.url}/{PROJECT}/-/issues/{ISSUE}"}
         self.paths = {"/home/you/.github/connections.yaml": str(self.conn),
                       "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml": str(self.cfg),
                       "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py": str(PROGRAM),
@@ -238,10 +268,19 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["commit"], None)   # 失敗した依頼はやり直さない
         self.assertEqual(len(self.gl.posted), 1)
 
-    def test_notify_posts_a_marked_comment(self):
-        r = self.run_dag("change-watch-issue-hub-notify.yaml.example", TITLE="夜間バッチ", BODY="終わりました\n/close")
-        self.assertEqual(r, {"compose": 0, "post": 0})
-        self.assertEqual(self.gl.posted, ["【通知】夜間バッチ\n\n終わりました\n\\/close"])
+    def test_update_adds_a_comment_and_edits_the_issue(self):
+        dag = "change-watch-issue-hub-update.yaml.example"
+        self.assertEqual(self.run_dag(dag, COMMENT="夜間バッチが終わりました\n/close", UPDATE=""),
+                         {"compose": 0, "comment": 0, "update": None})
+        self.assertEqual(self.gl.posted, ["夜間バッチが終わりました\n\\/close"])
+        self.assertEqual(self.run_dag(dag, COMMENT="", UPDATE='{"add_labels": "完了"}'),
+                         {"compose": None, "comment": None, "update": 0})
+        self.assertEqual(self.gl.updates, [{"add_labels": "完了"}])
+        self.assertEqual(self.run_dag(dag, COMMENT="両方", UPDATE='{"state_event": "close"}'),
+                         {"compose": 0, "comment": 0, "update": 0})
+        self.assertEqual((self.gl.posted[-1], self.gl.updates[-1]), ("両方", {"state_event": "close"}))
+        self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["get"], 0)       # 足したコメントは依頼にならない
+        self.assertEqual([self.run_dag("change-watch-issue-hub.yaml.example")["request"] for _ in range(3)], [None, None, None])
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})

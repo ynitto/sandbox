@@ -1,27 +1,31 @@
-"""gitlab-issue-hub-agent — 決めた 1 つの GitLab の issue（ハブ）に書くコメントの本文を作るコマンド。
+"""gitlab-issue-hub-agent — 決めた 1 つの GitLab の issue（ハブ）のための change-watch のプラグインと、コメントの本文を作るコマンド。
 
-Dagu のワークフローから呼び、標準出力に GitLab の「コメントを足す」要求の本文（JSON の {"body": ...}）を出す。
-それを change-watch call の --json に渡して書き込む（書き込み・認証・要求の間隔は change-watch が受け持つ）:
+1 つのファイルを 2 つの使い方で使う:
 
-    python3 <このファイル> note --title "夜間バッチ" --text "終わりました"
-        {"body": "【通知】夜間バッチ\\n\\n終わりました"}                    通知（ほかのワークフローから知らせる）
+    change-watch --plugin <このファイル> ...      プラグインとして読み込む（register(api)）
+        フィルタ gitlab_issue_api      {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}
+                                       issue の URL（https://gitlab.example.com/group/project/-/issues/42）を、その issue の
+                                       API の URL（https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/42）にする。
+                                       設定の取得元と、ワークフローの call の URL に書く（ハブは issue の URL 1 つで決める）
+
+    python3 <このファイル> note --text "..."
+        {"body": "..."}                              issue に足すコメントの本文（change-watch call の --json に渡す）
 
     python3 <このファイル> reply "${CHANGE}" -- python3 /path/to/on_request.py
         依頼のコメント（change-watch get の出した変化）を渡してコマンドを動かし、その標準出力を返信の本文にする:
         {"body": "【返信】<依頼の 1 行目>\\n\\n<標準出力>"}
         コマンドが失敗したら「処理できませんでした」の返信を出し、コマンドの終了コードで終わる（Dagu の履歴には失敗として残る）
 
-コマンドには、依頼のコメントを次の形で渡す:
+reply のコマンドには、依頼のコメントを次の形で渡す:
     標準入力          変化の JSON（{"key", "kind", "record", ...}。record が GitLab のコメント）
     HUB_SUBJECT       1 行目から【依頼】を除いたもの（メールの件名を置く想定）
     HUB_TEXT          2 行目から後（メールの本文を置く想定）
     HUB_AUTHOR        書いた人のユーザー名
     HUB_NOTE_ID       コメントの ID
 
-ここで受け持つのは、本文の形を決まったものにすること（メールの件名・本文で Power Automate が見分けられるように、1 行目に
-【通知】・【返信】の印を付ける）と、書き込む文に混ざった GitLab のクイックアクション（行頭の /close など）を効かなくすることだけ。
-どのコメントを依頼として扱うか（1 行目の【依頼】）は Dagu のワークフローの preconditions に書く。
-標準ライブラリだけで動く。設計は docs/designs/gitlab-issue-hub-agent-design.md。
+本文は、書き込む文に混ざった GitLab のクイックアクション（行頭の /close など）を効かなくして出す。HTTP は送らない
+（取得・書き込み・認証・要求の間隔は change-watch が受け持つ）。どのコメントを依頼として扱うか（1 行目の【依頼】）は
+Dagu のワークフローの preconditions に書く。標準ライブラリだけで動く。設計は docs/designs/gitlab-issue-hub-agent-design.md。
 """
 from __future__ import annotations
 
@@ -31,9 +35,9 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from typing import Any
 
-NOTIFY = "【通知】"
 REPLY = "【返信】"
 REQUEST = "【依頼】"          # ワークフローの preconditions（re:^【依頼】）と同じにする
 
@@ -42,6 +46,35 @@ USAGE = 2
 NOT_FOUND = 127
 
 _QUICK_ACTION = re.compile(r"(?m)^(\s*)/")
+_ISSUE_URL = re.compile(r"^(https?://[^/?#]+)/(.+?)(?:/-)?/(?:issues|work_items)/(\d+)/?(?:[?#].*)?$")
+
+
+# ---------------------------------------------------------------------------
+# プラグイン（change-watch --plugin で読み込む）
+# ---------------------------------------------------------------------------
+
+def gitlab_issue_api(url, _arg=None) -> str:
+    """issue の URL を、その issue の API の URL にする（プロジェクトのパスは %2F で 1 つにまとめる）。
+    GitLab を https://host/gitlab/ のような下の場所に置いているときは見分けられないので、API の URL をそのまま書く
+    （/api/v4/ を含む URL は手を加えずに返す）。"""
+    url = str(url or "").strip()
+    if "/api/v4/" in url:
+        return url.rstrip("/")
+    m = _ISSUE_URL.match(url)
+    if not m:
+        raise ValueError(f"GitLab の issue の URL ではありません: {url!r}"
+                         "（https://gitlab.example.com/group/project/-/issues/42 の形で書いてください）")
+    base, project, iid = m.groups()
+    return f"{base}/api/v4/projects/{urllib.parse.quote(project, safe='')}/issues/{iid}"
+
+
+def register(api) -> None:
+    api.add_filter("gitlab_issue_api", gitlab_issue_api)
+
+
+# ---------------------------------------------------------------------------
+# コメントの本文（Dagu のワークフローから呼ぶ）
+# ---------------------------------------------------------------------------
 
 
 def disarm(text: str) -> str:
@@ -87,11 +120,10 @@ def cmd_note(a) -> int:
         except OSError as e:
             print(f"本文のファイルを読めません: {e}", file=sys.stderr)
             return USAGE
-    title = str(a.title or "").strip().splitlines()
-    if not title and not text.strip():
-        print("書くことがありません（--title か --text を渡してください）", file=sys.stderr)
+    if not text.strip():
+        print("書くことがありません（--text か --text-file を渡してください）", file=sys.stderr)
         return USAGE
-    print(note_json(compose(NOTIFY + (title[0].strip() if title else ""), text)))
+    print(note_json(disarm(text.strip())))
     return OK
 
 
@@ -134,8 +166,7 @@ def cmd_reply(a) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="gitlab_hub.py", description="ハブの issue に書くコメントの本文（JSON）を出す")
     sub = p.add_subparsers(dest="cmd", required=True)
-    n = sub.add_parser("note", help="通知のコメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）")
-    n.add_argument("--title", default="", help="1 行目（【通知】のあと）。メールで見分けるのに使う")
+    n = sub.add_parser("note", help="コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）")
     n.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
     n.add_argument("--text-file", help="本文のファイル（UTF-8）")
     r = sub.add_parser("reply", help="依頼のコメントを渡してコマンドを動かし、その出力を返信の本文にする")

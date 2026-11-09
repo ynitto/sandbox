@@ -5,7 +5,7 @@
 #   request  1 行目が【依頼】のコメントなら、決めたコマンドを動かし、その出力を返信の本文にする   ← 条件（Dagu の preconditions）
 #   reply    返信をハブの issue にコメントする（change-watch call）。GitLab がこの issue を見ている人へメールで知らせる
 #   commit   見終えたと記録する
-# 返信・通知のコメントは 1 行目が【返信】・【通知】なので、もう一度依頼として扱うことはない。
+# 返信のコメントは 1 行目が【返信】なので、もう一度依頼として扱うことはない（change-watch-issue-hub-update で足すコメントも、【依頼】で始めなければ依頼にならない）。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
 # Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
 description: "GitLab のハブの issue に付いた依頼のコメントを受け取り、コマンドを動かして返信する"
@@ -20,6 +20,8 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"
@@ -74,13 +76,15 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"
         - "/home/you/.github/connections.yaml"
         - "call"
         - "POST"
-        - "/api/v4/projects/${GITLAB_PROJECT}/issues/${GITLAB_HUB_ISSUE}/notes"   # / で始まる URL は接続の url に足す
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
         - "--source"
         - "gitlab-hub-notes"
         - "--json"
@@ -99,6 +103,8 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"

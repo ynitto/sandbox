@@ -5,8 +5,9 @@
 # change-watch が受け持つのは、ハブの issue のコメントの取得（予定・間隔・失敗の待ち）と、「前回 commit してから新しく付いた
 # コメント」を返すこと、それにコメントの書き込み（call）を同じトークン・同じ要求の間隔で送ることだけ。
 #
-# GitLab の URL・プロジェクト・issue・トークンは ~/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env にだけ書く。
-# connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
+# ハブの issue の URL とトークンは ~/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env にだけ書く。
+# URL から API の URL を作るフィルタ gitlab_issue_api は gitlab_hub.py のもの（change-watch を --plugin gitlab_hub.py で呼ぶ）。
+# connections.yaml の gitlab は次のように書き、値はその環境変数から取る（ほかの GitLab のエージェントと同じものでよい。url は使わない）:
 #
 #   gitlab:
 #     - label: default
@@ -19,8 +20,8 @@ sources:
   gitlab-hub-notes:
     connection: gitlab
     request:
-      # ハブの issue のコメント（GITLAB_PROJECT は ID か、/ を %2F にしたパス。ワークフローの書き込み先と同じ値を使う）
-      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT }}/issues/{{ env.GITLAB_HUB_ISSUE }}/notes"
+      # ハブの issue のコメント（issue の URL から API の URL を作る）
+      url: "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
       headers:
         PRIVATE-TOKEN: "{{ conn.token }}"
       query: { sort: asc, order_by: created_at }

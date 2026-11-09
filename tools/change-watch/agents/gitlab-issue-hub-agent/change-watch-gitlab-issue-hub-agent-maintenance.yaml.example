@@ -14,6 +14,8 @@ steps:
     with:
       command: "/home/you/.local/bin/change-watch"
       args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"
