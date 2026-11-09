@@ -58,6 +58,8 @@ class PathTest(unittest.TestCase):
         self.assertEqual(template.render("{{ conn.url }}/v1", ctx), "https://h/v1")
         self.assertEqual(template.render("{{ event.after.n }}", ctx), 3)                # 型を保つ
         self.assertEqual(template.render("{{ position | default: 0 }}", ctx), 0)
+        self.assertEqual(template.render('{{ nope | default: "a|b" }}', ctx), "a|b")
+        self.assertEqual(template.render("{{ nope | default: 'a|b' | urlencode }}", ctx), "a%7Cb")
         self.assertEqual(template.render("q={{ conn.url | urlencode }}", ctx), "q=https%3A%2F%2Fh")
         with self.assertRaises(ConfigError):
             template.render("{{ conn.nothing }}", ctx)
