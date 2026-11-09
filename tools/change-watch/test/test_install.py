@@ -114,7 +114,8 @@ class AgentInstallTest(unittest.TestCase):
     def test_every_agent_lands_in_the_same_layout(self):
         import install
         names = install.available_agents()
-        self.assertEqual(names, ["gitlab-issue-agent", "gitlab-mr-review-agent", "redmine-ticket-agent"])
+        self.assertEqual(names, ["gitlab-issue-agent", "gitlab-issue-hub-agent", "gitlab-mr-review-agent",
+                                 "redmine-ticket-agent"])
         out = self.install("install", *[x for n in names for x in ("--agent", n)])
         cfg_root = self.home / ".config" / "change-watch"
         dags = self.home / ".config" / "dagu" / "dags"
@@ -194,6 +195,11 @@ class AgentInstallTest(unittest.TestCase):
                              .read_text(encoding="utf-8"), is_dag=False, **kw)
         self.assertIn("MR_REVIEW_CLI=C:/Python311/python.exe C:/Users/me/AppData/Local/Programs/change-watch/agents/"
                       "gitlab-mr-review-agent/gitlab_mr.py", env)
+        hub = install.render((install.AGENTS / "gitlab-issue-hub-agent" / "change-watch-issue-hub.yaml.example")
+                             .read_text(encoding="utf-8"), is_dag=True, **kw)
+        self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'
+                      '        - "C:/Users/me/AppData/Local/Programs/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"', hub)
+        self.assertNotIn('"python3"', hub)                              # ワークフローの中の Python も、この PC の Python に
 
 
 if __name__ == "__main__":

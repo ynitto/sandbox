@@ -1,0 +1,49 @@
+# gitlab-issue-hub-agent の通知のワークフロー（install.py install --agent gitlab-issue-hub-agent が
+# ~/.config/dagu/dags/change-watch-issue-hub-notify.yaml に、この PC のパスにして置く）。
+# 予定では動かさない。ほかのワークフローやコマンド行から、知らせたいことを TITLE・BODY で渡して動かす:
+#   dagu start change-watch-issue-hub-notify -- TITLE="夜間バッチ" BODY="終わりました"
+# ハブの issue に「【通知】<TITLE>」で始まるコメントを書き、GitLab がこの issue を見ている人へメールで知らせる。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
+description: "GitLab のハブの issue に通知のコメントを書く（メールで届く）"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - TITLE: ""                   # 1 行目（【通知】のあと）。メールで見分けるのに使う
+  - BODY: ""                    # 本文
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "note"
+        - "--title=${params.TITLE}"
+        - "--text=${params.BODY}"
+    timeout_sec: 60
+    output: NOTE
+  - name: post
+    depends: [compose]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "/api/v4/projects/${GITLAB_PROJECT}/issues/${GITLAB_HUB_ISSUE}/notes"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

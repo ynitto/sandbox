@@ -1,0 +1,112 @@
+# gitlab-issue-hub-agent の Dagu のワークフロー（install.py install --agent gitlab-issue-hub-agent が
+# ~/.config/dagu/dags/change-watch-issue-hub.yaml に、この PC のパスにして置く）。どのコメントを依頼として扱うかは、ここ（Dagu）の条件で決める。
+# 毎分起動し、1 回の起動でハブの issue の新しいコメントを 1 件見る:
+#   get      前回 commit してから新しく付いたコメントを 1 件受け取る（GitLab に問い合わせるかは change-watch が決める）
+#   request  1 行目が【依頼】のコメントなら、決めたコマンドを動かし、その出力を返信の本文にする   ← 条件（Dagu の preconditions）
+#   reply    返信をハブの issue にコメントする（change-watch call）。GitLab がこの issue を見ている人へメールで知らせる
+#   commit   見終えたと記録する
+# 返信・通知のコメントは 1 行目が【返信】・【通知】なので、もう一度依頼として扱うことはない。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
+description: "GitLab のハブの issue に付いた依頼のコメントを受け取り、コマンドを動かして返信する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub"                  # commit と同じ名前
+        - "--watch"              # 本文が変わったときだけ変化にする（書き直しは依頼として扱わない）
+        - "body"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: request
+    depends: [get]
+    preconditions:              # 条件（Dagu）: 新しく付いた、人が書いたコメントで、1 行目が【依頼】
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+      - condition: "${CHANGE.record.system}"
+        expected: "false"       # ラベルの変更などの記録（system）は見ない
+      - condition: "${CHANGE.record.body}"
+        expected: "re:^【依頼】"
+    continue_on:
+      skipped: true             # 依頼でなくても commit する
+      failure: true             # コマンドが失敗しても「処理できませんでした」と返信し、commit する（Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "reply"
+        - "${CHANGE}"
+        - "--"
+        - "python3"             # ↓ 依頼で動かすコマンド。依頼の中身は標準入力（JSON）と HUB_SUBJECT・HUB_TEXT で届き、標準出力が返信になる
+        - "/home/you/work/hub/on_request.py"
+    timeout_sec: 1800
+    output: NOTE
+  - name: reply
+    depends: [request]
+    preconditions:              # 返信の本文があるときだけ
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "/api/v4/projects/${GITLAB_PROJECT}/issues/${GITLAB_HUB_ISSUE}/notes"   # / で始まる URL は接続の url に足す
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [reply]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub"
+        - "${CHANGE.key}"
+    timeout_sec: 600

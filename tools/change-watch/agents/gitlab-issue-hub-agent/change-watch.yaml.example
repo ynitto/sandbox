@@ -1,0 +1,32 @@
+# gitlab-issue-hub-agent の change-watch の設定（~/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml。
+# install.py install --agent gitlab-issue-hub-agent が無ければ置く）。ルール（rules）は書かない。どのコメントを依頼として扱うかは
+# Dagu のワークフロー（change-watch-issue-hub.yaml.example）に書く。
+#
+# change-watch が受け持つのは、ハブの issue のコメントの取得（予定・間隔・失敗の待ち）と、「前回 commit してから新しく付いた
+# コメント」を返すこと、それにコメントの書き込み（call）を同じトークン・同じ要求の間隔で送ることだけ。
+#
+# GitLab の URL・プロジェクト・issue・トークンは ~/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env にだけ書く。
+# connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
+#
+#   gitlab:
+#     - label: default
+#       url: ${GITLAB_URL}
+#       token: ${GITLAB_TOKEN}
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-issue-hub-agent   # エージェントごとに分ける
+
+sources:
+  gitlab-hub-notes:
+    connection: gitlab
+    request:
+      # ハブの issue のコメント（GITLAB_PROJECT は ID か、/ を %2F にしたパス。ワークフローの書き込み先と同じ値を使う）
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT }}/issues/{{ env.GITLAB_HUB_ISSUE }}/notes"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { sort: asc, order_by: created_at }
+    key: id                    # get --consumer が変化を見分ける key（コメントの ID）
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "*/5 * * * *"    # GitLab に問い合わせる予定（ワークフローが毎分起動しても、予定の時刻ごとに 1 回）
+    jitter_sec: 60
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }

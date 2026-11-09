@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
+
+- 決めた 1 つの GitLab の issue に付いた「【依頼】」のコメント（メールを受けた Power Automate が書く想定）で決めたコマンドを動かし、
+  その出力を「【返信】」でコメントする。ほかのワークフローからは `change-watch-issue-hub-notify` で「【通知】」をコメントする。
+  メールは GitLab の通知メールで届く。`install.py install --agent gitlab-issue-hub-agent` で入れる
+- 取得と書き込みは change-watch の `get`・`commit`・`call`、条件は Dagu の `preconditions` に書く。本文の JSON は `gitlab_hub.py` が作り、
+  書き込む文の行頭の `/`（クイックアクション）を効かなくする
+- インストーラ: Windows で、ワークフローの `command: "python3"` もインストーラを動かした Python に置き換える
+
 ### change-watch: 条件をワークフローで判定する形（`get`・`commit`・`call`）を足す（0.6.0）
 
 - ルールを書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形を足す。

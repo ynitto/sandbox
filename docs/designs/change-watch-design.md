@@ -83,7 +83,7 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 
 ### 2.0.2 エージェント（`agents/`）の置き場所とインストーラ
 
-change-watch の上で動くエージェント（gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent）は `tools/change-watch/agents/<名前>/` に置く。
+change-watch の上で動くエージェント（gitlab-issue-agent・gitlab-issue-hub-agent・gitlab-mr-review-agent・redmine-ticket-agent）は `tools/change-watch/agents/<名前>/` に置く。
 どれも「change-watch のプラグイン兼 CLI の `.py` 1 つ」「設定の雛形（`change-watch.yaml`・`.env`・プロンプト）」「Dagu のワークフローの例」で
 できていて、以前は README の `mkdir`・`cp` でエージェントごとに別の場所（`~/.local/share/<名前>/`・`~/.config/dagu/<名前>.env`）へ置き、
 change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch.yaml` にコピーしていた（1 台で 2 つ動かすと手でまとめる必要があった）。

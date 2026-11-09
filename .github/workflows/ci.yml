@@ -82,6 +82,10 @@ jobs:
           # 本物の change-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/change-watch/agents/gitlab-issue-agent/test
+          # gitlab-issue-hub-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_hub.py の note・reply と、設定とワークフローの例を
+          # 本物の change-watch で get → request → reply → commit の順に回したときの「【依頼】にだけ 1 回返信する」「通知を書く」を見る。
+          - package: gitlab-issue-hub-agent
+            suites: tools/change-watch/agents/gitlab-issue-hub-agent/test
           # gitlab-mr-review-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_mr.py のコマンド（指摘・解決・まとめの重複防止）と、
           # 設定の例を本物の change-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
           - package: gitlab-mr-review-agent
@@ -165,6 +169,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - package: gitlab-issue-hub-agent
+            suites: tools/change-watch/agents/gitlab-issue-hub-agent/test
           - package: gitlab-mr-review-agent
             suites: tools/change-watch/agents/gitlab-mr-review-agent/test
           - package: redmine-ticket-agent
