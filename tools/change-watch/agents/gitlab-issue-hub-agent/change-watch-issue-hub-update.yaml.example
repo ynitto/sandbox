@@ -1,0 +1,54 @@
+# gitlab-issue-hub-agent の、ハブの issue を変えるワークフローの例（install.py install --agent gitlab-issue-hub-agent が
+# ~/.config/dagu/dags/change-watch-issue-hub-update.yaml に、この PC のパスにして置く）。
+# 予定では動かさない。ほかのワークフローやコマンド行から、足すコメントを COMMENT で渡して動かす:
+#   dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
+# 何を書くかはワークフローが決める。ラベル・説明・状態などを変えるなら、comment と同じ形で call PUT "{{ … | gitlab_issue_api }}" の
+# ステップを書く（--json に GitLab の issue の編集の項目: add_labels・remove_labels・description・title・state_event など）。
+# 変わったことは GitLab がこの issue を見ている人へメールで知らせ、それを受けて何をするかは Power Automate が決める。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
+description: "GitLab のハブの issue にコメントを足す（変わったことはメールで届く）"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - COMMENT: ""                 # 足すコメント
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "note"
+        - "--text=${params.COMMENT}"
+    timeout_sec: 60
+    output: NOTE
+  - name: comment
+    depends: [compose]
+    preconditions:              # 本文があるときだけ（COMMENT が空なら書かない）
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

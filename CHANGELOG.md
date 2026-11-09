@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
+
+- ハブは issue の URL 1 つで決める（`GITLAB_HUB_ISSUE_URL`）。プラグインのフィルタ `gitlab_issue_api` が API の URL にする
+- エージェントは変化の検知（issue に新しく付いたコメント・issue そのものの変化を `get` で返す）と、issue を変えること（`call` でコメント・更新）
+  だけを受け持つ。どの変化に反応するか・何を書くかはワークフローに書く。例のワークフローは、1 行目が「【依頼】」のコメント（メールを受けた
+  Power Automate が書く想定）でコマンドを動かし、その出力をコメントする。変わったことは GitLab の通知メールで届き、何をするかは Power Automate が決める
+- `gitlab_hub.py note` が、文・ファイル・コマンドの出力から `call --json` に渡すコメントの本文を作り、行頭の `/`（クイックアクション）を効かなくする。
+  `gitlab_hub.py fields` が `名前=値` から issue の更新（題・ラベル・説明・状態など）の JSON を作る。CLI で get と post をする例
+  `examples/change-watch-issue-hub-get-post.yaml.example` を足す。
+  `install.py install --agent gitlab-issue-hub-agent` で入れる
+- インストーラ: Windows で、ワークフローの `command: "python3"` もインストーラを動かした Python に置き換える
+
 ### change-watch: 文の途中に埋めた `{{ x | default: "}}" }}` で、引用符の中の `}}` が式の終わりと見なされるのを直す（0.6.2）
 
 - 引用符（`"` `'`）の中の `}}` を式の閉じと見なさない。以前は文の途中に埋めると式が途中で切れ、値が崩れていた

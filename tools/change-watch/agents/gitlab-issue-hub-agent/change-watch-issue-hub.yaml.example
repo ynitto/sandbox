@@ -1,0 +1,119 @@
+# gitlab-issue-hub-agent の Dagu のワークフロー（install.py install --agent gitlab-issue-hub-agent が
+# ~/.config/dagu/dags/change-watch-issue-hub.yaml に、この PC のパスにして置く）。どのコメントを依頼として扱うかは、ここ（Dagu）の条件で決める。
+# 毎分起動し、1 回の起動でハブの issue に新しく付いたコメントを 1 件見る:
+#   get      前回 commit してから新しく付いたコメントを 1 件受け取る（GitLab に問い合わせるか、前回の取得結果で答えるかは change-watch が決める）
+#   request  条件に合えば、決めたコマンドを動かし、その出力をコメントの本文にする   ← 条件（Dagu の preconditions）。例の条件は自分のものに直す
+#   reply    出力があれば、ハブの issue にコメントする（change-watch call）。GitLab がこの issue を見ている人へメールで知らせる
+#   commit   見終えたと記録する
+# 例の条件は「新しく付いた、人が書いた、1 行目が【依頼】のコメント」。コマンドの出力を【依頼】で始めなければ、自分の書いたコメントには当たらない。
+# issue そのもの（題・説明・ラベル・状態）の変化を見るなら、get を --source gitlab-hub-issue --watch labels のようにした別のワークフローにする。
+# command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
+description: "GitLab のハブの issue に新しく付いたコメントを受け取り、条件に合えばコマンドを動かしてその出力をコメントする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub"                  # commit と同じ名前
+        - "--watch"              # 本文が変わったときだけ変化にする（書き直しは依頼として扱わない）
+        - "body"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: request
+    depends: [get]
+    preconditions:              # 条件（Dagu。例）: 新しく付いた、人が書いたコメントで、1 行目が【依頼】
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+      - condition: "${CHANGE.record.system}"
+        expected: "false"       # ラベルの変更などの記録（system）は見ない
+      - condition: "${CHANGE.record.body}"
+        expected: "re:^【依頼】"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "note"
+        - "--"
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
+        - "/home/you/work/hub/on_request.py"
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
+    timeout_sec: 1800
+    output: NOTE
+  - name: reply
+    depends: [request]
+    preconditions:              # コメントの本文があるときだけ
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [reply]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub"
+        - "${CHANGE.key}"
+    timeout_sec: 600

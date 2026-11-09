@@ -1,0 +1,173 @@
+# gitlab-issue-hub-agent: Dagu のワークフローから change-watch の CLI を呼んで、ハブの issue を get（変化と中身を受け取る）し、
+# post（コメントを足す・issue を更新する）する例。インストーラは置かない。~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に直す。
+#
+#   get      issue そのものの変化を 1 件受け取る（題・ラベル・説明が変わったら。GitLab に問い合わせるか、前回の取得結果で答えるかは change-watch が決める）
+#   comment  ラベル「完了」が付いて、題がまだ【完了】で始まっていなければ、コメントを足す（post: POST …/notes）  ← 条件と書くことは、このワークフローで決める
+#   retitle  同じとき、題の頭に【完了】を付ける（post: PUT …）。題が変わるので、同じ issue で二度は動かない
+#   commit   見終えたと記録する。--refresh で、自分が変えたあとの姿を基準にする（自分の変更で次に起きない）
+#
+# change-watch のステップはどれも --plugin gitlab_hub.py を付ける（URL の {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }} を展開するため）。
+# 書く JSON は gitlab_hub.py の note（コメント）・fields（issue の更新）で作る（引用符・改行を含む文をそのまま渡せる）。
+description: "ハブの issue を get し、条件に合えばコメントを足して題を変える（CLI の get・post の例）"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  # ---- get: 変化と中身を受け取る -------------------------------------------------------------
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-issue"     # issue そのもの（コメントなら gitlab-hub-notes）
+        - "--consumer"
+        - "get-post"             # commit と同じ名前。ほかのワークフローと分ける
+        - "--watch"
+        - "title"
+        - "--watch"
+        - "labels"
+        - "--watch"
+        - "description"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE               # ${CHANGE.kind}・${CHANGE.record.*}（今の中身）・${CHANGE.before.*}（前回の中身）
+  # ---- post: コメントを足す -----------------------------------------------------------------
+  - name: compose
+    depends: [get]
+    preconditions:              # 条件（例）: 題・ラベル・説明が変わり、ラベル「完了」が付いていて、題がまだ【完了】で始まっていない
+      - condition: "${CHANGE.kind}"
+        expected: "changed"
+      - condition: "${CHANGE.record.labels}"
+        expected: 're:"完了"'
+      - condition: "${CHANGE.record.title}"
+        expected: "re:^(?:[^【]|【[^完]|【完[^了]|【完了[^】])"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "note"
+        - "--text=「${CHANGE.record.title}」が完了になりました。"
+    timeout_sec: 60
+    output: NOTE
+  - name: comment
+    depends: [compose]
+    preconditions:              # 本文を作れたときだけ
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
+        - "--source"
+        - "gitlab-hub-issue"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  # ---- post: issue を更新する（題を変える） --------------------------------------------------
+  - name: fields
+    depends: [comment]
+    preconditions:              # compose と同じ条件
+      - condition: "${CHANGE.kind}"
+        expected: "changed"
+      - condition: "${CHANGE.record.labels}"
+        expected: 're:"完了"'
+      - condition: "${CHANGE.record.title}"
+        expected: "re:^(?:[^【]|【[^完]|【完[^了]|【完了[^】])"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "fields"
+        - "title=【完了】${CHANGE.record.title}"   # ほかに add_labels=…・remove_labels=…・description=…・state_event=close など
+    timeout_sec: 60
+    output: UPDATE
+  - name: retitle
+    depends: [fields]
+    preconditions:              # 更新の JSON を作れたときだけ
+      - condition: "${UPDATE}"
+        expected: 're:^\{"'
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}"
+        - "--source"
+        - "gitlab-hub-issue"
+        - "--json"
+        - "${UPDATE}"
+    timeout_sec: 120
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  # ---- 見終えたと記録する ------------------------------------------------------------------
+  - name: commit
+    depends: [retitle]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-issue"
+        - "--consumer"
+        - "get-post"
+        - "--refresh"            # 自分が変えたあとの issue を取り直して基準にする
+        - "${CHANGE.key}"
+    timeout_sec: 600

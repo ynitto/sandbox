@@ -33,7 +33,7 @@
 | `changewatch/hooks.py` | プラグインが足すフィルタ（テンプレート）とチェック（実行の前後の判定）の登録先 | なし |
 | `changewatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）。**Dagu に依存するコードはこの 1 ファイルだけ** | あり |
 | `dags/*.example.yaml` | change-watch を動かす Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） | あり |
-| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） | 例のワークフローだけ |
+| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） | 例のワークフローだけ |
 
 プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。`adapter: dagu` で Dagu へ渡すときは、Dagu に触るコマンドに
 `--plugin dagu` を付ける。付けなければ `adapter: dagu` は無く、`adapter: dagu` の設定で受け渡そうとすると
@@ -215,7 +215,7 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
   commit しないでおくと、次の起動でも同じ変化が返り、毎分やり直し続ける
 - 処理の中で自分が書き込む（コメントを付けるなど）なら `commit --refresh` にする。書き込んだ後の姿を基準にするので、自分の書き込みを次の変化にしない
 - エージェントの例（インストーラが置くもの）も、どれもこの形（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
-  [gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
+  [gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
 
 ### 条件で分けるワークフローの例
 
