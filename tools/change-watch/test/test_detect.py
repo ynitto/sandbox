@@ -60,6 +60,9 @@ class PathTest(unittest.TestCase):
         self.assertEqual(template.render("{{ position | default: 0 }}", ctx), 0)
         self.assertEqual(template.render('{{ nope | default: "a|b" }}', ctx), "a|b")
         self.assertEqual(template.render("{{ nope | default: 'a|b' | urlencode }}", ctx), "a%7Cb")
+        # 引用符の中の }} で式が閉じない（文の途中に埋めるときも）
+        self.assertEqual(template.render('x {{ nope | default: "}}" }} y', ctx), "x }} y")
+        self.assertEqual(template.render('{{ nope | default: "}}" }}', ctx), "}}")
         self.assertEqual(template.render("q={{ conn.url | urlencode }}", ctx), "q=https%3A%2F%2Fh")
         with self.assertRaises(ConfigError):
             template.render("{{ conn.nothing }}", ctx)

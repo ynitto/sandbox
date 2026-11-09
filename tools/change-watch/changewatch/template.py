@@ -15,18 +15,44 @@
 from __future__ import annotations
 
 import json
-import re
 import urllib.parse
 from typing import Any
 
 from . import jpath
 from .util import ConfigError
 
-_EXPR = re.compile(r"\{\{\s*(.*?)\s*\}\}")
-
 
 class TemplateError(ConfigError):
     pass
+
+
+def _spans(text: str):
+    """{{ ... }} の位置を (開始, 終了, 式) で返す。引用符（" または '）の中の `}}` は閉じと見なさない。"""
+    pos = 0
+    while True:
+        start = text.find("{{", pos)
+        if start < 0:
+            return
+        i = start + 2
+        quote = ""
+        end = -1
+        while i < len(text):
+            c = text[i]
+            if quote:
+                if c == "\\" and quote == '"':
+                    i += 1
+                elif c == quote:
+                    quote = ""
+            elif c in "\"'":
+                quote = c
+            elif text.startswith("}}", i):
+                end = i + 2
+                break
+            i += 1
+        if end < 0:
+            return
+        yield start, end, text[start + 2:end - 2].strip()
+        pos = end
 
 
 def _lookup(ctx: dict, expr: str) -> Any:
@@ -110,21 +136,27 @@ def evaluate(expr: str, ctx: dict) -> Any:
 def render(value: Any, ctx: dict) -> Any:
     """文字列・配列・辞書の中の {{ }} を展開した新しい値を返す。"""
     if isinstance(value, str):
-        m = _EXPR.fullmatch(value.strip()) if value.strip().startswith("{{") else None
-        if m and value.strip().count("{{") == 1:
-            return evaluate(m.group(1), ctx)
-
-        def rep(mm: re.Match) -> str:
-            v = evaluate(mm.group(1), ctx)
+        spans = list(_spans(value))
+        if len(spans) == 1:
+            st, en, expr = spans[0]
+            if value[:st].strip() == "" and value[en:].strip() == "":
+                return evaluate(expr, ctx)
+        out: list[str] = []
+        last = 0
+        for st, en, expr in spans:
+            out.append(value[last:st])
+            v = evaluate(expr, ctx)
             if v is None:
-                return ""
-            if isinstance(v, (dict, list)):
-                return json.dumps(v, ensure_ascii=False, sort_keys=True)
-            if isinstance(v, bool):
-                return "true" if v else "false"
-            return str(v)
-
-        return _EXPR.sub(rep, value)
+                out.append("")
+            elif isinstance(v, (dict, list)):
+                out.append(json.dumps(v, ensure_ascii=False, sort_keys=True))
+            elif isinstance(v, bool):
+                out.append("true" if v else "false")
+            else:
+                out.append(str(v))
+            last = en
+        out.append(value[last:])
+        return "".join(out)
     if isinstance(value, list):
         return [render(v, ctx) for v in value]
     if isinstance(value, dict):
@@ -136,7 +168,7 @@ def references(value: Any) -> list[str]:
     """値の中で参照している式の一覧（検査用）。"""
     out: list[str] = []
     if isinstance(value, str):
-        out.extend(_split_pipes(m.group(1))[0] for m in _EXPR.finditer(value))
+        out.extend(_split_pipes(e)[0] for _, _, e in _spans(value))
     elif isinstance(value, list):
         for v in value:
             out.extend(references(v))
