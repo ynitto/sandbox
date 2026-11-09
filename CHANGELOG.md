@@ -19,6 +19,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `install.py install --agent gitlab-issue-hub-agent` で入れる
 - インストーラ: Windows で、ワークフローの `command: "python3"` もインストーラを動かした Python に置き換える
 
+### change-watch: 文の途中に埋めた `{{ x | default: "}}" }}` で、引用符の中の `}}` が式の終わりと見なされるのを直す（0.6.2）
+
+- 引用符（`"` `'`）の中の `}}` を式の閉じと見なさない。以前は文の途中に埋めると式が途中で切れ、値が崩れていた
+
+### change-watch: 設定の `{{ x | default: "a|b" }}` のように、引用符の中の `|` でフィルタが分かれてしまうのを直す（0.6.1）
+
+- フィルタの引数の引用符（`"` `'`）の中にある `|` を区切りと見なさない。以前は「知らないフィルタです」で止まっていた
+
 ### change-watch: 条件をワークフローで判定する形（`get`・`commit`・`call`）を足す（0.6.0）
 
 - ルールを書かず、どのレコードを処理するかはワークフロー（Dagu）の条件で決め、change-watch には API へのアクセスだけを受け持たせる形を足す。
