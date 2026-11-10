@@ -1,17 +1,5 @@
-"""gitlab-mr-review-agent — GitLab の MR をエージェント CLI（kiro-cli など）にレビューさせるための、change-watch のプラグインと
-エージェントが使うコマンド。
-
-1 つのファイルを 2 つの使い方で使う:
-
-    change-watch --plugin <このファイル> ...     プラグインとして読み込む（register(api)）
-        フィルタ gitlab_mr_since    {{ event | gitlab_mr_since }}  前回レビューし終えたときの head の SHA（初めてなら空）
-        フィルタ gitlab_mr_kind     {{ event | gitlab_mr_kind }}   初めて / 再レビュー
-        チェック gitlab_mr.changed_during_review
-                                    レビューのあいだに MR の head（コミット）・ドラフト・対象ブランチが変わったか。
-                                    受け渡し先の handled_before_if に書くと、レビュー中に積まれたコミットを取りこぼさない
-        チェック gitlab_mr.already_reviewed
-                                    今の MR の差分の中身を既にレビューし終えているか（リベース・中身の同じ force push・
-                                    閉じて開き直した MR）。受け渡し先の skip_if に書くと、kiro-cli を起こさずに飛ばす
+"""gitlab-mr-review-agent — GitLab の MR をエージェント CLI（kiro-cli など）にレビューさせるときに、エージェントが使うコマンド。
+どの MR をいつレビューするかは Dagu のワークフロー（change-watch get / commit）が決める。
 
     python3 <このファイル> <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
         prepare                       レビュー用の作業フォルダ（MR_REVIEW_WORKTREE）を作る。手元のリポジトリ
@@ -66,97 +54,6 @@ ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 MAX_DIFF_CHARS = 150_000     # context が出す差分の上限（超えたファイルは名前だけを出し、show で見てもらう）
 MAX_SHOW_LINES = 2000
 GIT_TIMEOUT = 900            # 1 回の git の上限（初めて取ってくるときは長い）
-
-# 変化として扱う MR の項目（change-watch の設定のルールの watch と同じにする）
-WATCHED = ("sha", "draft", "target_branch")
-
-
-# ---------------------------------------------------------------------------
-# プラグイン（change-watch --plugin で読み込む）
-# ---------------------------------------------------------------------------
-
-def _last_sha(event: Any) -> str:
-    if not isinstance(event, dict):
-        return ""
-    last = (event.get("refreshed") or {}).get("last_handled")
-    return str(last.get("sha") or "") if isinstance(last, dict) else ""
-
-
-def gitlab_mr_since(event: Any, _arg: Any = None) -> str:
-    """前回レビューし終えたときの head の SHA。初めてのレビューなら空。"""
-    if not isinstance(event, dict) or not isinstance(event.get("record"), dict):
-        raise ValueError("gitlab_mr_since にはイベント（{{ event | gitlab_mr_since }}）を渡してください")
-    return _last_sha(event)
-
-
-def gitlab_mr_kind(event: Any, _arg: Any = None) -> str:
-    last = _last_sha(event)
-    return f"再レビュー（前回は {last[:8]}）" if last else "初めてのレビュー"
-
-
-def changed_during_review(ctx) -> bool:
-    """実行の前（取り直したレコード）と今とで、MR の head・ドラフト・対象ブランチが違えば真。
-
-    エージェントはコメントしか書かないので、これらが変わったのは人の操作（コミットの追加・force push など）。
-    真なら change-watch は実行前の状態までを処理済みにし、次の取得で新しいコミットをもう一度レビューさせる。
-    GitLab に届かなければ例外のまま返し、change-watch が真とみなす（取りこぼさない側。そのときは同じ head を
-    もう一度流すが、context が「レビューし終えています」と出すので、指摘は重ならない）。"""
-    url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
-    mr = ctx.event.get("record") or {}
-    if not url or mr.get("project_id") is None or mr.get("iid") is None:
-        raise ValueError("GitLab の URL（接続設定の url か options.url）と、レコードの project_id・iid が要ります")
-    now = ctx.get_json(f"{url}/api/v4/projects/{mr['project_id']}/merge_requests/{mr['iid']}") or {}
-    for name in WATCHED:
-        if now.get(name) != mr.get(name):
-            ctx.log(f"!{mr['iid']} はレビューのあいだに {name} が変わったので（{mr.get(name)} → {now.get(name)}）、"
-                    "次の取得でもう一度レビューします")
-            return True
-    return False
-
-
-def _pages(ctx, url: str, query: dict | None = None, limit: int = 50) -> list | None:
-    """ページを順に GET してつなぐ（1 ページ目が 404 なら None）。"""
-    out: list = []
-    for page in range(1, limit + 1):
-        body = ctx.get_json(url, query={**(query or {}), "per_page": "100", "page": str(page)})
-        if body is None:
-            return None if page == 1 else out
-        items = body if isinstance(body, list) else []
-        out.extend(items)
-        if len(items) < 100:
-            break
-    return out
-
-
-def already_reviewed(ctx) -> bool:
-    """今の MR の差分の中身を、既にレビューし終えていれば真（skip_if に書く）。
-
-    リベース・中身の同じ force push では head のコミットが変わるので、change-watch はイベントにして流そうとする。
-    MR の差分（足した行・消した行）の指紋が、これまでに書いたまとめのどれかと同じなら、kiro-cli を起こさずに飛ばす。
-    閉じて開き直した MR・ルールの名前を変えたあとの MR も、まとめが残っていれば同じく飛ばす。
-    GitLab に届かなければ例外のまま返し、change-watch が偽とみなす（kiro-cli を起こすが、context が同じ判定で止める）。"""
-    url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
-    mr = ctx.event.get("record") or {}
-    if not url or mr.get("project_id") is None or mr.get("iid") is None:
-        raise ValueError("GitLab の URL（接続設定の url か options.url）と、レコードの project_id・iid が要ります")
-    base = f"{url}/api/v4/projects/{mr['project_id']}/merge_requests/{mr['iid']}"
-    diffs = _pages(ctx, f"{base}/diffs")
-    if diffs is None:                                   # GitLab 15.7 より前
-        diffs = (ctx.get_json(f"{base}/changes") or {}).get("changes") or []
-    notes = _pages(ctx, f"{base}/notes", {"sort": "desc", "order_by": "created_at"}) or []
-    head = str(mr.get("sha") or "")
-    hit = reviewed(notes, head, diff_fingerprint(diffs, head))
-    if hit:
-        ctx.log(f"!{mr['iid']} の差分の中身は {hit[:8]} のときにレビューし終えているので（リベースなど）、kiro-cli を起こしません")
-        return True
-    return False
-
-
-def register(api) -> None:
-    api.add_filter("gitlab_mr_since", gitlab_mr_since)
-    api.add_filter("gitlab_mr_kind", gitlab_mr_kind)
-    api.add_check("gitlab_mr.changed_during_review", changed_during_review)
-    api.add_check("gitlab_mr.already_reviewed", already_reviewed)
 
 
 # ---------------------------------------------------------------------------

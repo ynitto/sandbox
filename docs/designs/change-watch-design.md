@@ -1,91 +1,67 @@
 # change-watch 設計
 
-任意の Web API（またはフォルダ）をローカルからポーリングし、レコードの変化・条件の成立を検知して Dagu の DAG へ渡す汎用の仕組み。
+任意の Web API（またはフォルダ）へのアクセスを、Dagu のワークフローから受け持つ汎用の仕組み。取得をまとめ、ワークフロー（consumer）ごとに
+前回処理し終えてから変わったレコードを返し、書き込みも同じ接続で通す。条件の判定と処理はワークフローに置く。
 実装は `tools/change-watch/`、使い方は同フォルダの README。
 
 ## 1. 位置づけ
 
-GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent](./gitlab-issue-agent-design.md) のような用途から、「API の取得」「変更の検知」
-「受け渡し」を汎用に切り出したもの。**実行（後続処理）は Dagu のワークフローかその場のコマンドに渡す**。gitlab-issue-agent は
-取得・検知・実行待ち・1 セッションの排他を本設計に、エージェント CLI の実行を Dagu の `harness.run` に任せ、GitLab 固有の部分を
-本設計のプラグイン（`gitlab_issue.py`）として持つ。
+GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent](./gitlab-issue-agent-design.md) のような用途から、「API の取得」と
+「前回からの変化」を汎用に切り出したもの。**どれを処理するか（条件）と処理は Dagu のワークフローに置く**。
 
 | 方針 | 決め方 |
 |---|---|
-| 常駐しない | 3 つの段（fetch / evaluate / dispatch）を Dagu のステップとして起動する。各段は状態を読んで進めて終わる |
-| 実行管理は Dagu | 定期実行・再試行・ログ・履歴は Dagu の DAG、後続処理の並列数はキュー、後続処理の再試行・復旧は後続の DAG の `retry_policy` と `dagu retry` |
-| このツールが持つもの | Dagu では表せない状態だけ: 取得の途中経過と位置、ルールごとの前回の観測値、イベントと受け渡しの状態 |
-| 特定のサービス・言語に依らない | 要求・ページング・増分・抽出・判定はすべて設定。後続処理は任意の DAG（言語は問わない） |
-| Dagu 連携は本体の外 | 本体（`changewatch/`）は受け渡しをアダプタの口（§5.3）越しにだけ行い、Dagu を知らない。Dagu へのアダプタと DAG の生成は 1 ファイルのプラグイン `changewatch/plugins/dagu.py` で、`--plugin dagu` のときだけ読み込む |
-| 1 ファイルで配る | インストーラ（`install.py`）が本体と同梱のプラグインを zipapp（`.pyz`）にまとめ、コマンドとして置く（§2.0） |
+| 常駐しない | ワークフローのステップが `get` / `commit` / `call` を呼ぶ。どれも状態を読んで進めて終わる |
+| 条件と実行管理は Dagu | 起動・条件の分岐（`preconditions`）・再試行・ログ・履歴・並列数は Dagu |
+| このツールが持つもの | Dagu では表せない状態だけ: 取得の途中経過と位置、取得元の今の姿、consumer ごとの「処理し終えた姿」、要求の間隔と失敗の待ち |
+| 特定のサービス・言語に依らない | 要求・ページング・増分・抽出はすべて設定 |
+| 本体は Dagu を知らない | Dagu を知っているのは `dags/` の例のワークフローだけ。cron から `get` / `commit` を呼んでも同じに動く |
+| 1 ファイルで配る | インストーラ（`install.py`）が本体を zipapp（`.pyz`）にまとめ、コマンドとして置く（§2.0） |
 | 認証情報の場所は実行時に渡す | connections.yaml のパスはコマンド行の `--connections` だけで受け取る（§6） |
 
 ## 2. 構成
 
 ```
             ┌─────────────── state.db（SQLite・WAL・synchronous=FULL）───────────────┐
- fetch ───▶ │ sources（指紋・世代・位置・待ち時刻）  fetches / fetch_pages（ページ単位） │
-            │ http_cache（ETag と本文）              source_records（key ごとの最新）   │
- evaluate ─▶│ rules（判定位置・指紋）                rule_records（前回の観測値）       │
-            │ events（変更 1 件 = ルール×レコード×取得）                                │
- dispatch ─▶│ deliveries（イベント×受け渡し先: pending→sending→dispatched→done/failed）│
- ack ─────▶ │ leases（取得・判定の排他）                                                 │
+ get ─────▶ │ sources（指紋・世代・位置・待ち時刻）  fetches / fetch_pages（ページ単位） │
+ fetch      │ http_cache（ETag と本文）              source_records（key ごとの最新）   │
+ commit ──▶ │ consumers（consumer × 取得元の世代）   consumer_records（処理し終えた姿）  │
+ call       │ rate_groups（group で分け合う要求の記録） leases（取得の排他）             │
             └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.0 本体と Dagu プラグインの分離・配布
+### 2.0 配布とプラグイン
 
 | 置き場所 | 責務 | 依存 |
 |---|---|---|
-| `changewatch`（本体） | 取得・判定・状態・受け渡しの行の管理（順序・再送・ack・retry・skip）・運用のコマンド | 標準ライブラリ（YAML の設定なら PyYAML） |
-| `changewatch.adapters` | アダプタの口（`parse` / `create`、`enqueue` / `retry` / `status`）と、任意のコマンドで渡す `command` | 本体だけ |
-| `changewatch.plugins` | `--plugin` で指定されたプラグインの読み込み（同梱の `changewatch/plugins/<名前>.py`、または任意の `.py` のパス）。パッケージ自体は同梱のプラグインを import しない | 本体だけ |
-| `changewatch/plugins/dagu.py` | `dagu` アダプタ（CLI / REST API）。Dagu に依存するコードはこの 1 ファイルだけ | 本体の公開部品 + Dagu |
-| `dags/*.example.yaml` | change-watch を動かす Dagu のワークフローの例（§2.0.1）。利用者がコピーして直す | Dagu |
+| `changewatch`（本体） | 取得・状態・`get` / `commit` / `call`・運用のコマンド | 標準ライブラリ（YAML の設定なら PyYAML） |
+| `changewatch.plugins` / `changewatch.hooks` | `--plugin <.py>` で指定されたプラグインの読み込みと、プラグインが足すテンプレートのフィルタの登録先 | 本体だけ |
+| `dags/*.example.yaml` | change-watch を使う Dagu のワークフローの例（§2.0.1）。利用者がコピーして直す | Dagu |
 
-- プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_adapter(name, parse, create)`・`api.add_command(name, fn, help)` を呼ぶ。
+- プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_filter(name, fn)`・`api.add_command(name, fn, help)` を呼ぶ。
   本体はコマンド行の `--plugin` を先に読み（`parse_known_args`）、指定されたプラグインだけを読み込んでから残りの引数を解釈する。
-  プラグインが足すサブコマンドは、指定しなければ存在しない
-- 自動では読み込まない。どのプラグインを使うかを実行のたびに呼び出し側（Dagu のワークフローの argv）が決める。
   1 回の実行の始めにプラグインの登録を外すので、同じプロセスで続けて呼んでも前の指定は残らない
-- 設定の `delivery` は名前と設定を持つだけで、アダプタは使う時点（dispatch・reconcile・retry・check）で解決する。だから `status`・`events`・`ack`
-  はプラグインなしで動き、`--plugin` を付け忘れた dispatch は設定の誤り（終了コード 1）で止まって、受け渡しの試行回数を減らさない
-- テストで、本体の主要モジュールを読み込んでも `changewatch.plugins.dagu` が読み込まれないこと、`--plugin` なしでは `dagu` アダプタが無いこと、
-  `.py` のパスでも読み込めることを確かめている
-- 配布: `install.py build` が `changewatch/`（同梱のプラグインを含む）の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば
+- 配布: `install.py build` が `changewatch/` の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば
   その純 Python の部分とライセンス文を、`zipapp` で 1 つの `.pyz` にまとめる。C 拡張（`_yaml`）は zip から読み込めないので入れない（PyYAML は
   無ければ純 Python で動く）。`install` は Linux 系では `#!` 付きの実行ファイル `~/.local/bin/change-watch`、Windows では `.pyz` と `.cmd` を置く。
   Dagu のワークフローはこの 1 ファイルを呼ぶ（Linux 系は `~/.local/bin/change-watch` を `command` に、Windows は `python` の引数に `.pyz`）
-- アダプタが約束するのは「同じ run_id を 2 回実行しない（2 回目は duplicate を返す）」こと。本体の再送の正しさはこれだけに依る
-- 本体の語彙は「ワークフロー（`targets[].workflow`）」「run_id」。Dagu の DAG 名・実行 ID への読み替えはアダプタが持つ
 - 問い合わせの予定（取得元の `schedule`）は基盤に依らない cron の文字列として本体の設定に置く（§3.6）。ワークフローだけに要る項目
   （起動の間隔・dotenv・履歴の日数）はワークフローに書く（本体の設定に Dagu の節を作らない）
 
-段を分けたのは、Dagu の再試行がその段だけをやり直すようにするため。判定や受け渡しを再試行しても、
-成功済みの取得は繰り返さない（例のワークフローは fetch → evaluate → dispatch の 3 ステップで、fetch だけが
-終了コード 3 で再試行する）。
-
 ### 2.0.1 Dagu のワークフローは例を置き、生成しない
 
-当初は `dags` コマンド（Dagu プラグイン）が設定から DAG を書き出していた。初めは設定の `schedule` を DAG に写して設定と DAG を揃える役目も
-持っていたが、§3.6 で起動と取得を分けてからは「一度だけ雛形を書く」だけになった。書く形は取得元のワークフロー・ルールのワークフロー（command）・
-`external` のワークフロー・再送・整理の 5 つに限られ、設定から変わるのはパスと名前だけだった。一方で、生成のコード（約 230 行）・その試験・
-「例のファイルが生成の出力と一字一句同じか」の試験を持ち続け、版を上げるだけで他のツールの試験が落ちた。
-
-そこで生成をやめ、5 つの形を `dags/*.example.yaml` として置いた。ワークフローは `install.py install` が置いた 1 ファイルの `change-watch` を
-`command` にして呼ぶので、Python と入口のパスを組み立てる必要がない。例が古くならないよう、試験（`test/dagrun.py`）が例の DAG を Dagu と同じ順
-（depends・`output:`・`preconditions`・`retry_policy.exit_code`・`continue_on.failure`・`${<id>.exit_code}`）で本物の change-watch に流す。
-`agents/` の各エージェントの例のワークフロー（整理を含む）も同じ実行役で流す。
-
-生成が担っていた検査のうち、「1 つのルールに `external` は 1 つまで」「ルールの名前が取得元・再送・整理のワークフローの名前と重ならない」は、
-ワークフローの名前を生成が決めていたための制約なので、生成と一緒になくした（`claim --rule R --target T` は受け渡し先ごとに取れる）。
-「取得元に `schedule` も `min_interval_sec` も無いまま毎分起動する」の注意は README に書いた。
+ワークフローの形は「`get` → 条件で分かれた処理 → `commit`」と「整理（`gc`）」の 2 つで、設定から変わるのはパスと名前だけ。生成のコマンドは持たず、
+`dags/*.example.yaml` を置く（以前は `dags` コマンドが設定から書き出していたが、生成のコードと「例が生成の出力と同じか」の試験を持ち続けるわりに
+得るものが無かった）。ワークフローは `install.py install` が置いた 1 ファイルの `change-watch` を `command` にして呼ぶので、Python と入口のパスを
+組み立てる必要がない。例が古くならないよう、試験（`test/dagrun.py`）が例の DAG を Dagu と同じ順（depends・`output:`・`preconditions`・
+`retry_policy.exit_code`・`continue_on.failure`・`${<id>.exit_code}`）で本物の change-watch に流す。`agents/` の各エージェントの例のワークフロー
+（整理を含む）も同じ実行役で流す。
 
 ### 2.0.2 エージェント（`agents/`）の置き場所とインストーラ
 
 change-watch の上で動くエージェント（gitlab-issue-agent・gitlab-issue-hub-agent・gitlab-mr-review-agent・redmine-ticket-agent）は `tools/change-watch/agents/<名前>/` に置く。
-どれも「change-watch のプラグイン兼 CLI の `.py` 1 つ」「設定の雛形（`change-watch.yaml`・`.env`・プロンプト）」「Dagu のワークフローの例」で
-できていて、以前は README の `mkdir`・`cp` でエージェントごとに別の場所（`~/.local/share/<名前>/`・`~/.config/dagu/<名前>.env`）へ置き、
+どれも「設定の雛形（`change-watch.yaml`・`.env`）」「Dagu のワークフローの例」と、要るものだけ「エージェントが使う `.py`」（MR のレビューのコマンド・
+ハブの issue の URL のフィルタ）でできていて、以前は README の `mkdir`・`cp` でエージェントごとに別の場所（`~/.local/share/<名前>/`・`~/.config/dagu/<名前>.env`）へ置き、
 change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch.yaml` にコピーしていた（1 台で 2 つ動かすと手でまとめる必要があった）。
 
 `install.py install --agent <名前>` が、どのエージェントも同じ決まりで置く:
@@ -97,24 +73,23 @@ change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch
 | `agents/<名前>/change-watch-*.yaml.example` | `~/.config/dagu/dags/` | 無いときだけ |
 | 状態（雛形の `state_dir`） | `~/.local/state/change-watch/<名前>/` | — |
 
-- 設定と状態をエージェントごとに分ける。入れる・消す・`gc` がエージェント単位で済み、取得元やルールの名前が重なっても互いに影響しない。
+- 設定と状態をエージェントごとに分ける。入れる・消す・`gc` がエージェント単位で済み、取得元や consumer の名前が重なっても互いに影響しない。
   そのためワークフローは `--config` を明示し、整理（`gc`）のワークフローもエージェントごとに 1 本ある（`change-watch-<名前>-maintenance`）
 - 置き場所の決まりはファイル名だけで決める（`.py`・`change-watch-*.yaml.example`・それ以外の `.example`）。エージェントを足すときに
-  インストーラを直さない（`agents/` にフォルダを足すだけ）
+  インストーラを直さない（`change-watch.yaml.example` を持つフォルダを `agents/` に足すだけ）
 - 例の `/home/you/...` は、change-watch・プログラム・設定・接続設定の場所に限って、この PC のパスに置き換える。Windows ではワークフローの
   `command` を Python に、`args` の先頭を `.pyz` にし、設定と `.env` のコマンドの `python3` を Python のフルパスにする。§2.0.1 の「生成しない」は
   設定から DAG を組み立てないという意味で、ここでは例の文字列の決まった箇所を置き換えるだけ。作業フォルダなど自分で決めるものは
   置き換えず、`/home/you` のまま残して直すところとして表示する
 - 設定とワークフローを上書きしないのは、直したものを入れ直しで失わないため。前の版の置き場所や状態（`~/.local/state/change-watch/state.db`）
-  が残っていれば、移し方を表示する（状態を移さないと `initial: emit` のエージェントが最初から数え直す）
+  が残っていれば、移し方を表示する（状態を移さないと `--initial emit` のエージェントが最初から数え直す）
 
 ### 2.1 状態を SQLite にした理由
 
-- 取得 1 ページ・判定 1 回・受け渡し 1 件の遷移を、それぞれ 1 トランザクションで書ける。途中で停止しても
-  「観測値は進んだがイベントが無い」「イベントはあるが受け渡しが無い」が起きない
+- 取得 1 ページ・`commit` 1 件の遷移を、それぞれ 1 トランザクションで書ける。途中で停止しても「半分だけ取れた結果」を `get` に使わない
 - Windows・WSL2・Linux の標準ライブラリにあり、追加の導入が要らない。`BEGIN IMMEDIATE` で複数のプロセス
-  （取得元ごとの DAG・再送の DAG・後続の DAG からの ack）の書き込みを直列にできる
-- JSON のファイル 1 つ + flock は 1 プロセス 1 ファイルの読み書きには十分だが、受け渡し先ごと・レコードごとの
+  （同じ取得元を `get` する複数のワークフロー）の書き込みを直列にできる
+- JSON のファイル 1 つ + flock は 1 プロセス 1 ファイルの読み書きには十分だが、consumer ごと・レコードごとの
   状態を持つと全体の書き戻しが重く、部分の遷移を原子的にできない
 - 制約: SQLite のロックはネットワーク越し・`/mnt/c` 越しでは効かない。状態のフォルダは動かす OS のローカルに置く（README に明記）
 
@@ -122,30 +97,30 @@ change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch
 
 ### 3.1 取得元と指紋
 
-取得元は「要求（URL・メソッド・ヘッダー・クエリ・本文）・抽出・ページング・増分・接続設定」の組で、ルールはこれを名前で参照して
-共有する。ルールや受け渡し先が増えても API への問い合わせは取得元ごとに 1 回で済む。
+取得元は「要求（URL・メソッド・ヘッダー・クエリ・本文）・抽出・ページング・増分・接続設定」の組で、ワークフローはこれを名前で参照して
+共有する。`get` するワークフロー（consumer）が増えても API への問い合わせは取得元ごとに 1 回で済む。
 
 取得元の**指紋** = 間隔やレート制限など取得条件に関係しない項目を除いた設定 + 接続設定の (サービス, ラベル) + 接続設定の値のハッシュ。
-指紋が変わると世代（epoch）を進め、前の世代の取得結果・位置・ETag の控え・組み立てた全体の姿を使わない。ルールは世代が
-変わったら基準値を取り直す。これで「取得条件や認証・権限が違うデータを、意図せず同じものとして比べる」ことが起きない。
+指紋が変わると世代（epoch）を進め、前の世代の取得結果・位置・ETag の控え・組み立てた全体の姿を使わない。consumer は世代が
+変わったら基準を取り直す。これで「取得条件や認証・権限が違うデータを、意図せず同じものとして比べる」ことが起きない。
 認証情報そのものは保存せず、ハッシュだけを指紋に入れる。
 
 ### 3.1.1 フォルダの取得元
 
 取得元の `request` の代わりに `folder` を書くと、フォルダの一覧を 1 ページの全件取得として扱う（`changewatch/folder.py`）。
-ファイル 1 つが 1 レコードで、`key` は相対パス（`rel`）に固定する。取得より後（判定・受け渡し・ack）は API の取得元と同じ道を通るので、
+ファイル 1 つが 1 レコードで、`key` は相対パス（`rel`）に固定する。取得より後（`get` / `commit`）は API の取得元と同じ道を通るので、
 フォルダ専用の監視の仕組み（常駐の監視プロセス・OS のファイル変更通知）は持たない。
 
 | 決めたこと | 理由 |
 |---|---|
 | 常駐して OS の変更通知を受けず、起動のたびに一覧する | 「常駐しない」を崩さない。変更通知はネットワークのフォルダ・WSL2 の `/mnt/c` で届かないことがあり、取りこぼしの扱いが別に要る。一覧どうしを比べれば、止まっていた間の変化も拾える |
 | 書き込み中のファイル（更新時刻から `settle_sec` 以内）は、`source_records` にある前回の姿を使い、無ければ一覧から外す | 一覧から外すだけだと、書き換え中の既存のファイルが `removed` → `appeared` に見える。前回の姿は `key` ごとの最新の姿として既に持っている |
-| フォルダが無い・読めない下のフォルダがあるときは一時的な失敗にして完了にしない | 空の一覧で完了にすると、全件が `removed` になる（ネットワークのフォルダが切れただけで発火する） |
+| フォルダが無い・読めない下のフォルダがあるときは一時的な失敗にして完了にしない | 空の一覧で完了にすると、全件が `removed` になる（ネットワークのフォルダが切れただけで全部を返す） |
 | `max_files` を超えたら完了にしない | `max_pages` と同じく、打ち切りを「全部取れた」と扱わない |
 | 変化は大きさ・更新時刻で見て、中身のハッシュは `hash: true` のときだけ | 毎分全部のファイルを読むのは重い。更新時刻を保つコピーなどで取りこぼすときだけ中身を読む |
 | `refresh`・接続・ページング・増分・条件付き要求は書けない | API の要求の項目で、フォルダには当てはまらない。書けると黙って無視されて誤解を生む |
 
-指紋には解決したフォルダの絶対パスも入るので、`path` を変えると世代が変わり、ルールは基準値を取り直す。
+指紋には解決したフォルダの絶対パスも入るので、`path` を変えると世代が変わり、consumer は基準を取り直す。
 
 ### 3.2 ページ単位の進行と再開
 
@@ -156,7 +131,7 @@ change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch
 - 失敗（一時的・恒久的とも）では `failed` にして `page_state` を残す。次の取得は `resume_max_age_sec` 以内なら続きから再開し、
   古ければ破棄して最初から取る（古い途中経過に新しいページをつなぐと、ページの境目のずれが大きくなるため）
 - 最後のページを書いたあと「完了」にする前に止まったときは、`page_state.done` を見て取り直さずに完了処理だけ行う
-- **完了するまで判定しない・位置を進めない。** 全件取得の途中の結果を判定すると、未取得のレコードが「消えた」に見える。
+- **完了するまで `get` に使わない・位置を進めない。** 全件取得の途中の結果を使うと、未取得のレコードが「消えた」に見える。
   増分の途中で位置を進めると、未取得の範囲を二度と取らない
 - `max_pages` を超えたら完了にしない（打ち切りを「全部取れた」と扱わない）
 
@@ -167,9 +142,9 @@ change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch
 | `max_value` | 取得したレコードの指定項目の最大値（数どうし・文字列どうしだけ比べる） | `param=<最大値>` |
 | `cursor` | 応答の指定箇所の値（最後のページのもの） | `param=<値>` |
 
-`>=` 系の API で境界のレコードが 2 回取れても、観測値が同じなので発火しない。増分取得の結果は一部のレコードだけなので、
-`key` を書いた取得元では完了のたびに `source_records`（key ごとの最新のレコード）を更新し、ルールの基準値の取り直しは
-この全体の姿で行う（直近の取得だけで基準値を取ると、そこに無いレコードが次に取れたとき `appeared` で大量に発火する）。
+`>=` 系の API で境界のレコードが 2 回取れても、値が同じなので変化にしない。増分取得の結果は一部のレコードだけなので、
+`key` を書いた取得元では完了のたびに `source_records`（key ごとの最新のレコード）を更新し、`get` と consumer の基準はこの全体の姿で
+見る（直近の取得だけで基準を取ると、そこに無いレコードが次に取れたとき `appeared` で大量に返る）。
 
 ### 3.4 通信の失敗とレート制限
 
@@ -188,7 +163,7 @@ change-watch の設定は 3 つとも同じ `~/.config/change-watch/change-watch
 
 取得元ごとに期限つきの排他（`leases`、`fetch:<名前>`）を取る。期限はページごとに延ばす。持ち主が同じ PC で死んでいれば
 （pid の生存確認、Windows は `OpenProcess`）即座に、別の PC なら期限切れで奪う。Dagu の DAG が重なっても、手で `fetch` を
-叩いても、同じ取得元を同時に 2 回取らない。判定も取得元ごとに排他する（`eval:<名前>`）。
+叩いても、同じ取得元を同時に 2 回取らない。
 
 ### 3.6 いつ取得するか・取得の共有とずらし
 
@@ -202,10 +177,10 @@ Dagu の起動間隔（ワークフローの `schedule`）に任せる。どち�
 例のワークフローは毎分起動する。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
 README でどちらかを書くか、ワークフローの `schedule` を問い合わせてよい間隔にするよう案内している。
 
-1 つの取得元を、それぞれ自分のワークフロー（§5.5）で取得から処理まで行う複数のルールが使うと、同じ API を何度も呼びかねない。
-`fetch` は次の順で判断して、問い合わせを 1 回にまとめる。
+1 つの取得元を複数のワークフローが `get` すると、同じ API を何度も呼びかねない。取得（`get` の前の取得と `fetch`）は次の順で判断して、
+問い合わせを 1 回にまとめる。
 
-0. `schedule` があり、直近の予定の時刻のあとに取得し終えていれば、待たずに `skipped` で終わる。続く `evaluate` はその取得結果を使う
+0. `schedule` があり、直近の予定の時刻のあとに取得し終えていれば、待たずに `skipped` で終わる。`get` はその取得結果で答える
 1. `min_interval_sec` の間に（同じ指紋で）取得し終えていれば、待たずに `skipped` で終わる
 2. `jitter_sec` があれば 0〜その秒数だけランダムに待つ（定刻に複数の PC・ワークフローが API へ集中しない）。手で叩くときは
    `--no-jitter`、`--force` でも待たない。1 で終わるときは待たない（取得しないのにずらしても意味がない）
@@ -213,20 +188,15 @@ README でどちらかを書くか、ワークフローの `schedule` を問い�
    （`last_success_at` が待ち始めた時刻以降）、その結果を使って `skipped` で終わる。待っても取れなければ従来どおり `busy`
 4. 排他を取ったあと、改めて 0・1 と失敗の待ちを見る（ずらしている・待っている間に別のワークフローが取得した・失敗した場合）
 
-DAG の fetch ステップの `timeout_sec` には、`jitter_sec` と `busy_wait_sec` を足す。
+DAG の get ステップの `timeout_sec` には、`jitter_sec` と `busy_wait_sec` を足す。
 
-**何本のワークフローが取得するか**（`Config.fetching_workflows`）: command の受け渡し先を持つルールは自分のワークフローで、それ以外のルール
-（とルールの無い取得元）は取得元のワークフローで取得する。2 本以上で、取得元に `schedule` が無いなら（`schedule` があれば 0 だけで
-予定の時刻ごとに 1 回にまとまる）、設定の読み込みで次を必須にする（注意ではなく誤りにする。抜けると、起動したワークフローの数だけ毎回問い合わせる）:
-
-- `min_interval_sec` > 0（成功した取得は、ワークフローの本数によらず `min_interval_sec` に 1 回まで）
-- `busy_wait_sec` > 0（待たずに終わると、続く `evaluate` が前回までの結果しか見ず、次の起動まで処理が遅れる）
-- `jitter_sec` < `min_interval_sec`（ずらしが長いと、先に取得したワークフローの結果が `min_interval_sec` を過ぎてから起きるワークフローがいて、
-  もう一度問い合わせる）
+**何本のワークフローが取得するか**は、0.8.0 までは設定のルールから数え、2 本以上で `schedule` が無ければ `min_interval_sec`・`busy_wait_sec`
+を必須にしていた。consumer は設定に現れない（ワークフローの argv にだけある）ので数えられない。必須の検査はやめ、README で「2 本以上が
+同じ取得元を `get` するなら `schedule` か `min_interval_sec` と `busy_wait_sec` を書く」と案内する。
 
 **失敗の共有**: 取得が失敗したら（一時的な失敗も、認証などの直らない失敗も）、取得元に `retry_not_before` = 今 + `failure_backoff_sec` ×
 2^(連続の失敗回数)（上限 `failure_max_backoff_sec`。API の `Retry-After` が長ければそちら）を書く。この時刻までは、どのプロセスも
-（失敗したワークフローの Dagu の再試行も）問い合わせず `deferred`（終了コード 0）で終わり、前回までの取得結果で判定を続ける。
+（失敗したワークフローの Dagu の再試行も）問い合わせず `deferred`（終了コード 0）で終わり、`get` は前回までの取得結果で答える。
 ずらし・待ちのあとにも見直す。成功したら消す。`--force` は見ない。従来は `Retry-After` が無い失敗のあと、起動したワークフローがそれぞれ
 すぐに取り直していた（ページごとに `retry.attempts` 回 × Dagu の再試行 × ワークフローの本数）。
 
@@ -239,175 +209,30 @@ DAG の fetch ステップの `timeout_sec` には、`jitter_sec` と `busy_wait
 `rate_limit.min_interval_sec`・`per_minute` は group の全部の要求で数え、どれかが失敗したら group の全部が待つ。group の中で間隔・上限の値が
 違うと、どれが効くか分からないので設定の誤りにする。取得は同時に 1 つなので、要求の数え方はプロセスの中の記録と DB の記録の継ぎ足しで足りる。
 
-## 4. 判定
+## 4. ワークフローから使う口（`get` / `commit` / `call`）
 
-### 4.1 観測の列を順に比べる
+条件の判定と処理はワークフロー（Dagu）に置き、change-watch は API へのアクセスだけを受け持つ（§9 の経緯）。口は 3 つ（`changewatch/access.py`・
+`changewatch/cli.py`）。
 
-ルールは取得元の完了した取得を古い順に 1 回ずつ判定し、`rules.last_fetch_id` を進める。1 回の判定（観測値の更新・
-イベントと受け渡しの追加・位置の前進）は 1 トランザクション。取得が判定より先に何回か進んでも、間の観測を飛ばさないので
-A→B→A は 2 回の変化として検知する（取得の間隔の中で起きて戻った変化は原理的に見えない。README の「限界」）。
-
-### 4.2 正規化
-
-1. `ignore` のパスを取り除く（ワイルドカード可）
-2. 配列: `array_order: ignore` なら全配列を、`unordered` のパスの配列だけを、要素の正規化 JSON の順に並べる
-3. `watch` のパスの値を取り出す。値が無いパスは辞書に入れない（null とは別。`missing_is_null` で同一視）
-4. キー順に依らない JSON（`sort_keys`）のハッシュで前回と比べる。true と 1 は別の値として扱う
-
-差分（`changes`）は辞書を再帰し、長さが同じ配列は添字ごと、それ以外は丸ごと `changed` とする。
-
-### 4.3 種類と条件
-
-`filter` は対象の範囲、`condition` は発火条件で、役割を分けた。`filter` から外れたレコードは追跡をやめ（戻ってきたら
-`appeared`）、全件取得で消えても `removed` にしない。`condition` は一致の状態を観測値と一緒に持ち、`entered` / `exited` /
-`matching` を出す。初めて見たレコードの「前の状態」は不一致とみなす（初回の基準値の取得では発火しない）。
-
-イベント ID = ハッシュ(ルール名, ルールの判定の指紋, レコードのキー, 取得の ID)。判定のやり直し（`replay`）で同じ取得を
-同じルールで判定すれば同じ ID になり、既にあるイベントは積まない（`INSERT OR IGNORE`）。ルールの判定の仕方を変えれば
-別の ID になる。
-
-### 4.4 基準値
-
-| 場面 | 振る舞い |
+| 口 | すること |
 |---|---|
-| 初回 | 最新の取得結果（増分 + `key` なら全体の姿）を基準値にする。`initial: emit` なら同時に既存のレコードを `appeared` で出す |
-| 判定の仕方の変更（指紋が変わった） | 既定（`rebaseline`）は最新の取得結果で基準値を取り直す。`continue` は新しい比べ方で前回の値と比べ続ける |
-| 取得元の世代が変わった | 必ず基準値を取り直す（`initial` は効かない） |
-| `rebaseline` コマンド | 次の判定（`--now` ならいま）で取り直す。`--refetch` で次の取得を全件にする |
+| `get --source S` | 取得して（するかは §3.6）、最後に取得し終えたレコードの一覧を返す |
+| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` した姿（`consumer_records`）と今の姿（`source_records`）を key ごとに比べ、`appeared` / `changed` / `removed` を返す |
+| `commit --source S --consumer C KEY… [--refresh]` | KEY の今の姿を C の「処理し終えた姿」にする。`--refresh` なら取得元の `item` で 1 件取り直した姿にし、取得元の姿もそれに替える |
+| `call METHOD URL --source S` | 取得元の接続（認証）・要求の間隔・失敗の待ちを分け合って、API を 1 回呼ぶ。GET 以外は自分では再試行しない |
 
-`on`・`targets`・`initial` の変更は判定の仕方ではないので基準値を取り直さない。
-
-## 5. 受け渡し
-
-### 5.1 1 回だけ実行される受け渡し
-
-受け渡しの ID（`aw_` + ハッシュ(イベント ID, 受け渡し先)、Dagu の実行 ID の制約 `^[-a-zA-Z0-9_]+$`・64 文字以内に収まる）を
-そのまま Dagu の実行 ID にする。Dagu は同じ DAG・同じ実行 ID の enqueue を断る（CLI は `already exists`、API は 409）ので、
-このツールが「渡したかどうか分からない」状態から渡し直しても、後続処理は 1 回しか走らない。断られたら渡せたものとして記録する。
-
-| 状態 | 意味 | 次 |
-|---|---|---|
-| `pending` | 未受け渡し | dispatch |
-| `sending` | 渡している最中（期限つき）。期限切れは渡せたか分からない | 同じ ID で渡し直す |
-| `send_failed` | 渡せなかった | バックオフ後に同じ ID で渡し直す |
-| `dead` | `max_attempts` に達した | 手で `retry`（`pending` に戻す） |
-| `dispatched` | Dagu のキューに入った（= 受け渡し済み） | ack / reconcile |
-| `done` / `failed` | 後続処理が成功 / 失敗 | `failed` は `retry` で Dagu に同じ実行 ID のまま再実行させる |
-| `skipped` | 手で飛ばした | — |
-
-「取得・観測済み」は fetches / rule_records、「Dagu への受け渡し済み」は `dispatched`、「後続処理の完了」は `done` で区別する。
-受け渡しはイベント × 受け渡し先ごとの行なので、1 つの受け渡し先の成功が他を完了にすることはない。
-
-`sending` → `dispatched` の更新は「まだ `sending` で、自分が持ち主のとき」だけ行う。後続処理が速く終わって先に `ack` しても、
-完了を上書きしない。
-
-### 5.2 順序と並列
-
-受け渡し先の `order` で、同じ (ルール, 受け渡し先, レコード) の受け渡しの間だけ順序を守る。dispatch はイベントの発生順（`seq`）に
-なめ、前に未完了のものがあれば飛ばす（`completion` は `done` / `skipped` 以外すべて、`enqueue` は Dagu に入る前の状態だけを数える）。
-別のレコード・別の受け渡し先は制約を受けないので、Dagu のキューの並列数まで並ぶ。失敗した受け渡しが止めるのは、同じレコードの
-後ろのイベントだけ。`skip` で先へ進められる。
-
-### 5.3 アダプタの口と Dagu アダプタ
-
-本体は `enqueue(run_id, workflow, params, queue) -> ok | duplicate`・`retry(run_id, workflow)`・`status(run_id, workflow) -> done | failed | 不明`
-だけを呼ぶ（`changewatch/adapters/__init__.py`）。`command` アダプタは argv のテンプレートで同じことをする（終了コード 9 か
-`already exists` を duplicate とみなす）。以下は `changewatch/plugins/dagu.py` の `dagu` アダプタ。
-
-| mode | enqueue | 再実行 | 状態の問い合わせ |
-|---|---|---|---|
-| `cli` | `dagu enqueue --run-id=<ID> [--queue=Q] <DAG> -- K=V ...`（argv で渡し、シェルを通さない） | `dagu retry --run-id=<ID> <DAG>` | しない（出力は人向け）。後続の DAG から `ack` |
-| `api` | `POST /api/v1/dags/{name}/enqueue`（`dagRunId`・`params`（JSON 文字列）・`queue`） | `POST /api/v1/dag-runs/{name}/{id}/retry` | `GET /api/v1/dag-runs/{name}/{id}` の `statusLabel`（`succeeded` / `partially_succeeded` → done、`failed` / `aborted` / `rejected` → failed） |
-
-Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`internal/ir/run_id.go`）で、実行 ID の検査と重複時の応答を確かめた。
-
-イベントの中身は引数に入れず、`<state_dir>/events/<イベント ID>.json` に書いてパスを渡す（大きなレコードや改行・記号を
-コマンド行・Windows の引用規則に通さないため）。小さければ `inline_payload` で引数にも入れられる。
-
-### 5.4 完了の記録
-
-後続の DAG の `handler_on.success` / `failure` から `ack ${DAG_RUN_ID}` を呼ぶのが基本。`mode: api` なら再送の DAG の
-`reconcile` が Dagu に問い合わせて記録するので、後続の DAG を変えずに済む（`command` アダプタでは `status_command`）。どちらも無い場合、`order: completion` の受け渡し先では
-同じレコードの次のイベントが渡らない（README に明記）。
-
-### 5.5 その場で実行する受け渡し先（command）と、1 本のワークフロー
-
-受け渡し先に `workflow` の代わりに `command`（argv）を書くと、アダプタで別のワークフローへ渡さず、`work` がその場で実行する。
-取得 → 判定 → 処理を 1 本のワークフロー（`fetch --source S` → `evaluate --rule R` → `work --rule R`）で行い、Dagu 側に
-受け渡し先の DAG もキューも要らない。`run --rule R` は同じことを 1 つのコマンドで行う。
-
-- 受け渡しの行（deliveries）・ID・順序（`order`）・試行回数と間隔（`max_attempts` / `retry_backoff_sec`）・`retry` / `skip` は
-  `workflow` の受け渡し先と同じものを使う。状態は `pending` → `sending`（実行中。期限は `timeout_sec` + 120 秒）→ `done`、
-  失敗は `send_failed`（間隔をおいて次の `work` で同じ ID のまま再実行）→ 上限で `dead`。`dispatched` と `failed` は通らない
-- 1 回の `work` では同じ受け渡しを 2 回試さない（`retry_backoff_sec: 0` でも、失敗を同じ実行の中で上限まで繰り返さない）
-- コマンドには `params_for` と同じ値を環境変数で渡し（`CHANGEWATCH_EVENT_FILE` など）、argv にも `{{ event.* }}`・`{{ delivery.* }}`・
-  `{{ env.* }}` を埋められる。標準出力・標準エラーはそのまま流す（Dagu のステップのログに出る）
-- `timeout_sec` を過ぎたら終了を頼み、15 秒で強制終了して失敗として数える。`work` が止められた（SIGTERM など）ときは実行中のコマンドへ
-  同じシグナルを伝え、終わるのを待って失敗として記録し、終了コード 1 で終わる
-- 同じ `work` を 2 つ動かしても、`sending` への書き換えを条件付きの UPDATE で取り合うので、1 件を 2 回実行しない。プロセスが死んだら、
-  期限が過ぎたあとの `work` が同じ ID で実行し直す（少なくとも 1 回。冪等にするのはコマンドの側）
-- `dispatch` はこの受け渡し先を飛ばす。`workflow` の受け渡し先が 1 つも無ければ `delivery`（アダプタ）は要らない
-- command の受け渡し先を持つルールは、ルールごとのワークフロー（fetch → evaluate → [dispatch] → work。`dags/change-watch-rule.example.yaml`）で動かす。
-  毎分起動なら、予定の時刻以外は問い合わせず、`work` が失敗したもののやり直しだけを進める。
-  work のステップには上限を付けない（1 件ごとの上限は `timeout_sec`）。
-  どのルールも自分のワークフローを持つ取得元には取得元のワークフローが、`workflow` の受け渡し先が無ければ再送のワークフローが要らない
-
-### 5.6 実行の前後の取り直し（`refresh`）と「処理し終えた状態」
-
-ポーリングで拾った変化を実行するまでには間があり、実行するコマンド自身がレコードを書き換えることもある。どちらも受け渡し先ごとの事情なので、
-ルールの観測値（`rule_records`。ほかの受け渡し先とも共有）は動かさず、`refresh` のある受け渡し先 × レコードごとに「最後に処理し終えた
-状態」（`handled_records`。監視する値とそのハッシュ）を持つ。`work` の 1 件は:
-
-1. イベントの `after`（監視する値）のハッシュが処理し終えた状態と同じなら、取り直さずに `done`（`last_error` に理由）。
-   コマンド自身の書き込みで出たイベント・まとめて処理し終えた古いイベントはここで落ち、API への問い合わせは 0
-2. `refresh` の要求で 1 件取り直す。404 → `done`（見つからない）。ルールの `filter` から外れた → `done`。監視する値が処理し終えた状態と同じ → `done`
-3. 取り直したレコードを入れたイベントの JSON（`<イベント ID>--<受け渡し先>.json`。ほかの受け渡し先のファイルは書き換えない）と、
-   `CHANGEWATCH_ATTEMPT`・`CHANGEWATCH_RESULT_FILE` を渡してコマンドを実行する
-4. 成功したら、結果ファイルが `{"handled": "before"}` でなければもう一度取り直し、その監視する値を処理し終えた状態にする。
-   `before` なら 2 の値（実行前）にする。取り直しに失敗したら 2 の値にとどめる（取りこぼさない側）
-
-取り直しは排他（§3.5）を取らない。1 件だけで、取得の途中に挟まっても取得の結果を壊さないため。要求の間隔・1 分あたりの上限・失敗の待ちは
-取得元（と `rate_limit.group`）と分け合い、取り直しの失敗も取得元を失敗の待ちに入れる。待ちの中なら、試行に数えずにあとへ回す。
-処理し終えた状態は、ルールの観測値が消えたレコードのものを `gc` で消し、`forget-rule` でルールごと消す。`forget-handled` で個別に忘れさせる。
-
-### 5.7 外のワークフローで処理する（`external`）と、プラグインの口
-
-処理（エージェントの CLI など）を change-watch のプロセスの中で動かすと、止める・時間切れ・ログ・実行履歴を change-watch が持つことになり、
-ワークフロー基盤の画面から見えない。`external: true` の受け渡し先は change-watch が実行せず、§5.5 の `work` の 1 件を、基盤のステップから呼べる
-コマンドに分ける。
-
-| コマンド | `work` の中のどこか | 状態 |
-|---|---|---|
-| `due` | 実行を待っている受け渡しを探す（`_blocked` で同じレコードの前を待つ） | 何も変えない |
-| `begin` | 受け渡しを取る（`sending`・期限 `timeout_sec` + 120 秒）→ 処理し終えた状態との比較 → `lock` → `refresh` → `filter` → `skip_if` | 実行するなら `delivery_runs` に開始の時刻・実行前の監視する値・`lock` を書く |
-| `render` | `begin` が書いたイベントの JSON（`<イベント ID>--<受け渡し先>.json`）でテンプレートを展開する | 何も変えない |
-| `finish` | `handled_before_if` → 実行のあとの `refresh` → 処理し終えた状態の記録 → 完了 / 失敗 → `lock` を返す | `delivery_runs` を消す |
-
-`begin` と `finish` は別のプロセスなので、`deliveries.owner`（プロセスごと）ではなく `delivery_runs` の行と `sending` の状態でつなぐ。
-`lock` も同じ理由で、pid で死活を見る取得の排他（§3.5）とは別に、持ち主を受け渡しの ID にした期限つきの排他（`Store.hold`）にした。
-`finish` が呼ばれないまま基盤ごと落ちても、受け渡しの期限と `lock` の期限が切れれば次の `begin` が取り直す（少なくとも 1 回）。
-`work`（`command` の受け渡し先）も同じ `begin` / `finish` を 1 つのプロセスで呼ぶだけにして、振る舞いを 1 つにした。
-
-ログは標準エラーに出す。標準出力を結果だけ（`due` の配列・`begin` の 1 語・`render` の文章）にして、Dagu のステップの `output:` で受けるため。
-
-`claim` は `due` の古い順に `begin` を呼び、最初に `run` になった 1 件の ID を出す（`skip` などはそのまま次へ、`busy` / `wait` ならやめる）。
-`finish --exit-code N` は処理のステップの終了コードで成否を決める（数でなければ失敗。ID が空なら何もしない）。
-
-`external` の受け渡し先は、ルールのワークフロー 1 本（`dags/change-watch-external.example.yaml`）の中に `claim`（`output: DELIVERY`）→ `render`（`output: INPUT`）→
-`handle`（`id: handle`・`continue_on: failure`）→ `finish ${DELIVERY} --exit-code ${handle.exit_code}` として書く。`render` 以降は
-`preconditions` の `re:^aw_`（取れた ID があるとき）で動く。1 回の起動で 1 件だけ処理する。確かめたのは Dagu v2.25.2 のスキーマと実装
-（`${<ステップ>.exit_code}` で前のステップの終了コードを参照できる、`harness.run` の `with.stdin` は文字列で、組み込みの claude などは
-標準入力に流す）。例はそのスキーマで検証した（§8）。
-
-当初は親（`due` の配列を `action: dag.run` の `parallel`（`max_concurrent: 1`）に渡す）と子（`begin` → `render` → `handle`、`handler_on` で
-`finish`）の 2 本にしていた。1 回の起動で全部を流せ、子の `handler_on.abort` で中止も記録できたが、ワークフローが 2 本になる。1 本にするため、
-1 回の起動で 1 件だけにし（同時に 1 つしか動かさないので待ちはほとんど変わらない）、中止は受け渡しの期限切れで取り直すことにした。
-`handle` は処理ごとに違うので、例では `harness.run` で Claude Code を動かす形にし、利用者が書き換える。
-
-**プラグインの口**（`changewatch/plugins/__init__.py`・`changewatch/hooks.py`）: アダプタ・コマンドに加えて、フィルタ（テンプレートの関数）と
-チェック（実行の前後の真偽）を名前で登録できる。プラグインは本体の内部に触らず、チェックの HTTP も `CheckContext.get_json` を通す。
-取得元の接続・要求の間隔・1 分あたりの上限・失敗の待ちを分け合わせ、プラグインが API への負荷の約束を破れないようにするため。
-チェックの例外は取りこぼさない側に倒す（`skip_if` は偽、`handled_before_if` は真）。
+- **取得の失敗で止めない。** `get` の前の取得が失敗しても、警告を出して前回までの取得結果で答え、終了コード 0 にする。ワークフローの
+  処理と `commit` が、API の一時的な不調で止まらない（設定の誤りは止める）
+- **consumer ごとに独立。** 同じ取得元を `get` するワークフローが何本あっても、変化はそれぞれの「処理し終えた姿」から数える。
+  ワークフローを足しても他のワークフローの受け取り方は変わらない
+- **初めての consumer と世代の変化。** `consumers` に取得元の世代（§3.1）を持ち、初めて呼ばれたとき・世代が変わったときは、`baseline`（既定）
+  なら今の姿を覚えるだけ、`emit` なら全部を `appeared` で返す
+- **`commit` まで返し続ける。** `get` は状態を変えない。処理が失敗して `commit` されなければ、次の起動でも同じ変化を返す。
+  例のワークフローは失敗しても `commit` し（`continue_on.failure`）、やり直しは Dagu の `retry_policy` に任せる
+- **自分の書き込みを変化にしない。** 処理の中で API に書き込むと、次の取得でその書き込みが変化に見える。`commit --refresh` は書き込んだ後の
+  姿を取り直して基準にする。取り直したレコードの key が違えば設定の誤りにする
+- **比べ方。** `--watch` が無ければレコード全体、あればそのパスの値だけを、キー順に依らず比べる（true と 1 は別）。`changes` は辞書を再帰し、
+  長さが同じ配列は添字ごとにたどる。前回の取得と比べるのではなく前回 `commit` した姿と比べるので、`commit` までに A→B→A と変われば変化なし
 
 ## 6. 運用
 
@@ -418,25 +243,24 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   環境変数では上書きしない（呼び出し側の環境に左右されず、ワークフローの argv を見れば何を使うか分かる）
 
 - `status`: 取得元ごとの最後の取得（ページ数・件数・要求回数・304 のページ数）・エラー・途中の取得・待たされている時刻、
-  ルールごとの判定位置と未判定の回数・判定のエラー・受け渡しの内訳、失敗している受け渡しの一覧
+  consumer ごとの処理し終えた件数と最後の `commit`
 - 認証情報は出さない: 接続設定の値（URL・ユーザー名以外）と、名前が秘密らしいヘッダー・クエリの値を覚えて、ログ・保存するエラー文・
   状態の表示で `***` に置き換える。URL のクエリでトークンらしい名前の値も伏せる。別ホストへのリダイレクトでは認証のヘッダーを落とし、
   次ページの URL が別ホストなら止める
-- 保持期間: 取得結果は「最新 N 回」「どれかのルールが未判定」「再開できる途中の取得」を残し、それ以外を `fetch_days` で消す。
-  イベントは受け渡しがすべて `done` / `skipped` のものだけ `events_days` で消す。設定から消したルールは保持の判断に入れない
-  （`status` に出し、`forget-rule` で消す）
+- 保持期間: 取得結果は「最新 N 回」「再開できる途中の取得」を残し、それ以外を `fetch_days` で消す。`get` は最新の取得結果
+  （と組み立てた全体の姿）しか見ないので、古い取得結果を残す理由は再開と調べもの（`records --fetch`）だけ
 - 肥大化の防止: 新しい DB は `auto_vacuum=INCREMENTAL` で作り、`gc` の最後に `incremental_vacuum` と `wal_checkpoint(TRUNCATE)` を流して、
   消した行の領域をファイルから返す（`incremental_vacuum` は 1 step で 1 ページ返すので、最後まで step する `executescript` で流す。
   `execute` では Python 3.11 などで 1 ページしか返らなかった）。`auto_vacuum` は表を作る前でないと効かないので、古い DB は
   `gc --vacuum`（VACUUM）で切り替える
-- 行が増え続けるものの期限: ルールの観測値のうち消えた・対象外になったもの（`present=0`）は `removed_days` で消す（また現れたら
-  `appeared`）。増分取得で組み立てた全体の姿は、最後に取得した時刻（`seen_at`）が `record_days` より古いものを消す。消すと基準値の
-  取り直しの対象から外れ、次に取得されたとき `appeared` で発火するので、既定は消さない
+- 行が増え続けるものの期限: 増分取得で組み立てた全体の姿は、最後に取得した時刻（`seen_at`）が `record_days` より古いものを消す。
+  消すと consumer には `removed` で返り、次に取得されたとき `appeared` で返るので、既定は消さない
+- 0.7 までの表（ルールの判定状態・イベント・受け渡し）とイベントのファイルは、`gc` が見つけたら消す（`store.LEGACY_TABLES`）
 
 ## 7. 範囲外
 
 - Webhook の受信（外からの着信を要しないことが前提）
-- 後続処理の実行・並列数の制御・再試行（Dagu に任せる）
+- 条件の判定・後続処理の実行・並列数の制御・再試行（Dagu に任せる）
 - 1 つの取得元を複数の PC で分担すること。排他は同じ状態のフォルダを見るプロセスどうしに効く
 - 応答が JSON 以外の API
 - フォルダの中身の変化を即座に（1 分より短い間隔で）知ること。フォルダも起動のたびに一覧する（§3.1.1）
@@ -445,29 +269,44 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 `tools/change-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。
 
-- `test_shared.py`: command の受け渡し先（`run --rule` で取得から実行まで・失敗の再試行と打ち切り・`retry`・`dispatch` が触らないこと・
-  時間切れ・設定の検査）、取得の共有（2 本のワークフローで問い合わせ 1 回・共有の設定が無ければ誤り・ずらし・取得中のプロセスを待ってその結果を使う・
-  失敗の共有と倍々の待ち・`per_minute` を前のプロセスの要求も数える）、cron の解釈、予定の時刻での取得、`rate_limit.group`、
-  `refresh`（自分の書き込みで再実行しない・実行中のほかの人の変化で再実行する・たまったイベントを最新で 1 回・filter から外れた／消えたら飛ばす・
-  取り直しの失敗・`forget-handled`）、`external`（`due` → `begin` → `render` → `finish`・失敗の再試行と打ち切り・ルールをまたいだ `lock`・
-  プラグインのフィルタとチェック・チェックの例外・`--plugin` の付け忘れ）、`claim` と `finish --exit-code`
-
-- `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
-  種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査
-- `test_flow.py`: 偽の API（手元の HTTP サーバ。5 種のページング・ETag・増分・失敗の注入・ページの途中で止める）と偽の dagu
-  （本物と同じく同じ実行 ID を断る）で、取得の集約（ルール 2 本・受け渡し先 3 つで問い合わせ 1 回分）、各ページング、
-  増分の位置が失敗で進まないこと、組み立てた全体の姿での基準値の取り直し、304、再試行と長い Retry-After、認証エラーで再試行しない・
-  トークンがログ・状態・DB・WAL に残らないこと、途中で失敗した取得の続きからの再開、強制終了したプロセスからの引き継ぎ、ルールの変更、
-  取得元の認証の変更、API なしでの判定のやり直し、判定のエラーの隔離、順序（completion / enqueue）、同じ ID での再送と受け渡し先ごとの隔離、
-  受け渡し直後の停止からの復旧、ack / retry、REST API での受け渡し・完了の確認・409、保持期間が未処理を消さないこと、
-  YAML の設定、接続設定を `--connections` からだけ読むこと（決まった場所に置いても読まない・無ければ問い合わせ前に止まる）、
-  `adapter: command` での受け渡しと重複の検出、本体が `changewatch.plugins.dagu` を import しないこと、`--plugin` を指定したときだけ Dagu プラグインを使うこと
-- `test_folder.py`: フォルダの取得元（追加・更新・削除・書き込み中のファイル・フォルダが無いときに消えたとしない・`include` / `exclude` / 隠しファイル・下のフォルダ・中身とハッシュ・`max_files`・設定の検査・`path` を変えたときの基準値の取り直し）
-- `test_dag_examples.py`: `dags/` の例のワークフローの形（depends・fetch の再試行は終了コード 3 だけ）と、取得元・ルール・`external`・再送・整理の
-  ワークフローを `test/dagrun.py` で Dagu と同じ順に本物の change-watch へ流して動くこと（`external` は失敗を finish で記録し、次の起動でやり直す）
-- `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで取得から受け渡しまで動くこと、
+- `test_access.py`: `get`（consumer なし・あり）・`commit` まで返し続ける・consumer ごとに独立・`--initial emit`・`commit --refresh` で自分の書き込みを
+  変化にしない・取得の失敗では前回までの結果で答える・`call` の書き込み（認証を分け合う・再試行しない）・フォルダの取得元・`key` の必須
+- `test_shared.py`: 取得の共有（2 本のワークフローで問い合わせ 1 回・ずらし・取得中のプロセスを待ってその結果を使う・失敗の共有と倍々の待ち・
+  `per_minute` を前のプロセスの要求も数える）、cron の解釈、予定の時刻での取得、`rate_limit.group`
+- `test_flow.py`: 偽の API（手元の HTTP サーバ。5 種のページング・ETag・増分・失敗の注入・ページの途中で止める）で、各ページング、
+  増分の位置が失敗で進まないこと、組み立てた全体の姿、304、再試行と長い Retry-After、認証エラーで再試行しない・
+  トークンがログ・状態・DB・WAL に残らないこと、途中で失敗した取得の続きからの再開（途中の結果を `get` に使わない）、強制終了したプロセスからの
+  引き継ぎ、取得元の認証の変更、保持期間・ファイルを縮めること・0.7 までの表を消すこと、YAML の設定、接続設定を `--connections` からだけ読むこと、
+  `rules` / `delivery` が残った設定を案内して止めること、プラグインのフィルタ
+- `test_folder.py`: フォルダの取得元（追加・更新・削除・書き込み中のファイル・フォルダが無いときに消えたとしない・`include` / `exclude` / 隠しファイル・下のフォルダ・中身とハッシュ・`max_files`・設定の検査・`path` を変えたときの基準の取り直し）
+- `test_dag_examples.py`: `dags/` の例のワークフローの形（depends・取得の再試行は終了コード 3 だけ）と、`get` → 条件で分ける → `commit` の例と
+  整理の例を `test/dagrun.py` で Dagu と同じ順に本物の change-watch へ流して動くこと
+- `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで `get` まで動くこと、
   site-packages を読まない（`python -S`）ときに同梱の PyYAML で YAML の設定を読めること、インストールと削除（Windows は `.cmd`）、
-  `--agent` で 3 つのエージェントが同じ決まりの場所に置かれ、置いたワークフローのとおりの argv で `check` が通ること、入れ直しで
+  `--agent` で 4 つのエージェントが同じ決まりの場所に置かれ、置いたワークフローのとおりの argv で `check` が通ること、入れ直しで
   プログラムは新しくなり直した設定は残ること、Windows の形（`command` が Python・`args` の先頭が `.pyz`）に置き換わること
-- `dags/` の例 6 つと、gitlab-issue-agent・redmine-ticket-agent の例のワークフロー 3 つを Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、
-  エラー 0 件を確認した（2026-11-05、手元）。Dagu 本体での実行はまだ確かめていない
+
+## 9. 0.8.0 でルールと受け渡しをなくした経緯
+
+0.7 までは、条件も change-watch の設定に書けた。ルール（`rules`）が取得結果を古い順に判定してイベントを作り（`evaluate`）、受け渡し先
+（`targets`）へ渡す（Dagu の DAG へ `dispatch`、その場のコマンドを `work`、外のワークフローが `claim` → `render` → `finish`）。受け渡しの ID を
+Dagu の実行 ID にして渡し直しを 1 回の実行に収め、レコードごとの順序・再送・完了の記録（`ack`・`reconcile`）・実行の前後の取り直し
+（`refresh`）と、それを判定するプラグインのチェック（`skip_if`・`handled_before_if`）まで持っていた。
+
+PR #1024（0.6.0）で、条件と分岐は Dagu の `preconditions` に、change-watch は `get` / `commit` / `call` に、という役割分担を決め、エージェントの
+既定のワークフローもすべてその形にした。ルールの形は `examples/rules/` と `change-watch.rules.yaml.example` に並べて残し、例が固まったら
+消すとしていた。0.8.0 でそれを消した。
+
+| 残していた理由 | 消してよいと判断した理由 |
+|---|---|
+| 取得を古い順に全部比べるので A→B→A も 2 回の変化として拾える | ワークフローは「今の姿」で動くので、途中の B を処理したい用途がエージェントに無かった。全部の変化が要るなら、履歴の API を取得元にする形が README にある |
+| 受け渡しの順序・再送・完了の記録 | Dagu の `retry_policy`・実行履歴・キューで足りる。change-watch と Dagu の両方に「やり直し」の状態があると、どちらを見ればよいか分からなかった |
+| 実行の前後の取り直し（`refresh`）とチェック | `commit --refresh` と、エージェントのコマンド側の冪等（MR のレビューは差分の指紋でまとめを 1 回だけ書く）で足りた |
+
+消したもの: `changewatch/detect.py`・`deliver.py`・`adapters/`・`plugins/dagu.py`（`--plugin dagu`）、設定の `rules`・`delivery`・`retention.events_days`・
+`removed_days`、コマンドの `evaluate`・`dispatch`・`work`・`due`・`begin`・`claim`・`render`・`finish`・`run`・`ack`・`reconcile`・`retry`・`skip`・
+`events`・`show`・`rebaseline`・`replay`・`forget-handled`・`forget-rule`、プラグインの `add_adapter`・`add_check`、条件式（`jpath.check`）、
+エージェントのプラグイン（`gitlab_issue.py`・`redmine_issue.py` と、`gitlab_mr.py` のフィルタとチェック）、`dags/` のルール用の例 5 つと
+`examples/rules/`。約 7,000 行が減り、本体は Dagu を知らなくなった（Dagu を知っているのは `dags/` の例だけ）。
+
+古い設定に `rules` か `delivery` があると、黙って無視せずに案内して止める（無視すると、処理が止まったことに気づけない）。

@@ -18,9 +18,9 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
 
 ## 入れ方
 
-1. インストーラで入れる。change-watch と、このエージェントのプログラム（`redmine_issue.py`）・設定の雛形・Dagu のワークフローを、
+1. インストーラで入れる。change-watch と、このエージェントの設定の雛形・Dagu のワークフローを、
    どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
-   ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
+   ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すと change-watch だけが新しくなる。
 
    ```bash
    python3 tools/change-watch/install.py install --agent redmine-ticket-agent
@@ -28,7 +28,6 @@ Redmine のチケットを定期的に見に行き、**自分が担当する未�
 
    | 置かれるもの | 場所 |
    |---|---|
-   | プログラム | `~/.local/share/change-watch/agents/redmine-ticket-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\redmine-ticket-agent\`） |
    | 設定（`change-watch.yaml`・`redmine-ticket-agent.env`） | `~/.config/change-watch/redmine-ticket-agent/` |
    | Dagu のワークフロー（`change-watch-auto-close.yaml`・整理の `change-watch-redmine-ticket-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
    | 状態 | `~/.local/state/change-watch/redmine-ticket-agent/` |
@@ -102,19 +101,6 @@ Redmine に書き込めない一時的な失敗（終了コード 3）は、Dagu
 |---|---|
 | `422` で失敗 | Redmine のワークフローで、自分のロールがそのステータスに変えられるようにする。`REDMINE_CLOSED_STATUS_ID` があるステータスの ID かも確かめる |
 | `401` で失敗 | API キーと、REST の Web サービスが有効かを確かめる |
-
-## ルールで判定する形（`examples/rules/`）
-
-条件とコメントの対も change-watch の設定（ルール `rules`）に書き、`redmine_issue.py close` で完了にする形の例。
-入れ方で、`~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` を `examples/rules/change-watch.yaml.example` に、
-`~/.config/dagu/dags/change-watch-auto-close.yaml` を `examples/rules/change-watch-auto-close.yaml.example` に替える（`/home/you` は自分の場所に直す）。
-条件はルールの `filter`、コメントは受け渡し先 `close` の `command` の `--note`、完了のステータスは `--status`（名前か ID）に書く。既定の形との違い:
-
-- 完了にする直前にチケットを取り直し、そのときにも当たっていて担当が自分のときだけ完了にする（チェック `redmine.not_mine`）
-- 1 つのチケットが複数の対に当たっても、上に書いた対のコメントで 1 回だけ完了にする
-- 条件や対を変えると、新しい条件に当たる今あるチケットも、次の取得で完了にする
-- 失敗したものは change-watch が待ってから流し直し（`retry_backoff_sec`・`max_attempts`）、`events`・`retry` で見たりやり直したりできる
-- Dagu を使わず、cron などから `change-watch ... --plugin ~/.local/share/change-watch/agents/redmine-ticket-agent/redmine_issue.py run --source redmine-my-issues` で動かせる
 
 ## 設定の置き場所
 

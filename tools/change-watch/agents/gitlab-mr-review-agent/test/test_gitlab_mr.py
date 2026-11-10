@@ -1,9 +1,8 @@
 """gitlab-mr-review-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_mr.py のフィルタ・チェック・エージェントが使うコマンドと、設定の例（change-watch.yaml.example・prompt.md.example）を
-そのまま本物の change-watch で Dagu のワークフローと同じ順（fetch → evaluate → claim → render → 処理 → finish --exit-code）に
-回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、kiro-cli（Dagu の harness.run）の代わりに、テストが
-gitlab_mr.py のコマンドを呼ぶ。
+gitlab_mr.py のエージェントが使うコマンドと、設定とワークフローの例をそのまま本物の change-watch で Dagu と同じ順
+（get → review → commit）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装し、kiro-cli（Dagu の harness.run）の
+代わりに、テストが gitlab_mr.py のコマンドを呼ぶ。
 """
 from __future__ import annotations
 
@@ -233,16 +232,6 @@ class _GitLabBase(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class UnitTest(unittest.TestCase):
-    def test_since_and_kind(self):
-        ev = {"record": make_mr(1), "refreshed": {"last_handled": {"sha": "c" * 40, "draft": False}}}
-        self.assertEqual(gm.gitlab_mr_since(ev), "c" * 40)
-        self.assertEqual(gm.gitlab_mr_kind(ev), "再レビュー（前回は cccccccc）")
-        ev = {"record": make_mr(1), "refreshed": {"last_handled": None}}
-        self.assertEqual(gm.gitlab_mr_since(ev), "")
-        self.assertEqual(gm.gitlab_mr_kind(ev), "初めてのレビュー")
-        with self.assertRaises(ValueError):
-            gm.gitlab_mr_since("x")
-
     def test_new_lines_and_position(self):
         self.assertEqual(gm.new_lines(DIFF_A), {1: 1, 2: None, 3: None, 4: 3})
         mr = make_mr(1)
@@ -304,65 +293,6 @@ class UnitTest(unittest.TestCase):
         self.assertIn("--- f0.py", out)
         self.assertIn("- f4.py", out)
 
-
-class FakeCtx:
-    def __init__(self, record, now):
-        self.event = {"record": record}
-        self.options, self.conn = {}, {"url": "https://gl.example"}
-        self.now, self.calls, self.logs = now, [], []
-
-    def get_json(self, url, headers=None, query=None):
-        self.calls.append(url)
-        return self.now
-
-    def log(self, msg):
-        self.logs.append(msg)
-
-
-class ChangedDuringReviewTest(unittest.TestCase):
-    def test_push_during_review(self):
-        ctx = FakeCtx(make_mr(3), make_mr(3, sha="c" * 40))
-        self.assertTrue(gm.changed_during_review(ctx))
-        self.assertEqual(ctx.calls, ["https://gl.example/api/v4/projects/7/merge_requests/3"])
-
-    def test_only_comments(self):
-        self.assertFalse(gm.changed_during_review(FakeCtx(make_mr(3), make_mr(3, user_notes_count=4))))
-        self.assertTrue(gm.changed_during_review(FakeCtx(make_mr(3), make_mr(3, draft=True))))
-
-
-class PagedCtx(FakeCtx):
-    """URL ごとに返す値を決める（diffs・notes はページで返す）。"""
-
-    def __init__(self, record, diffs, notes):
-        super().__init__(record, None)
-        self.diffs, self.notes = diffs, notes
-
-    def get_json(self, url, headers=None, query=None):
-        self.calls.append(url)
-        page = int((query or {}).get("page", "1"))
-        items = self.diffs if url.endswith("/diffs") else self.notes if url.endswith("/notes") else []
-        return items[(page - 1) * 100: page * 100]
-
-
-class AlreadyReviewedTest(unittest.TestCase):
-    def test_rebased_mr_is_skipped(self):
-        diffs = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_A}]
-        fp = gm.diff_fingerprint(diffs, "a" * 40)
-        notes = [{"body": "人のコメント"}] * 150 + [{"body": f"<!-- mr-review-agent:summary sha={'a' * 40} diff={fp} -->"}]
-        ctx = PagedCtx(make_mr(3, sha="c" * 40), diffs, notes)
-        self.assertTrue(gm.already_reviewed(ctx))                        # 2 ページ目のまとめも見る
-        self.assertIn("リベースなど", ctx.logs[0])
-
-    def test_changed_content_runs(self):
-        fp = gm.diff_fingerprint([{"new_path": "app.py", "diff": DIFF_A}], "a" * 40)
-        notes = [{"body": f"<!-- mr-review-agent:summary sha={'a' * 40} diff={fp} -->"}]
-        ctx = PagedCtx(make_mr(3, sha="c" * 40), [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_B}], notes)
-        self.assertFalse(gm.already_reviewed(ctx))
-
-
-# ---------------------------------------------------------------------------
-# エージェントが使うコマンド
-# ---------------------------------------------------------------------------
 
 class CommandTest(_GitLabBase):
     def setUp(self):
@@ -642,43 +572,26 @@ class LocalRepoTest(_GitLabBase):
 
 @unittest.skipUnless(CHANGE_WATCH.is_file() and yaml is not None, "change-watch か PyYAML が無い")
 class FlowTest(_GitLabBase):
+    """既定の例: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
+
     def setUp(self):
         super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        cfg = yaml.safe_load((ROOT / "examples" / "rules" / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "change-watch.yaml.example").read_text(encoding="utf-8"))
+        self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
         cfg["state_dir"] = str(self.tmp / "state")
         src = cfg["sources"]["gitlab-mrs"]
-        src.pop("schedule")
-        src.update(jitter_sec=0, failure_backoff_sec=0, retry={"attempts": 1})
-        tgt = cfg["rules"]["mr-review"]["targets"][0]
-        tgt.update(input_template=str(ROOT / "examples" / "rules" / "prompt.md.example"), retry_backoff_sec=0)
+        for k in ("schedule", "jitter_sec", "busy_wait_sec"):
+            src.pop(k)
+        src.update(failure_backoff_sec=0, retry={"attempts": 1})
         self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.json"
         self.conn.write_text(json.dumps({"gitlab": [{"label": "default", "url": self.gl.url, "token": TOKEN}]}),
                              encoding="utf-8")
         self.env["MR_REVIEW_CLI"] = "python3 gitlab_mr.py"
-
-    def aw(self, *args) -> str:
-        r = subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PLUGIN), "--config", str(self.cfg),
-                            "--connections", str(self.conn), *args], env={**os.environ, **self.env},
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return r.stdout
-
-    def cycle(self, agent=None, exit_code="0"):
-        """1 回の起動。(受け渡しの ID, プロンプト)。レビューするものが無ければ (None, None)。"""
-        self.aw("fetch", "--force", "--no-jitter")
-        self.aw("evaluate", "--rule", "mr-review")
-        delivery = self.aw("claim", "--rule", "mr-review").strip()
-        if not delivery:
-            return None, None
-        prompt = self.aw("render", delivery)
-        if agent:
-            agent(prompt)
-        self.aw("finish", delivery, "--exit-code", exit_code)
-        return delivery, prompt
+        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
 
     def review(self, iid, findings=(), resolve=()):
         """kiro-cli の代わり: context を読み、指摘し、直ったものを閉じ、まとめを書く。"""
@@ -696,148 +609,9 @@ class FlowTest(_GitLabBase):
         self.contexts: list[str] = getattr(self, "contexts", [])
         return run
 
-    def test_review_once_then_close_after_fix(self):
-        self.gl.put(make_mr(1))
-        d, prompt = self.cycle(self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")]))
-        self.assertIsNotNone(d)                                          # 初回は開いている MR もレビューする
-        self.assertIn("!1「MR 1」をレビューしてください（初めてのレビュー、1 回目）", prompt)
-        self.assertIn("`python3 gitlab_mr.py context 1 --since=`", prompt)
-        self.assertEqual(len(self.gl.discussions["1"]), 1)
-        # 指摘と人の返信（コメント）だけでは、もう一度レビューしない
-        self.gl.reply(1, self.gl.discussions["1"][0]["id"], "alice", "直します")
-        self.gl.mrs["1"]["user_notes_count"] = 3
-        self.assertEqual(self.cycle(), (None, None))
-        # 直したコミットを積むと、前回のコミットからの差分でもう一度レビューし、指摘を閉じる
-        self.gl.push(1, "c" * 40, since_diff=FIX)
-        did = self.gl.discussions["1"][0]["id"]
-        d, prompt = self.cycle(self.review(1, resolve=[did]))
-        self.assertIn("再レビュー（前回は aaaaaaaa）", prompt)
-        self.assertIn(f"--since={'a' * 40}", prompt)
-        self.assertIn("前回までの指摘（未解決 1 件", self.contexts[-1])
-        self.assertIn("+    y = (x or 0) * 2", self.contexts[-1])
-        self.assertTrue(all(n["resolved"] for n in self.gl.discussions["1"][0]["notes"]))
-        self.assertEqual(self.cycle(), (None, None))
-        self.assertEqual(len(self.gl.notes["1"]), 2)                     # まとめはコミットごとに 1 回
-
-    def test_push_during_review_is_reviewed_next(self):
-        self.gl.put(make_mr(1))
-
-        def agent(prompt):
-            self.review(1)(prompt)
-            self.gl.push(1, "c" * 40, since_diff=FIX)                    # レビュー中に人がコミットを積んだ
-        self.cycle(agent)
-        d, prompt = self.cycle(self.review(1))
-        self.assertIsNotNone(d)
-        self.assertIn(f"--since={'a' * 40}", prompt)
-        self.assertEqual(self.cycle(), (None, None))
-
-    def test_rebase_without_changes_does_not_start_kiro(self):
-        self.gl.put(make_mr(1))
-        self.cycle(self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")]))
-        self.gl.push(1, "c" * 40, diff=DIFF_A, since_diff="",
-                     extra=[{"old_path": "main_only.py", "new_path": "main_only.py", "diff": "@@ -1 +1 @@\n-a\n+b\n"}])
-        self.assertEqual(self.cycle(), (None, None))                    # head は変わったが、中身は同じ
-        self.gl.push(1, "d" * 40, diff=DIFF_A, since_diff="")           # もう一度リベースしても同じ
-        self.assertEqual(self.cycle(), (None, None))
-        self.gl.push(1, "e" * 40, since_diff=FIX)                        # 中身を直すと、レビューする
-        d, prompt = self.cycle(self.review(1, resolve=[self.gl.discussions["1"][0]["id"]]))
-        self.assertIsNotNone(d)
-        self.assertNotIn("main_only.py", self.contexts[-1])
-        self.assertEqual(len(self.gl.notes["1"]), 2)
-
-    def test_reopened_mr_is_not_reviewed_again(self):
-        # 一覧から消えた MR の観測値と処理し終えた状態は removed_days（既定 30 日）で消える。それを過ぎて開き直した MR
-        cfg = yaml.safe_load(self.cfg.read_text(encoding="utf-8"))
-        cfg["retention"] = {"removed_days": 0}
-        self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-        self.gl.put(make_mr(1))
-        self.cycle(self.review(1))
-        self.gl.mrs["1"]["state"] = "closed"
-        self.cycle()                                                     # 一覧から消える
-        self.aw("gc")
-        self.gl.mrs["1"]["state"] = "opened"
-        self.assertEqual(self.cycle(), (None, None))                    # まとめが残っているので kiro-cli は起きない
-        self.assertEqual(len(self.gl.notes["1"]), 1)
-
-    def test_target_branch_change_is_reviewed(self):
-        self.gl.put(make_mr(1))
-        self.cycle(self.review(1))
-        self.gl.mrs["1"]["target_branch"] = "release"
-        self.gl.diffs["1"] = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_B}]
-        d, _ = self.cycle(self.review(1))
-        self.assertIsNotNone(d)
-        self.assertEqual(self.cycle(), (None, None))
-
-    def test_draft_waits_until_ready(self):
-        self.gl.put(make_mr(2, draft=True))
-        self.assertEqual(self.cycle(), (None, None))
-        self.gl.mrs["2"]["draft"] = False
-        d, prompt = self.cycle(self.review(2))
-        self.assertIn("!2", prompt)
-        self.assertEqual(self.cycle(), (None, None))
-
-    def test_failure_retried_without_duplicate_findings(self):
-        self.gl.put(make_mr(1))
-
-        def crash(prompt):                                               # 指摘を書いたところで kiro-cli が落ちた
-            self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
-        d, _ = self.cycle(crash, exit_code="1")
-        d2, prompt = self.cycle(self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")]))
-        self.assertEqual(d2, d)
-        self.assertIn("2 回目", prompt)
-        self.assertEqual(len(self.gl.discussions["1"]), 1)
-        self.assertEqual(self.cycle(), (None, None))
-
-    def test_example_dag_reviews_once(self):
-        """例の Dagu のワークフローを Dagu と同じ順で本物の change-watch に流す（kiro-cli の代わりにテストがレビューする）。"""
-        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
-        import dagrun
-        dag = ROOT / "examples" / "rules" / "change-watch-mr-review.yaml.example"
-        dagrun.check_shape(self, dagrun.load(dag), dag.name)
-        self.gl.put(make_mr(1))
-        prompts: list[str] = []
-
-        def handle(step, vars):
-            self.assertEqual((step["action"], step["with"]["provider"], step["with"]["prompt"]),
-                             ("harness.run", "kiro", "${INPUT}"))
-            self.assertEqual(step["timeout_sec"], 1800)                   # change-watch の設定の timeout_sec と同じ
-            prompts.append(vars["INPUT"])
-            self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")])(vars["INPUT"])
-            return 0
-
-        def run():
-            return dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=["--config", str(self.cfg)],
-                              paths={"/home/you/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py": str(PLUGIN),
-                                     "/home/you/.github/connections.yaml": str(self.conn),
-                                     "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)},
-                              handle=handle, env=self.env)
-        r = run()
-        self.assertEqual(r, {"fetch": 0, "evaluate": 0, "claim": 0, "render": 0, "handle": 0, "finish": 0})
-        self.assertIn("!1「MR 1」をレビューしてください", prompts[0])
-        self.assertEqual(len(self.gl.discussions["1"]), 1)
-        r = run()                                                        # 同じコミットはもう流さない
-        self.assertEqual((r["handle"], r["finish"], len(prompts)), (None, None, 1))
-        gc = ROOT / "change-watch-gitlab-mr-review-agent-maintenance.yaml.example"
-        dagrun.check_shape(self, dagrun.load(gc), gc.name)
-        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
-            "/home/you/.github/connections.yaml": str(self.conn),
-            "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
-
     def test_default_example(self):
-        """既定の例: 条件は Dagu の preconditions が判定し、change-watch は get / commit だけを受け持つ形。"""
-        sys.path.insert(0, str(CHANGE_WATCH.parent / "test"))
         import dagrun
-        d = ROOT
-        cfg = yaml.safe_load((d / "change-watch.yaml.example").read_text(encoding="utf-8"))
-        self.assertNotIn("rules", cfg)                                   # 条件は change-watch に書かない
-        cfg["state_dir"] = str(self.tmp / "state-dagu")
-        src = cfg["sources"]["gitlab-mrs"]
-        for k in ("schedule", "jitter_sec", "busy_wait_sec"):
-            src.pop(k)
-        src.update(failure_backoff_sec=0, retry={"attempts": 1})
-        conf = self.tmp / "change-watch-dagu.yaml"
-        conf.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-        dag = d / "change-watch-mr-review.yaml.example"
+        dag = ROOT / "change-watch-mr-review.yaml.example"
         dagrun.check_shape(self, dagrun.load(dag), dag.name)
         prompts: list[str] = []
 
@@ -852,7 +626,7 @@ class FlowTest(_GitLabBase):
             return dagrun.run(dag, aw=[sys.executable, str(CHANGE_WATCH)], head=[], handle=handle,
                               env={**os.environ, **self.env},
                               paths={"/home/you/.github/connections.yaml": str(self.conn),
-                                     "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(conf)})
+                                     "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)})
         self.gl.put(make_mr(1))
         self.gl.put(make_mr(2, draft=True))
         self.assertEqual(run(), {"get": 0, "review": 0, "commit": 0})    # 初回も開いている MR をレビューする
@@ -868,12 +642,13 @@ class FlowTest(_GitLabBase):
         self.assertEqual(len(prompts), 2)
         self.assertIn("--since=" + "a" * 40 + "`", prompts[1])           # 前回レビューしたコミットからの差分
 
-    def test_merged_while_waiting_is_skipped(self):
-        self.gl.put(make_mr(1))
-        self.aw("fetch", "--force", "--no-jitter")
-        self.aw("evaluate", "--rule", "mr-review")
-        self.gl.mrs["1"]["state"] = "merged"
-        self.assertEqual(self.aw("claim", "--rule", "mr-review").strip(), "")
+    def test_maintenance_runs(self):
+        import dagrun
+        gc = ROOT / "change-watch-gitlab-mr-review-agent-maintenance.yaml.example"
+        dagrun.check_shape(self, dagrun.load(gc), gc.name)
+        self.assertEqual(dagrun.run(gc, aw=[sys.executable, str(CHANGE_WATCH)], head=[], env=self.env, paths={
+            "/home/you/.github/connections.yaml": str(self.conn),
+            "/home/you/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml": str(self.cfg)}), {"gc": 0})
 
 
 if __name__ == "__main__":

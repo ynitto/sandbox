@@ -13,9 +13,8 @@ Dagu の定期実行と change-watch の上に組み、MR に固有の部分だ�
 
 | 受け持ち | どこ | 何を |
 |---|---|---|
-| 取得・変化の検知・実行待ち・再試行・処理し終えた状態・1 セッションの排他 | change-watch | 取得元 `gitlab-mrs`、ルール `mr-review`（`watch: [sha, draft, target_branch]`）、`external` の受け渡し先（`refresh`・`lock`・`handled_before_if`） |
-| 起動・kiro-cli の実行と停止・ログと実行履歴 | Dagu | ワークフロー `change-watch-mr-review`（`claim` → `render` → `harness.run`（provider: kiro）→ `finish`） |
-| プロンプトの材料・レビュー中のコミットの追加 | `gitlab_mr.py`（プラグイン） | フィルタ `gitlab_mr_since` / `gitlab_mr_kind`、チェック `gitlab_mr.changed_during_review` |
+| GitLab への問い合わせ（いつ取得するか・まとめる・失敗の待ち）と、前回 commit してからの変化 | change-watch | 取得元 `gitlab-mrs`、受け手 `mr-review`（`get --watch sha --watch draft --watch target_branch --one`・`commit`） |
+| 起動・条件・kiro-cli の実行と停止・再試行・ログと実行履歴 | Dagu | ワークフロー `change-watch-mr-review`（`get` → `review`（`preconditions` と `harness.run`、provider: kiro）→ `commit`） |
 | GitLab への読み書き（レビューの中身） | `gitlab_mr.py`（コマンド） | `context` / `show` / `comment` / `resolve` / `summary`。kiro-cli がプロンプトの指示で呼ぶ |
 
 kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `prompt_via: argv`）。差分を引数に載せると長さの上限（Windows は 32K 字）に
@@ -23,22 +22,19 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 
 ## 2. 重ねてレビューしない（要件 1）
 
-四段で守る。
+三段で守る。
 
 | 段 | 仕組み | 防ぐもの |
 |---|---|---|
-| 検知 | ルールの `watch` を `sha`（head のコミット）・`draft`・`target_branch` だけにする。`user_notes_count`・`labels`・`description`・`updated_at` は見ない | コメント・返信・ラベル変更・kiro-cli 自身の書き込みでのイベント |
-| 処理し終えた状態 | `refresh` で実行の前後に MR を取り直し、レビューし終えた監視値（＝コミット）を受け渡し先 × MR ごとに覚える。`claim` は同じ値なら取り直しもせずに飛ばす | 同じコミットへの溜まったイベント・取り直したら同じだったもの |
-| 差分の中身（`skip_if`） | チェック `gitlab_mr.already_reviewed` が MR の差分の指紋（§2.1）を求め、同じ指紋のまとめがあれば kiro-cli を起こさずに飛ばす | リベース・中身の同じ force push・マージトレインで head だけが変わった MR、`removed_days` を過ぎて開き直した MR・ルールの名前を変えたあとの MR（処理し終えた状態が消えている） |
-| 書き込みの印 | 指摘の本文に `<!-- mr-review-agent:finding key=… path=… line=… -->`、まとめに `<!-- mr-review-agent:summary sha=<head> diff=<指紋> -->` を付ける。`comment` は同じ `key`（パス + 本文のハッシュ）か、自分の未解決の指摘がある `path:line` には書かず（言い直しの重複）、`summary` は同じ指紋のまとめがあれば書かない。`context` は同じ指紋のまとめがあれば「何もせずに終えて」と出し、解決済みの指摘を「もう一度指摘しない」として一覧にする | 失敗のやり直し・`handled_before_if` が例外で真になったときの同じコミットの再実行 |
+| 検知 | `get` の `--watch` を `sha`（head のコミット）・`draft`・`target_branch` だけにする。`user_notes_count`・`labels`・`description`・`updated_at` は見ない | コメント・返信・ラベル変更・kiro-cli 自身の書き込みでの起動 |
+| 処理し終えた状態 | `commit` が受け手 `mr-review` × MR ごとに、受け取ったときの姿を覚える。次の `get` はその姿からの変化だけを返す | 同じコミットでの再実行 |
+| 差分の中身と書き込みの印 | `context` が MR の差分の指紋（§2.1）を求め、同じ指紋のまとめがあれば「レビューし終えています。何もせずに終えて」と出す。指摘の本文に `<!-- mr-review-agent:finding key=… path=… line=… -->`、まとめに `<!-- mr-review-agent:summary sha=<head> diff=<指紋> -->` を付ける。`comment` は同じ `key`（パス + 本文のハッシュ）か、自分の未解決の指摘がある `path:line` には書かず（言い直しの重複）、`summary` は同じ指紋のまとめがあれば書かない。解決済みの指摘は「もう一度指摘しない」として一覧にする | リベース・中身の同じ force push・マージトレインで head だけが変わった MR、状態を消したあとの MR、Dagu の再試行での同じコミットの再実行 |
 
-- **レビュー中のコミットの追加**: 実行のあとの取り直しをそのまま「処理し終えた」にすると、レビュー中に積まれたコミット B を見ないまま
-  B を処理済みにしてしまう。`gitlab_mr.changed_during_review`（`handled_before_if`）が MR を取り直し、`sha` / `draft` / `target_branch` の
-  どれかが実行前と違えば真を返す。change-watch は実行前のコミット A までを処理済みにし、次の取得で B がイベントになる。kiro-cli はコメントしか
-  書かないので、これらが変わるのは人の操作に限られ、自分の書き込みで真にはならない
-- `filter`（`state: opened` かつ `draft` が偽）は取り直したレコードにも当てる。待つ間にマージ・クローズ・ドラフトに戻した MR は流さない。
-  ドラフトを外すと `draft` の変化でイベントになり、処理し終えた状態が無い（または違う）のでレビューする
-- `initial: emit`: 入れた時点で開いている MR もレビューする（1 回の起動で 1 件）。`baseline` にすれば今のコミットを覚えるだけ
+- **レビュー中のコミットの追加**: `commit` は `get` が受け取った姿（レビュー前のコミット A）を覚える。レビュー中にコミット B が積まれても、
+  次の `get` は A からの変化として B を返すので、B を見ないまま処理済みにはならない
+- どの MR をレビューするかはワークフローの `preconditions`（`${CHANGE.kind}` が現れた・変わった、`${CHANGE.record.draft}` が偽）で決める。
+  条件に合わない MR も `commit` する（`continue_on.skipped`）。ドラフトを外すと `draft` の変化でまた受け取り、条件に合うのでレビューする
+- `--initial emit`: 入れた時点で開いている MR もレビューする（1 回の起動で 1 件）。`baseline` にすれば今のコミットを覚えるだけ
 
 ### 2.1 差分の指紋
 
@@ -50,8 +46,8 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 - GitLab が中身を返さないファイル（`too_large` / `collapsed`）があれば比べられないので、head のコミットから求めた値にする
   （黙って見落とすより、リベースのたびにレビューするほうに倒す）
 - まとめの印は `sha=<head> diff=<指紋>`。指紋の無い古い印は、head が同じときだけ当てる
-- `skip_if` で飛ばしたとき、change-watch は処理し終えた状態を書き換えない（前にレビューしたコミットのまま）。次に中身が変わったときの
-  `--since` はそのコミットになり、リベースで入った対象ブランチの変更は、次の絞り込みで落とす
+- 中身が同じで何もせずに終えたときも `commit` は今の head を覚える。次に中身が変わったときの `--since`（`${CHANGE.before.sha}`）は
+  そのコミットになり、リベースで入った対象ブランチの変更は、次の絞り込みで落とす
 - 前回のコミットからの差分（compare）は、リベースしていると対象ブランチの変更が混ざる。`context` は MR の差分に出てくるファイルだけに絞る
   （MR が触っていて、対象ブランチでも変わったファイルの変更は残る）
 
@@ -59,13 +55,11 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 
 | 経路 | どうなるか |
 |---|---|
-| kiro-cli が失敗し続ける（上限・ログイン切れ） | 同じコミットで `max_attempts`（3）回までやり直し、打ち切る。次に中身が変わるまで流さない |
-| `handled_before_if` のチェックが GitLab に届かない | 真とみなして実行前の状態までを処理済みにする。kiro-cli はコミットを変えないので実行前と後は同じ値で、もう一度は流れない |
-| `skip_if` のチェックが GitLab に届かない | 偽とみなして kiro-cli を起こすが、`context` が同じ判定で止める |
-| ドラフトにしてから戻す | 戻した時点の監視値が処理し終えた状態と同じなら飛ばす（違っても、中身が同じなら `skip_if` が飛ばす） |
+| kiro-cli が失敗し続ける（上限・ログイン切れ） | Dagu の `retry_policy` でやり直し、尽きたら失敗として Dagu の履歴に残す。`commit` はするので、次に中身が変わるまで流さない |
+| ドラフトにしてから戻す | `draft` の変化で受け取るが、中身が同じなら `context` が止める |
 | コミットを続けて積む | 取得（15 分ごと）のあいだの変化は、最新のコミットで 1 回にまとまる |
-| kiro-cli が `summary` を書き忘れる | 処理し終えた状態は change-watch が持つので、同じコミットでは流れない。印による止めが効かないのは、処理し終えた状態が消えたときだけ |
-| 一覧から消えた MR | 観測値と処理し終えた状態は `removed_days`（既定 30 日）のあいだ残り、それまでに開き直せば同じ値として飛ばす。過ぎたら `skip_if` が止める |
+| kiro-cli が `summary` を書き忘れる | 処理し終えた状態は change-watch が持つので、同じコミットでは流れない。印による止めが効かないのは、状態を消したときだけ |
+| 一覧から消えた MR | 受け手の状態は残り、開き直せば同じ姿として受け取らない。状態を消したあとは `context` が止める |
 
 ## 3. 直った指摘を閉じる（要件 2）
 
@@ -81,17 +75,16 @@ kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `pr
 
 ## 4. 1 セッションの保証・失敗と再試行
 
-gitlab-issue-agent の §4・§5 と同じ（Dagu の 1 起動 1 件、change-watch の `lock`、期限切れでの取り直し、`retry_backoff_sec` の倍々、`max_attempts` で打ち切り）。
-`lock` の名前を gitlab-issue-agent と同じ `agent-session` にすると、issue の処理と MR のレビューが同時に動かない。
+Dagu が受け持つ。ワークフローは 1 回の起動で 1 件だけ処理し、同じワークフローは重ねて起動されない（Dagu の既定）。gitlab-issue-agent の
+ワークフローとも同時に動かさないなら、Dagu のキュー（`queue`）で同じキューに入れ、並列数を 1 にする。kiro-cli の失敗は `review` の
+`retry_policy`、change-watch の一時的な失敗（終了コード 3）は `get` の `retry_policy` でやり直す。
 
 ## 5. GitLab への負荷
 
 | 呼び出し | 頻度 | リクエスト数 |
 |---|---|---|
 | MR の一覧（change-watch） | 15 分ごとの予定のあと 1 回。0〜300 秒ずらす | MR 100 件ごとに 1 |
-| 同じコミットのイベント | 来るたび | 0（`claim` が取り直さずに飛ばす） |
-| コミットが変わったイベント（`skip_if`） | 来るたび | 取り直し 1 と、差分・ノートの読み取り（それぞれ 100 件ごとに 1）。中身が同じなら kiro-cli は起きない |
-| 1 件のレビュー（change-watch） | 流すたび | 3（実行の前後の取り直しと、`changed_during_review`） |
+| `get` / `commit`（change-watch） | 毎分 | 0（取得の予定が来ていなければ、手元の状態だけで答える） |
 | 1 件のレビュー（kiro-cli のコマンド） | 流すたび | `context` で 4（MR・差分の一覧・ノート・スレッド。それぞれ 100 件ごとに 1）、`comment` 1 件ごとに 3、`resolve` 1 件ごとに 3、`summary` 3、`show` 0 |
 | git のリモート | MR の今のコミットが作業フォルダに無いときだけ | `git fetch` 1 回（その MR の head と対象ブランチ。足りないオブジェクトだけ）＋ファイルの中身を取り出すときの部分クローンの取り寄せ |
 
@@ -123,7 +116,7 @@ kiro-cli のコマンドは change-watch の要求の間隔・失敗の待ちを
   `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n=http.extraHeader` / `GIT_CONFIG_VALUE_n=Authorization: Basic …`（`oauth2:<トークン>`）を
   git を呼ぶたびの環境変数で渡す。`.git/config` にもコマンド行にも残さず、ほかのホスト（フォークの取得元など）には渡さない。
   `GIT_TERMINAL_PROMPT=0` と標準入力を閉じて、認証に失敗しても入力待ちで止まらない
-- **差分の一覧（API）の保存**: 差分の指紋は `skip_if`（change-watch の中のチェック）と同じ値にしたいので、いつも API の差分から求める
+- **差分の一覧（API）の保存**: 差分の指紋は、どの PC でも同じ値にしたいので、いつも API の差分から求める
   （git の差分は名前の変更の見分け方・大きなファイルの扱いが GitLab と食い違いうる）。1 回のレビューで 1 回だけ取り、
   `<git の共通フォルダ>/mr-review-cache/<iid>-<head>-<base>.json` に置いて `comment`（行の位置）と `summary`（指紋）が使い回す。
   head か差分の元が変われば取り直す
@@ -139,8 +132,8 @@ kiro-cli のコマンドは change-watch の要求の間隔・失敗の待ちを
 
 ## 6. 採らなかった案
 
-- **kiro-cli に指摘を JSON で出させ、決まった処理が書き込む**: 書き込みは確実になるが、Dagu のワークフローの `handle` は 1 ステップで、
-  kiro-cli の出力を受けて書き込むステップをワークフローに足し、その受け渡しを決めることになる。印で重複を防げば、kiro-cli が直接コマンドを
+- **kiro-cli に指摘を JSON で出させ、決まった処理が書き込む**: 書き込みは確実になるが、kiro-cli の出力を受けて書き込むステップを
+  ワークフローに足し、その形を決めることになる。印で重複を防げば、kiro-cli が直接コマンドを
   呼んでも二重には書かれないので、コマンドで渡した
 - **kiro-cli に GitLab の API や `glab` を自由に使わせる**: 行のスレッドの `position` の組み立て・自分のスレッドの見分け・重複の防止を
   毎回 LLM に任せることになる。決まった形のコマンドに閉じた
@@ -152,3 +145,6 @@ kiro-cli のコマンドは change-watch の要求の間隔・失敗の待ちを
 - **利用者の作業コピーで MR のコミットを取り出す**: 作業中のブランチ・書きかけの変更を壊す。作業コピーはオブジェクトの置き場として使い、
   取り出しは `git worktree` で足した別のフォルダで行う（クローンし直さずに済み、作業コピーにも触らない）
 - **指摘の一覧をこちらでも持つ**: GitLab のスレッドの解決状態と二重になり、人が手で解決・再開したときにずれる
+- **change-watch のルールとプラグインのチェックで判定する（0.7 まで）**: `claim` → `render` → `finish` と、実行中のコミットの追加・
+  中身が同じかを change-watch の中のチェック（`changed_during_review`・`already_reviewed`）で見ていた。条件が change-watch と Dagu に
+  分かれるので、change-watch 0.8.0 でルールをなくし、条件は Dagu の `preconditions`、中身の比較は `context` だけにした

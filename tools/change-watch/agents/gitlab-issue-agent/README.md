@@ -19,9 +19,9 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
 
 ## 入れ方
 
-1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_issue.py`）・設定の雛形・Dagu のワークフローを、
+1. インストーラで入れる。change-watch と、このエージェントの設定の雛形・Dagu のワークフローを、
    どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
-   ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
+   ワークフローのパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すと change-watch だけが新しくなる。
 
    ```bash
    python3 tools/change-watch/install.py install --agent gitlab-issue-agent
@@ -29,7 +29,6 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
 
    | 置かれるもの | 場所 |
    |---|---|
-   | プログラム | `~/.local/share/change-watch/agents/gitlab-issue-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\gitlab-issue-agent\`） |
    | 設定（`change-watch.yaml`・`gitlab-issue-agent.env`） | `~/.config/change-watch/gitlab-issue-agent/` |
    | Dagu のワークフロー（`change-watch-issue-agent.yaml`・整理の `change-watch-gitlab-issue-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
    | 状態 | `~/.local/state/change-watch/gitlab-issue-agent/` |
@@ -126,20 +125,6 @@ GitLab に問い合わせられない（一時的な失敗）ときは、`get` �
   無人で動かせるフラグを付けること
 - プロンプトはワークフローの `prompt` に書く。`${CHANGE.record.iid}`・`${CHANGE.record.title}`・`${CHANGE.record.web_url}` などで issue の項目を埋め込める
 - 変化の JSON（`key`・`kind`・`record`・`before`・`changes`）はエージェント CLI の標準入力に渡る（`stdin: "${CHANGE}"`）
-
-## プラグイン（gitlab_issue.py）が足すもの
-
-既定のワークフローでは使わない。下の「ルールで判定する形」で使う。
-
-| 名前 | 種類 | すること |
-|---|---|---|
-| `gitlab_issue_changes` | フィルタ | 前回処理し終えたとき（無ければ前回の取得）からの変化の箇条書き |
-| `gitlab_issue_kind` | フィルタ | 新規 / 更新 |
-| `gitlab.others_acted` | チェック | 実行を始めてから、自分以外の人が issue にコメント・操作したか（`handled_before_if` に書く） |
-| `gitlab_idd_role` | フィルタ | gitlab-idd のロール（`status:review-ready` ならレビュアー、`status:open` などならワーカー）。ルールで判定する形で gitlab-idd と繋ぐとき |
-| `gitlab_idd.role_changed` | チェック | 実行のあいだに gitlab-idd のロールが変わったか（`handled_before_if` に書くと、次のロールでもう一度流れる） |
-
-GitLab への問い合わせは、change-watch の取得元の接続で送り、要求の間隔・失敗の待ちを取得と分け合う。
 
 ## gitlab-idd スキルと繋ぐ
 
@@ -238,20 +223,6 @@ change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yam
 - gitlab-idd の「24 時間たったら推測で着手する」（質問や方針の提案に答えがなかったとき）は、イシューに変化が無いので起きない。
   答えるか、ラベルを `status:open` に戻すと流れる
 - 1 回の実装は長いことがあるので、`timeout_sec` を長めにしている（例は 4200 秒）
-
-## ルールで判定する形（`examples/rules/`）
-
-条件も change-watch の設定（ルール `rules`）に書き、change-watch が issue を選んでプロンプトを組み、実行の前後に issue を取り直す形の例。
-入れ方の 3 で、`~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` を `examples/rules/change-watch.yaml.example` に、
-`~/.config/dagu/dags/change-watch-issue-agent.yaml` を `examples/rules/change-watch-issue-agent.yaml.example` に替え、
-`examples/rules/prompt.md.example` を `~/.config/change-watch/gitlab-issue-agent/prompt.md` に置く（`/home/you` は自分の場所に直す）。
-5 は `run --rule issue-agent --no-jitter` で取る（`--plugin ~/.local/share/change-watch/agents/gitlab-issue-agent/gitlab_issue.py` を付ける）。
-既定の形との違い:
-
-- 実行の直前にも issue を取り直し、絞り込み（ルールの `filter`）から外れた issue は流さない
-- 実行中に自分以外の人がコメントしたときは、処理し終えたのは実行前の状態までにして、次の取得でもう一度流す（チェック `gitlab.others_acted`）
-- change-watch の設定の `lock` で、プロジェクトをまたいでも同時に 1 つだけ実行する
-- 失敗した変化は change-watch が待ってから流し直し（`retry_backoff_sec`・`max_attempts`）、`events`・`retry` で見たり流し直したりできる
 
 ## Windows で使うとき
 

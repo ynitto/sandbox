@@ -1,4 +1,4 @@
-# 条件を Dagu で判定するワークフローの例: get → 条件で分ける → commit。change-watch の設定にルールは書かない。
+# 条件を Dagu で判定するワークフローの例: get → 条件で分ける → commit。
 # change-watch は取得をまとめ（取得元の schedule・min_interval_sec・busy_wait_sec・失敗の待ち。同じ取得元を get するワークフローが
 # いくつあっても問い合わせはまとまる）、「前回 commit してから変わったレコード」を 1 件返すだけ。どれをどう処理するかはここに書く。
 # change-watch-<名前>.yaml として置き、items を取得元、triage を consumer（このワークフローの名前）に書き換え、

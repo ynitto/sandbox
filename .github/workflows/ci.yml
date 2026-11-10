@@ -78,8 +78,8 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
-          # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、change-watch のプラグイン（gitlab_issue.py）のフィルタ・チェックと、
-          # 本物の change-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
+          # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、設定とワークフローの例を本物の change-watch で
+          # get → 条件 → commit の順に回したときの「変わった issue を 1 回だけ流す」と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/change-watch/agents/gitlab-issue-agent/test
           # gitlab-issue-hub-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_hub.py の note・reply と、設定とワークフローの例を
@@ -94,12 +94,12 @@ jobs:
           # 既にある作業コピーへの git worktree・一時フォルダへのクローン・片付けを見る（GitLab の API は呼ばない）。
           - package: gitlab-idd
             suites: .github/skills/gitlab-idd/tests
-          # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
-          # 本物の change-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
+          # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、設定とワークフローの例を本物の change-watch で
+          # get → 条件 → call → commit の順に回したときの対象の絞り込みと 1 回だけの完了を見る。
           - package: redmine-ticket-agent
             suites: tools/change-watch/agents/redmine-ticket-agent/test
-          # change-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
-          # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
+          # change-watch。API は手元の HTTP サーバで偽装し、取得の集約・ページング・増分・再開・get / commit の変化・
+          # 保持期間と、dags/ の例を Dagu と同じ順で流したときの動きを見る（Dagu 本体は入れない）。
           - package: change-watch
             suites: tools/change-watch/test
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
@@ -145,7 +145,7 @@ jobs:
             echo "::endgroup::"
           done
 
-  # gitlab-issue-agent は Windows でもそのまま動かす（change-watch のプラグインと、change-watch をワークフローの順で呼ぶ流れ）。
+  # gitlab-issue-agent は Windows でもそのまま動かす（change-watch をワークフローの順で呼ぶ流れ）。
   # Windows の実機で確かめる。
   gitlab-issue-agent-windows:
     name: python (gitlab-issue-agent, windows)
@@ -159,7 +159,7 @@ jobs:
       - name: unittest
         run: python -m unittest discover -s tools/change-watch/agents/gitlab-issue-agent/test
 
-  # change-watch のプラグインのほかのもの（MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
+  # change-watch のほかのエージェント（ハブ・MR のレビュー・Redmine）と、gitlab-idd の作業用フォルダも Windows でそのまま動かす
   # （git のパス・改行・一時フォルダ・読み取り専用のファイルの削除）。
   agent-plugins-windows:
     name: python (${{ matrix.package }}, windows)
@@ -374,5 +374,10 @@ jobs:
       # 厳しさにするのは、いま残っている警告を 0 にしてから。
       - name: スキルの frontmatter に未知のキーが無いこと
         run: python .github/skills/skill-evaluator/scripts/quality_check.py --path .github/skills
+      - name: 依存（Dagu のワークフローの例の読み込み）
+        run: python -m pip install pyyaml
+      # 各ツールの dags/*.example.yaml（Dagu のワークフローの例）が、コピーしてそのまま置ける形か。
+      - name: Dagu のワークフローの例が崩れていないこと
+        run: python tools/ci/check_dagu_examples.py
       - name: 検査自身の単体テスト
         run: python -m unittest discover -s tools/ci/tests

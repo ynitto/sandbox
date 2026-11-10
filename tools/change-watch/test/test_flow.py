@@ -1,5 +1,5 @@
-"""通しのテスト: 偽の API・偽の dagu で、取得の集約・ページング・増分・条件付き要求・再試行・途中からの再開・
-受け渡し・再送・順序・失敗の隔離・再起動からの復旧・保持期間・秘密の伏せ字を確かめる。"""
+"""通しのテスト: 偽の API で、ページング・増分・条件付き要求・再試行・途中からの再開・保持期間・秘密の伏せ字・
+設定と接続設定の読み方を確かめる。"""
 from __future__ import annotations
 
 import json
@@ -8,61 +8,15 @@ import subprocess
 import sys
 import time
 import unittest
-from pathlib import Path
 
-from helpers import FAKE_DAGU, ROOT, TOKEN, Env, FakeDaguAPI
+from helpers import ROOT, TOKEN, Env
 
 SCRIPT = ROOT / "change_watch.py"
+PAGED = {"type": "page", "size_param": "per_page", "size": 2}
 
 
-def simple_rules(*targets, **kw):
-    r = {"source": "items", "id": "id", "watch": ["status"], "targets": list(targets)}
-    r.update(kw)
-    return r
-
-
-class AggregationTest(unittest.TestCase):
-    def test_one_fetch_shared_by_rules_and_targets(self):
-        env = Env(self)
-        for i in (1, 2, 3):
-            env.api.put(i, status="open", prio=i)
-        env.write_config(
-            {"items": env.source("/page", records="data",
-                                 pagination={"type": "page", "size_param": "per_page", "size": 2})},
-            {"status-changed": simple_rules("notify", "audit"),
-             "prio-high": {"source": "items", "id": "id", "condition": {"path": "prio", "op": "ge", "value": 3},
-                           "on": ["entered"], "targets": ["escalate"]}})
-        out = env.ok(self, "run")
-        self.assertIn("基準値", out)
-        self.assertEqual(env.api.count("/page"), 2)                     # 3 件を 2 ページで
-        env.api.put(1, status="closed")
-        env.api.put(2, prio=5)
-        env.ok(self, "run")
-        self.assertEqual(env.api.count("/page"), 4)                     # ルールが 2 本・受け渡し先が 3 つでも 2 回だけ
-        runs = sorted((r["dag"], r["params"]["CHANGEWATCH_RECORD_ID"]) for r in env.enqueued())
-        self.assertEqual(runs, [("audit", "1"), ("escalate", "2"), ("notify", "1")])
-        notify = next(r for r in env.enqueued() if r["dag"] == "notify")
-        p = notify["params"]
-        self.assertEqual(p["CHANGEWATCH_RULE"], "status-changed")
-        self.assertEqual(p["CHANGEWATCH_SOURCE"], "items")
-        self.assertEqual(p["CHANGEWATCH_DELIVERY_ID"], notify["run_id"])   # Dagu の実行 ID = 受け渡しの ID
-        ev = json.loads(Path(p["CHANGEWATCH_EVENT_FILE"]).read_text(encoding="utf-8"))
-        self.assertEqual(ev["before"], {"status": "open"})
-        self.assertEqual(ev["after"], {"status": "closed"})
-        self.assertEqual(ev["changes"], [{"path": "status", "type": "changed", "before": "open", "after": "closed"}])
-        self.assertEqual(ev["record"]["prio"], 1)
-        self.assertEqual(ev["event_id"], p["CHANGEWATCH_EVENT_ID"])
-        audit = next(r for r in env.enqueued() if r["dag"] == "audit")
-        self.assertEqual(audit["params"]["CHANGEWATCH_EVENT_ID"], p["CHANGEWATCH_EVENT_ID"])   # 同じイベント
-        self.assertNotEqual(audit["run_id"], notify["run_id"])                           # 受け渡しは別
-
-    def test_initial_emit(self):
-        env = Env(self)
-        env.api.put(1, status="open")
-        env.api.put(2, status="open")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d", initial="emit")})
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 2)
+def keys(found: list[dict]) -> list[str]:
+    return sorted((f["key"] for f in found), key=int)
 
 
 class PaginationTest(unittest.TestCase):
@@ -81,11 +35,9 @@ class PaginationTest(unittest.TestCase):
                 env = Env(self)
                 for i in range(1, 6):
                     env.api.put(i, status="open")
-                env.write_config({"items": env.source(path, pagination=pag, records=recs)},
-                                 {"r": simple_rules("d", initial="emit")})
-                env.ok(self, "run")
-                self.assertEqual(sorted(int(r["params"]["CHANGEWATCH_RECORD_ID"]) for r in env.enqueued()),
-                                 [1, 2, 3, 4, 5])
+                env.write_config({"items": env.source(path, pagination=pag, records=recs)})
+                env.ok(self, "get", "--source", "items")
+                self.assertEqual(sorted(r["id"] for r in json.loads(env.stdout)), [1, 2, 3, 4, 5])
                 self.assertEqual(env.api.count(path), 3)
 
     def test_next_url_to_other_host_is_refused(self):
@@ -93,7 +45,7 @@ class PaginationTest(unittest.TestCase):
         env.api.put(1)
         env.api.put(2)
         env.api.put(3)
-        env.write_config({"items": env.source("/link", pagination={"type": "link_header"})}, {})
+        env.write_config({"items": env.source("/link", pagination={"type": "link_header"})})
         env.api.url = env.api.url.replace("127.0.0.1", "localhost")   # Link を別ホスト名で返させる
         code, out = env.run("fetch")
         self.assertEqual(code, 1)
@@ -108,15 +60,12 @@ class IncrementalTest(unittest.TestCase):
         env.write_config({"items": env.source("/page", records="data", key="id",
                                               pagination={"type": "page", "size_param": "per_page", "size": 10},
                                               incremental={"type": "max_value", "field": "updated",
-                                                           "param": "updated_since"})},
-                         {"r": simple_rules("d")})
-        env.ok(self, "run")
-        first_since = env.api.requests[-1][1].get("updated_since")
-        self.assertIsNone(first_since)                                 # 初回は全件
+                                                           "param": "updated_since"})})
+        self.assertEqual(env.take(self), [])                           # 初回は基準を覚えるだけ
+        self.assertIsNone(env.api.requests[-1][1].get("updated_since"))  # 初回は全件
         env.api.put(2, status="closed")
-        env.ok(self, "run")
+        self.assertEqual(keys(env.take(self)), ["2"])
         self.assertEqual(env.api.requests[-1][1]["updated_since"], "103")
-        self.assertEqual([r["params"]["CHANGEWATCH_RECORD_ID"] for r in env.enqueued()], ["2"])
         # 取得が失敗したら位置を進めない
         env.api.put(3, status="closed")
         env.api.fail("/page", 500, count=3)
@@ -125,54 +74,45 @@ class IncrementalTest(unittest.TestCase):
         s = env.store()
         self.assertEqual(json.loads(s.source_row("items")["position"]), 104)
         s.close()
-        env.ok(self, "run")
-        self.assertEqual([r["params"]["CHANGEWATCH_RECORD_ID"] for r in env.enqueued()], ["2", "3"])
+        self.assertEqual(keys(env.take(self)), ["3"])
 
-    def test_cursor_and_rebaseline_uses_assembled_view(self):
+    def test_cursor_assembles_the_whole_view(self):
         env = Env(self)
         for i in (1, 2, 3):
             env.api.put(i, status="open")
         env.write_config({"items": env.source("/sync", records="items", key="id",
                                               incremental={"type": "cursor", "cursor_path": "sync_token",
-                                                           "param": "since_rev"})},
-                         {"r": simple_rules("d")})
-        env.ok(self, "run")
+                                                           "param": "since_rev"})})
+        env.take(self)
         env.api.put(1, status="closed")
-        env.ok(self, "run")
+        self.assertEqual(keys(env.take(self)), ["1"])
         self.assertEqual(env.api.requests[-1][1]["since_rev"], "3")
-        self.assertEqual(len(env.enqueued()), 1)
-        # ルールを変えると基準値の取り直し。増分の取得結果は 1 件だけだが、組み立てた全体から取り直すので
-        # 2・3 が「新規」になって大量に発火したりしない
-        env.write_config({"items": env.source("/sync", records="items", key="id",
-                                              incremental={"type": "cursor", "cursor_path": "sync_token",
-                                                           "param": "since_rev"})},
-                         {"r": simple_rules("d", watch=["status", "prio"])})
-        env.api.put(2, prio=1)
-        env.ok(self, "run")
+        # 増分の取得結果は 1 件だけだが、組み立てた全体を返す。新しい consumer が来ても 2・3 が「新規」で大量に出たりしない
+        env.ok(self, "get", "--source", "items", "--no-fetch")
+        self.assertEqual(sorted(r["id"] for r in json.loads(env.stdout)), [1, 2, 3])
+        self.assertEqual(env.take(self, "other"), [])
         env.api.put(3, status="closed")
-        env.ok(self, "run")
-        self.assertEqual([r["params"]["CHANGEWATCH_RECORD_ID"] for r in env.enqueued()], ["1", "3"])
+        self.assertEqual(keys(env.take(self, "other")), ["3"])
 
 
 class ConditionalAndRetryTest(unittest.TestCase):
     def test_etag(self):
         env = Env(self)
         env.api.put(1, status="open")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
-        env.ok(self, "run")
-        env.ok(self, "run")
+        env.write_config({"items": env.source("/all", key="id")})
+        env.take(self)
+        env.take(self)
         hdrs = env.api.requests[-1][2]
         self.assertIn("If-None-Match", hdrs)
         st = json.loads(env.ok(self, "status", "--json"))
         self.assertEqual(st["sources"][0]["last_fetch"]["not_modified_pages"], 1)
         env.api.put(1, status="closed")
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 1)
+        self.assertEqual(keys(env.take(self)), ["1"])
 
     def test_transient_errors_and_retry_after(self):
         env = Env(self)
         env.api.put(1, status="open")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
+        env.write_config({"items": env.source("/all")})
         env.api.fail("/all", 503)
         env.api.fail("/all", 429, headers={"Retry-After": "0"})
         out = env.ok(self, "fetch")
@@ -182,7 +122,7 @@ class ConditionalAndRetryTest(unittest.TestCase):
     def test_long_retry_after_defers(self):
         env = Env(self)
         env.api.put(1)
-        env.write_config({"items": env.source("/all", rate_limit={"max_wait_sec": 5})}, {})
+        env.write_config({"items": env.source("/all", rate_limit={"max_wait_sec": 5})})
         env.api.fail("/all", 429, headers={"Retry-After": "3600"})
         code, _ = env.run("fetch")
         self.assertEqual(code, 3)
@@ -195,7 +135,7 @@ class ConditionalAndRetryTest(unittest.TestCase):
     def test_auth_error_is_not_retried_and_secret_not_logged(self):
         env = Env(self)
         env.api.put(1)
-        env.write_config({"items": env.source("/all")}, {})
+        env.write_config({"items": env.source("/all")})
         env.api.fail("/all", 401, body=json.dumps({"message": f"token {TOKEN} is revoked"}))
         code, out = env.run("fetch")
         self.assertEqual(code, 1)
@@ -214,31 +154,27 @@ class ResumeTest(unittest.TestCase):
         env = Env(self)
         for i in range(1, 7):
             env.api.put(i, status="open")
-        env.write_config({"items": env.source("/page", records="data",
-                                              pagination={"type": "page", "size_param": "per_page", "size": 2})},
-                         {"r": simple_rules("d", on=["appeared", "changed", "removed"])})
-        env.ok(self, "run")
+        env.write_config({"items": env.source("/page", records="data", key="id", pagination=PAGED)})
+        env.take(self)
         for i in range(1, 7):
             env.api.put(i, status="closed")
         env.api.fail("/page", 500, count=3, page="3")
-        code, _ = env.run("run")
+        code, _ = env.run("fetch")
         self.assertEqual(code, 3)
-        self.assertEqual(env.enqueued(), [])                          # 途中までの取得では判定しない（6 は消えていない）
+        env.ok(self, "get", "--source", "items", "--consumer", "c", "--no-fetch")
+        self.assertEqual(json.loads(env.stdout), [])                  # 途中までの取得では答えない
         before = env.api.count("/page")
-        env.ok(self, "run")
+        self.assertEqual(keys(env.take(self)), ["1", "2", "3", "4", "5", "6"])
         pages = [q.get("page") for p, q, _ in env.api.requests[before:] if p == "/page"]
         self.assertEqual(pages, ["3", "4"])                           # 1・2 ページ目は取り直さない
-        self.assertEqual(sorted(int(r["params"]["CHANGEWATCH_RECORD_ID"]) for r in env.enqueued()), [1, 2, 3, 4, 5, 6])
 
     def test_killed_fetch_is_taken_over_and_resumed(self):
         env = Env(self)
         for i in range(1, 7):
             env.api.put(i, status="open")
-        env.write_config({"items": env.source("/page", records="data", lease_sec=600,
-                                              pagination={"type": "page", "size_param": "per_page", "size": 2})},
-                         {"r": simple_rules("d", initial="emit")})
+        env.write_config({"items": env.source("/page", records="data", key="id", lease_sec=600, pagination=PAGED)})
         env.api.block_page = ("/page", "2")
-        p = subprocess.Popen([sys.executable, str(SCRIPT), "--plugin", "dagu", "--config", str(env.config_path),
+        p = subprocess.Popen([sys.executable, str(SCRIPT), "--config", str(env.config_path),
                               "--connections", str(env.conn_file), "fetch"],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ))
         self.assertTrue(env.api.blocked.wait(20))
@@ -250,259 +186,57 @@ class ResumeTest(unittest.TestCase):
         p.stdout.close()
         env.api.block_page = None
         env.api.release.set()
-        env.ok(self, "run")                                            # 死んだプロセスの排他は奪える
-        self.assertEqual(sorted(int(r["params"]["CHANGEWATCH_RECORD_ID"]) for r in env.enqueued()), [1, 2, 3, 4, 5, 6])
+        found = env.take(self, "c", "--initial", "emit")               # 死んだプロセスの排他は奪える
+        self.assertEqual(keys(found), ["1", "2", "3", "4", "5", "6"])
 
 
-class EvaluateTest(unittest.TestCase):
-    def test_rule_change_rebaselines_and_continue(self):
-        env = Env(self)
-        for i in (1, 2):
-            env.api.put(i, status="open", title="t")
-        src = {"items": env.source("/all")}
-        d = {"workflow": "d", "order": "none"}
-        env.write_config(src, {"r": simple_rules(d)})
-        env.ok(self, "run")
-        env.write_config(src, {"r": simple_rules(d, watch=["status", "title"])})
-        env.api.put(1, title="t2")
-        env.ok(self, "run")
-        self.assertEqual(env.enqueued(), [])                           # ルールを変えた直後は基準値の取り直し
-        env.api.put(1, title="t3")
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 1)
-        env.write_config(src, {"r": simple_rules(d, watch=["status", "title", "updated"],
-                                                 on_rule_change="continue")})
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 3)                       # continue: 新しい比べ方で前回の値と比べる
-
+class SourceChangeTest(unittest.TestCase):
     def test_source_credential_change_rebaselines(self):
         env = Env(self)
         env.api.put(1, status="open")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
-        env.ok(self, "run")
+        env.write_config({"items": env.source("/all", key="id")})
+        env.take(self)
         env.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": env.api.url,
                                                           "token": TOKEN, "extra": "scope2"}]}))
         env.api.put(1, status="closed")
-        out = env.ok(self, "run")
+        code, out = env.run("get", "--source", "items", "--consumer", "c")
+        self.assertEqual(code, 0, out)
         self.assertIn("取得条件か認証が変わった", out)
-        self.assertEqual(env.enqueued(), [])
+        self.assertEqual(json.loads(env.stdout), [])                  # 別のデータとして基準を取り直す
         self.assertNotIn("If-None-Match", env.api.requests[-1][2])      # 前の認証での控えを使わない
-
-    def test_replay_without_api(self):
-        env = Env(self)
-        env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules()})
-        env.ok(self, "run")                                            # 基準値
-        for s in ("b", "a", "c"):
-            env.api.put(1, status=s)
-            env.ok(self, "fetch")
-        env.ok(self, "evaluate")                                       # 溜まった 3 回分を古い順に判定（A→B→A も）
-        n = env.api.count()
-        out = env.ok(self, "replay", "--rule", "r", "--dry-run")
-        self.assertIn("3 件のイベント", out)
-        out = env.ok(self, "replay", "--rule", "r")
-        self.assertIn("新しく積んだのは 0 件", out)                       # 既にあるイベントと同じ ID
-        self.assertEqual(env.api.count(), n)                           # API には問い合わせない
-        events = json.loads(env.ok(self, "events", "--json"))
-        self.assertEqual(len(events), 3)
-
-    def test_evaluation_error_is_isolated(self):
-        env = Env(self)
-        env.api.put(1, status="open")
-        env.write_config({"items": env.source("/all")},
-                         {"good": simple_rules("d"),
-                          "bad": simple_rules("e", targets=[{"workflow": "e", "params": {"X": "{{ event.nothing }}"}}])})
-        env.ok(self, "run")
-        env.api.put(1, status="closed")
-        code, out = env.run("run")
-        self.assertEqual(code, 4)                                      # bad の受け渡しが失敗
-        self.assertEqual([r["dag"] for r in env.enqueued()], ["d"])    # good は渡せている
-        st = json.loads(env.ok(self, "status", "--json"))
-        self.assertEqual(st["problems"][0]["rule"], "bad")
-
-
-class DeliveryTest(unittest.TestCase):
-    def _two_changes(self, env, **target):
-        env.api.put(1, status="s0")
-        env.api.put(2, status="s0")
-        t = {"workflow": "d"}
-        t.update(target)
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules(t)})
-        env.ok(self, "run")
-        env.api.put(1, status="s1")
-        env.ok(self, "fetch")
-        env.api.put(1, status="s2")
-        env.api.put(2, status="s1")
-        env.ok(self, "fetch")
-        env.ok(self, "evaluate")
-
-    def test_order_completion(self):
-        env = Env(self)
-        self._two_changes(env)
-        env.ok(self, "dispatch")
-        got = [(r["params"]["CHANGEWATCH_RECORD_ID"], r["run_id"]) for r in env.enqueued()]
-        self.assertEqual([g[0] for g in got], ["1", "2"])              # 1 の 2 回目は 1 回目の完了待ち、2 は並ぶ
-        out = env.ok(self, "dispatch")
-        self.assertIn("完了待ち 1", out)
-        env.ok(self, "ack", got[0][1])
-        env.ok(self, "dispatch")
-        ev = [json.loads(Path(r["params"]["CHANGEWATCH_EVENT_FILE"]).read_text(encoding="utf-8")) for r in env.enqueued()]
-        self.assertEqual([(e["record_key"], e["after"]["status"]) for e in ev], [("1", "s1"), ("2", "s1"), ("1", "s2")])
-
-    def test_order_enqueue(self):
-        env = Env(self)
-        self._two_changes(env, order="enqueue")
-        env.ok(self, "dispatch")
-        self.assertEqual([r["params"]["CHANGEWATCH_RECORD_ID"] for r in env.enqueued()], ["1", "1", "2"])
-
-    def test_resend_with_same_id_and_isolation(self):
-        env = Env(self)
-        env.api.put(1, status="a")
-        env.api.put(2, status="a")
-        env.write_config({"items": env.source("/all")},
-                         {"r": simple_rules({"workflow": "flaky", "max_attempts": 2, "retry_backoff_sec": 0}, "steady")})
-        env.ok(self, "run")
-        env.fail_dags("flaky")
-        env.api.put(1, status="b")
-        env.api.put(2, status="b")
-        code, _ = env.run("run")
-        self.assertEqual(code, 4)
-        self.assertEqual(sorted(r["dag"] for r in env.enqueued()), ["steady", "steady"])   # 他の受け渡し先は進む
-        flaky = [d for d in env.deliveries() if d["target"] == "flaky"]
-        self.assertEqual({d["status"] for d in flaky}, {"send_failed"})
-        env.run("dispatch")
-        self.assertEqual({d["status"] for d in env.deliveries() if d["target"] == "flaky"}, {"dead"})
-        env.fail_dags()
-        env.ok(self, "dispatch")
-        self.assertEqual(len(env.enqueued()), 2)                       # dead は手で retry するまで止まる
-        env.ok(self, "retry", "--rule", "r")
-        env.ok(self, "dispatch")
-        flaky_runs = sorted(r["run_id"] for r in env.enqueued() if r["dag"] == "flaky")
-        self.assertEqual(flaky_runs, sorted(d["id"] for d in flaky))   # 同じ ID で渡し直す
-
-    def test_crash_during_dispatch_does_not_duplicate(self):
-        env = Env(self)
-        env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
-        env.ok(self, "run")
-        env.api.put(1, status="b")
-        env.ok(self, "run")
-        d = env.deliveries()[0]
-        # Dagu へは渡せたが、記録する前にプロセスが止まった状態を作る
-        s = env.store()
-        with s.tx() as db:
-            db.execute("UPDATE deliveries SET status='sending', lease_until=?, owner='gone' WHERE id=?",
-                       (time.time() - 1, d["id"]))
-        s.close()
-        out = env.ok(self, "dispatch")
-        self.assertIn("既に渡し済み 1", out)
-        self.assertEqual(len(env.enqueued()), 1)
-        self.assertEqual(env.deliveries()[0]["status"], "dispatched")
-
-    def test_ack_failed_and_retry_in_dagu(self):
-        env = Env(self)
-        env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
-        env.ok(self, "run")
-        env.api.put(1, status="b")
-        env.ok(self, "run")
-        did = env.deliveries()[0]["id"]
-        env.ok(self, "ack", did, "--failed", "--message", "step failed")
-        self.assertEqual(env.deliveries()[0]["status"], "failed")
-        out = env.ok(self, "status")
-        self.assertIn("step failed", out)
-        env.ok(self, "retry", did)
-        self.assertEqual(env.enqueued()[-1], {"cmd": "retry", "dag": "d", "run_id": did})
-        self.assertEqual(env.deliveries()[0]["status"], "dispatched")
-        env.ok(self, "ack", did)
-        self.assertEqual(env.deliveries()[0]["status"], "done")
-        code, _ = env.run("ack", "aw_nope")
-        self.assertEqual(code, 1)
-
-    def test_skip_unblocks(self):
-        env = Env(self)
-        self._two_changes(env)
-        env.ok(self, "dispatch")
-        first = env.enqueued()[0]["run_id"]
-        env.ok(self, "skip", first)
-        env.ok(self, "dispatch")
-        self.assertEqual(len(env.enqueued()), 3)
-
-    def test_api_backend(self):
-        env = Env(self)
-        dagu = FakeDaguAPI()
-        self.addCleanup(dagu.close)
-        conns = json.loads(env.conn_file.read_text())
-        conns["dagu"] = [{"label": "default", "url": dagu.url, "token": dagu.token}]
-        env.conn_file.write_text(json.dumps(conns))
-        env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")},
-                         {"r": simple_rules({"workflow": "handler.yaml", "params": {"TITLE": "{{ event.after.status }}"},
-                                             "queue": "q1"})},
-                         delivery={"adapter": "dagu", "mode": "api", "connection": "dagu"})
-        env.ok(self, "run")
-        env.api.put(1, status="b")
-        env.ok(self, "run")
-        did = env.deliveries()[0]["id"]
-        self.assertEqual(dagu.runs[("handler", did)]["params"]["TITLE"], "b")
-        self.assertEqual(dagu.calls[-1][2]["queue"], "q1")
-        out = env.ok(self, "reconcile")
-        self.assertIn("確認できない 1", out)
-        dagu.runs[("handler", did)]["status"] = "failed"
-        env.ok(self, "reconcile")
-        self.assertEqual(env.deliveries()[0]["status"], "failed")
-        env.ok(self, "retry", did)
-        dagu.runs[("handler", did)]["status"] = "succeeded"
-        env.ok(self, "reconcile")
-        self.assertEqual(env.deliveries()[0]["status"], "done")
-        # 再送しても 409 already exists なら渡し済み
-        s = env.store()
-        with s.tx() as db:
-            db.execute("UPDATE deliveries SET status='pending' WHERE id=?", (did,))
-        s.close()
-        out = env.ok(self, "dispatch")
-        self.assertIn("既に渡し済み 1", out)
-        self.assertNotIn(dagu.token, out)
 
 
 class RetentionTest(unittest.TestCase):
-    def test_gc_keeps_unprocessed(self):
+    def test_gc_keeps_the_latest_fetches(self):
         env = Env(self)
         env.api.put(1, status="a")
-        src = {"items": env.source("/page", records="data", pagination={"type": "page", "size_param": "per_page",
-                                                                         "size": 10})}
-        ret = {"fetches_keep": 1, "fetch_days": 0, "events_days": 0, "auto_gc": False}
-        env.write_config(src, {"r": simple_rules("d")}, retention=ret)
-        env.ok(self, "run")
+        env.write_config({"items": env.source("/all")}, retention={"fetches_keep": 1, "fetch_days": 0, "auto_gc": False})
         for s in ("b", "c", "d"):
             env.api.put(1, status=s)
             env.ok(self, "fetch")
         env.ok(self, "gc")
         st = env.store()
-        self.assertEqual(st.one("SELECT COUNT(*) c FROM fetches WHERE status='complete'")["c"], 3)   # 未判定の 3 回
-        st.close()
-        env.ok(self, "evaluate")
-        env.ok(self, "dispatch")
-        env.ok(self, "gc")
-        st = env.store()
         self.assertEqual(st.one("SELECT COUNT(*) c FROM fetches WHERE status='complete'")["c"], 1)
-        self.assertEqual(st.one("SELECT COUNT(*) c FROM events")["c"], 3)                         # 未完了は残す
         st.close()
-        for d in env.deliveries():
-            if d["status"] == "dispatched":
-                env.ok(self, "ack", d["id"])
-        env.ok(self, "dispatch")
-        for d in env.deliveries():
-            if d["status"] == "dispatched":
-                env.ok(self, "ack", d["id"])
-        env.ok(self, "dispatch")
-        for d in env.deliveries():
-            if d["status"] == "dispatched":
-                env.ok(self, "ack", d["id"])
+        env.ok(self, "get", "--source", "items", "--no-fetch")
+        self.assertEqual(json.loads(env.stdout)[0]["status"], "d")
+
+    def test_gc_drops_the_tables_of_rules(self):
+        env = Env(self)
+        env.write_config({"items": env.source("/all")}, retention={"auto_gc": False})
+        s = env.store()
+        with s.tx() as db:                                              # 0.7 までの DB
+            db.execute("CREATE TABLE rules(name TEXT)")
+            db.execute("CREATE TABLE deliveries(id TEXT)")
+        s.close()
+        (env.tmp / "state" / "events").mkdir()
+        (env.tmp / "state" / "events" / "x.json").write_text("{}", encoding="utf-8")
         env.ok(self, "gc")
-        st = env.store()
-        self.assertEqual(st.one("SELECT COUNT(*) c FROM events")["c"], 0)
-        st.close()
+        s = env.store()
+        names = {r["name"] for r in s.q("SELECT name FROM sqlite_master WHERE type='table'")}
+        s.close()
+        self.assertFalse(names & {"rules", "deliveries"})
+        self.assertFalse((env.tmp / "state" / "events").exists())
 
 
 class StorageTest(unittest.TestCase):
@@ -520,10 +254,10 @@ class StorageTest(unittest.TestCase):
         env.write_config({"items": env.source("/page", records="data", pagination={"type": "page",
                                                                                   "size_param": "per_page",
                                                                                   "size": 50})},
-                         {"r": simple_rules()}, retention=ret)
+                         retention=ret)
         for _ in range(4):
             env.api.put(1, status=str(time.time()))
-            env.ok(self, "run")
+            env.ok(self, "fetch")
         s = env.store()
         self.assertEqual(s.one("SELECT COUNT(*) c FROM fetches")["c"], 4)
         s.close()
@@ -540,7 +274,7 @@ class StorageTest(unittest.TestCase):
     def test_vacuum_converts_old_db(self):
         env = Env(self)
         env.api.put(1)
-        env.write_config({"items": env.source("/all")}, {})
+        env.write_config({"items": env.source("/all")})
         (env.tmp / "state").mkdir()
         import sqlite3
         sqlite3.connect(str(env.tmp / "state" / "state.db")).execute("CREATE TABLE x(a)").connection.close()
@@ -552,38 +286,13 @@ class StorageTest(unittest.TestCase):
         st = json.loads(env.ok(self, "status", "--json"))["storage"]
         self.assertEqual(st["auto_vacuum"], "incremental")
 
-    def test_removed_observations_expire(self):
-        env = Env(self)
-        for i in (1, 2, 3):
-            env.api.put(i, status="open")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules({"workflow": "d", "order": "none"}, on=["appeared", "removed"])},
-                         retention={"removed_days": 30, "auto_gc": False})
-        env.ok(self, "run")
-        env.api.drop(2)
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 1)                        # 2 が消えた
-        env.ok(self, "gc")
-        s = env.store()
-        self.assertEqual(s.one("SELECT COUNT(*) c FROM rule_records")["c"], 3)   # まだ保持期間内
-        s.close()
-        self._age(env, "UPDATE rule_records SET updated_at=?")
-        out = env.ok(self, "gc")
-        self.assertIn("消えたレコードの観測値 1 件", out)
-        s = env.store()
-        self.assertEqual(sorted(r["rkey"] for r in s.q("SELECT rkey FROM rule_records")), ["1", "3"])
-        s.close()
-        env.api.put(2, status="open")                                   # 戻ってきたら新規として扱う
-        env.ok(self, "run")
-        self.assertEqual(json.loads(Path(env.enqueued()[-1]["params"]["CHANGEWATCH_EVENT_FILE"])
-                                    .read_text(encoding="utf-8"))["kinds"], ["appeared"])
-
     def test_stale_assembled_records_only_when_configured(self):
         env = Env(self)
         for i in (1, 2):
             env.api.put(i, status="open")
         src = {"items": env.source("/sync", records="items", key="id",
                                    incremental={"type": "cursor", "cursor_path": "sync_token", "param": "since_rev"})}
-        env.write_config(src, {}, retention={"auto_gc": False})
+        env.write_config(src, retention={"auto_gc": False})
         env.ok(self, "fetch")
         env.api.put(1, status="closed")
         env.ok(self, "fetch")
@@ -592,7 +301,7 @@ class StorageTest(unittest.TestCase):
         s = env.store()
         self.assertEqual(s.one("SELECT COUNT(*) c FROM source_records")["c"], 2)   # 既定は消さない
         s.close()
-        env.write_config(src, {}, retention={"auto_gc": False, "record_days": 30})
+        env.write_config(src, retention={"auto_gc": False, "record_days": 30})
         out = env.ok(self, "gc")
         self.assertIn("長く取得されていないレコード 1 件", out)
         s = env.store()
@@ -603,10 +312,39 @@ class StorageTest(unittest.TestCase):
 class OpsTest(unittest.TestCase):
     def test_check(self):
         env = Env(self)
-        env.write_config({"items": env.source("/all", schedule="*/10 * * * *")}, {"r": simple_rules("d")})
+        env.write_config({"items": env.source("/all", schedule="*/10 * * * *")})
         out = env.ok(self, "check")
         self.assertIn("問題ありません", out)
         self.assertNotIn(TOKEN, out)
+
+    def test_rules_and_delivery_are_gone(self):
+        env = Env(self)
+        for extra in ({"rules": {}}, {"delivery": {"adapter": "dagu"}}):
+            with self.subTest(extra=extra):
+                env.write_config({"items": env.source("/all")}, **extra)
+                code, out = env.run("check")
+                self.assertEqual(code, 1)
+                self.assertIn("0.8.0 でなくなりました", out)
+
+    def test_plugin_filter(self):
+        env = Env(self)
+        plugin = env.tmp / "p.py"
+        plugin.write_text("def register(api):\n    api.add_filter('path_of', lambda v, a: str(v) + '/' + a)\n",
+                          encoding="utf-8")
+        env.api.put(1, status="a")
+        src = env.source()
+        src["request"]["url"] = '{{ conn.url | path_of: "all" }}'
+        env.write_config({"items": src})
+        code, out = env.run("get", "--source", "items")
+        self.assertEqual(code, 1)                                       # --plugin を付け忘れたら、設定の誤りとして止まる
+        self.assertIn("path_of", out)
+        env.plugins = [str(plugin)]
+        env.ok(self, "get", "--source", "items")
+        self.assertEqual(json.loads(env.stdout)[0]["id"], 1)
+        env.plugins = [str(env.tmp / "nosuch.py")]
+        code, out = env.run("status")
+        self.assertEqual(code, 1)
+        self.assertIn("nosuch.py", out)
 
     def test_connections_only_from_cli_path(self):
         try:
@@ -622,25 +360,16 @@ class OpsTest(unittest.TestCase):
             f"fakeapi:\n  - label: work\n    url: {env.api.url}\n    token: {TOKEN}\n", encoding="utf-8")
         (ws / "conf").mkdir()
         env.config_path = ws / "conf" / "change-watch.yaml"
-        env.config_path.write_text(f"""
+        env.config_path.write_text("""
 state_dir: ../state
-delivery:
-  adapter: dagu
-  executable: [{json.dumps(sys.executable)}, {json.dumps(str(FAKE_DAGU))}]
 sources:
   items:
     connection: fakeapi:work
     request:
-      url: "{{{{ conn.url }}}}/all"
+      url: "{{ conn.url }}/all"
       headers:
-        Authorization: "Bearer {{{{ conn.token }}}}"
-rules:
-  r:
-    source: items
-    id: id
-    initial: emit
-    on: [appeared]
-    targets: [d]
+        Authorization: "Bearer {{ conn.token }}"
+    key: id
 """, encoding="utf-8")
         old = os.getcwd()
         os.chdir(ws)
@@ -657,13 +386,12 @@ rules:
         env.conn_file = ws / "my-connections.yaml"
         env.conn_file.write_text(
             f"fakeapi:\n  - label: work\n    url: {env.api.url}\n    token: {TOKEN}\n", encoding="utf-8")
-        env.ok(self, "run")
-        self.assertEqual(len(env.enqueued()), 1)
+        self.assertEqual([c["key"] for c in env.take(self, "c", "--initial", "emit")], ["1"])
 
     def test_state_dir_from_argument_only(self):
         env = Env(self)
         env.api.put(1)
-        env.write_config({"items": env.source("/all")}, {})
+        env.write_config({"items": env.source("/all")})
         other = env.tmp / "other-state"
         os.environ["CHANGEWATCH_STATE_DIR"] = str(env.tmp / "from-env")     # 環境変数は見ない
         self.addCleanup(os.environ.pop, "CHANGEWATCH_STATE_DIR", None)
@@ -671,68 +399,6 @@ rules:
         self.assertTrue((other / "state.db").is_file())
         self.assertFalse((env.tmp / "from-env").exists())
         self.assertFalse((env.tmp / "state").exists())
-
-    def test_core_runs_without_dagu(self):
-        env = Env(self)
-        env.plugins = []                                                # プラグインなしで動く
-        env.api.put(1, status="a")
-        sink = env.tmp / "handoff.jsonl"
-        handoff = env.tmp / "handoff.py"
-        handoff.write_text(
-            "import json, os, sys\n"
-            f"log = {str(sink)!r}\n"
-            "runs = [json.loads(l)['run_id'] for l in open(log, encoding='utf-8')] if os.path.exists(log) else []\n"
-            "if sys.argv[2] in runs:\n    sys.exit(9)\n"
-            "rec = {'workflow': sys.argv[1], 'run_id': sys.argv[2], 'record': os.environ['CHANGEWATCH_RECORD_ID'],\n"
-            "       'title': json.loads(sys.argv[3])['TITLE']}\n"
-            "open(log, 'a', encoding='utf-8').write(json.dumps(rec) + '\\n')\n", encoding="utf-8")
-        env.write_config({"items": env.source("/all")},
-                         {"r": simple_rules({"workflow": "notify", "params": {"TITLE": "{{ event.after.status }}"}})},
-                         delivery={"adapter": "command",
-                                   "command": [sys.executable, str(handoff), "{{ workflow }}", "{{ run_id }}",
-                                               "{{ params_json }}"]})
-        env.ok(self, "run")
-        env.api.put(1, status="b")
-        env.ok(self, "run")
-        recs = [json.loads(x) for x in sink.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual([(r["workflow"], r["record"], r["title"]) for r in recs], [("notify", "1", "b")])
-        s = env.store()
-        with s.tx() as db:
-            db.execute("UPDATE deliveries SET status='pending'")
-        s.close()
-        out = env.ok(self, "dispatch")
-        self.assertIn("既に渡し済み 1", out)
-        # 本体は Dagu 連携を import しない
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import changewatch.cli, changewatch.deliver, changewatch.detect, "
-                "changewatch.fetch; assert 'changewatch.plugins.dagu' not in sys.modules, 'imported'")
-        subprocess.run([sys.executable, "-c", code, str(ROOT)], check=True)
-
-    def test_dagu_plugin_only_when_specified(self):
-        env = Env(self)
-        env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
-        env.ok(self, "run")
-        env.api.put(1, status="b")
-        env.plugins = []
-        code, out = env.run("run")
-        self.assertEqual(code, 1)                                       # 設定の誤りとして止まる
-        self.assertIn("--plugin dagu", out)
-        self.assertEqual(env.enqueued(), [])
-        self.assertEqual([(d["status"], d["attempts"]) for d in env.deliveries()], [("pending", 0)])  # 試行回数は減らない
-        env.ok(self, "status")                                          # アダプタを使わないコマンドは動く
-        code, out = env.run("check")
-        self.assertEqual(code, 1)
-        self.assertIn("--plugin dagu", out)
-        env.plugins = ["dagu"]
-        env.ok(self, "retry", "--rule", "r")
-        env.ok(self, "dispatch")
-        self.assertEqual(len(env.enqueued()), 1)
-        env.plugins = [str(ROOT / "changewatch" / "plugins" / "dagu.py")]               # ファイルのパスでも指定できる
-        env.ok(self, "check")
-        env.plugins = ["nosuch"]
-        code, out = env.run("status")
-        self.assertEqual(code, 1)
-        self.assertIn("nosuch", out)
 
     def test_example_config_loads(self):
         try:
@@ -742,13 +408,8 @@ rules:
         from changewatch import config  # noqa: E402
         cfg = config.load(ROOT / "change-watch.yaml.example")   # 接続設定は使う時点まで読まない
         self.assertEqual(sorted(cfg.sources), ["gitlab-issues", "tickets"])
-        self.assertEqual(cfg.rules, {})                           # 条件は Dagu のワークフローに書く
         self.assertEqual(cfg.sources["gitlab-issues"].item.url,
                          "{{ conn.url }}/api/v4/projects/123/issues/{{ key }}")
-        cfg = config.load(ROOT / "change-watch.rules.yaml.example")
-        self.assertEqual(sorted(cfg.sources), ["gitlab-issues", "tickets"])
-        self.assertEqual(cfg.rules["urgent-tickets"].targets[1].name, "ticket-audit")
-        self.assertEqual(cfg.rules["bug-labeled"].on, ["entered"])          # YAML 1.1 で on: が true にならない
 
     def test_windows_example_config_loads(self):
         try:
@@ -760,7 +421,6 @@ rules:
         self.assertEqual(sorted(cfg.sources), ["inbox", "issues"])
         self.assertEqual(cfg.sources["inbox"].folder.include, ["**/*.csv", "**/*.xlsx"])
         self.assertEqual(cfg.sources["inbox"].key, "rel")         # get --consumer で新しく置かれたファイルを受け取れる
-        self.assertEqual(cfg.rules, {})
 
 
 if __name__ == "__main__":

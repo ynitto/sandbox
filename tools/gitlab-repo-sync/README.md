@@ -265,6 +265,11 @@ schtasks /Create /TN GitLabRepoSync /SC DAILY /ST 02:30 ^
   /TR "wsl.exe -d Ubuntu -- /home/<user>/.local/bin/gitlab-repo-sync sync --quiet"
 ```
 
+**Dagu**
+
+[`dags/gitlab-repo-sync.example.yaml`](dags/gitlab-repo-sync.example.yaml) を `~/.config/dagu/dags/` にコピーし、パスを直す。
+`fail_on_diverged: true` にすると、分岐が残っているときに Dagu の履歴で失敗として見える。
+
 呼び出しが重なっても、後から来た方はロックを見て黙って降りる（終了コード 0）。
 短い間隔で何度キックしても、変化が無ければリポジトリあたり `ls-remote` 1 回で終わる。
 

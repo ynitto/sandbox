@@ -1,5 +1,5 @@
 # gitlab-issue-hub-agent の change-watch の設定（~/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml。
-# install.py install --agent gitlab-issue-hub-agent が無ければ置く）。ルール（rules）は書かない。どのコメントを依頼として扱うかは
+# install.py install --agent gitlab-issue-hub-agent が無ければ置く）。どのコメントを依頼として扱うかは
 # Dagu のワークフロー（change-watch-issue-hub.yaml.example）に書く。
 #
 # change-watch が受け持つのは、ハブの issue の取得（予定・間隔・失敗の待ち。取得するか前回の取得結果で答えるかも決める）と、

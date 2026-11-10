@@ -2,9 +2,8 @@
 # command は install.py install が置いた change-watch（exec は ~ を展開しないので絶対パスで書く）。Windows なら command を python に、
 # args の先頭を C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz にする。
 # 設定は既定の ~/.config/change-watch/change-watch.yaml を読む。別の場所なら args の先頭に "--config" と <パス> を足す。
-# gc は Dagu に触らないので "--plugin" "dagu" は要らない。
 # ほかのプラグイン（"--plugin" と <.py のパス>）を足すなら、どのステップにも同じように足す。
-description: "保持期間を過ぎた取得結果・イベントを整理する"
+description: "保持期間を過ぎた取得結果を整理する"
 schedule: "17 3 * * *"
 type: graph
 hist_retention_days: 14

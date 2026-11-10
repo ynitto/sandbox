@@ -4,7 +4,7 @@
     {{ env.NAME }}                   環境変数
     {{ position }}                   増分取得の位置（前回の最大値・カーソル）
     {{ now }} / {{ now_iso }}        いまの時刻（UNIX 秒 / ISO 8601 UTC）
-    {{ event.after.title }}          受け渡しのとき（イベントの中身）
+    {{ key }}                        取得元の item（1 件の取り直し）のとき、レコードの key
     {{ x | default: "" }}            無ければ既定値
     {{ x | json }}                   JSON にする（{{ x | json: 2 }} なら 2 字下げで整形する）
     {{ x | urlencode }}              URL 用にエスケープする

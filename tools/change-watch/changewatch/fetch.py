@@ -3,7 +3,7 @@
 1 回の取得は fetches の 1 行で、ページを取るたびに「取ったページ」と「次のページの取り方」を
 同じトランザクションで書く。途中で失敗・停止しても、次の取得は続きのページから再開する
 （resume_max_age_sec を過ぎたら最初から取り直す）。全ページを取り終えるまで、増分の位置は進めず、
-判定にも回さない。だから未取得のデータを処理済みとして飛ばすことはない。
+get にも使わない。だから未取得のデータを処理済みとして飛ばすことはない。
 """
 from __future__ import annotations
 
@@ -358,7 +358,7 @@ class Fetcher:
 
     def get_json(self, src: SourceSpec, url: str, headers: dict | None, query: dict | None, ctx_extra: dict,
                  timeout: float | None = None, method: str = "GET") -> Any:
-        """取得元の接続で 1 回だけ要求して JSON を返す（404 なら None）。受け渡し先の refresh とチェックが使う。
+        """取得元の接続で 1 回だけ要求して JSON を返す（404 なら None）。commit --refresh（取得元の item）が使う。
 
         url・headers・query はテンプレートとして展開する（{{ conn.* }}・{{ env.* }} と ctx_extra の名前）。headers が
         None なら取得元のヘッダー（認証）を使う。要求の間隔・1 分あたりの上限・失敗の待ちは取得元（と rate_limit.group）と
@@ -433,16 +433,6 @@ class Fetcher:
             return resp.status, (resp.json() if resp.body else None)
         except PermanentError:          # 呼び出しは済んでいる。JSON でない本文（"OK" など）を失敗にせず、文字列で返す
             return resp.status, resp.body.decode("utf-8-sig", errors="replace")
-
-    def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
-        """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。"""
-        body = self.get_json(src, spec.url, spec.headers, spec.query, {"event": event}, spec.timeout_sec, spec.method)
-        if body is None:
-            return None
-        rec = jpath.get(body, spec.records)
-        if isinstance(rec, list):
-            rec = rec[0] if rec else None
-        return None if rec is jpath.MISSING else rec
 
     def _resume_or_start(self, src: SourceSpec, row: Any, epoch: int) -> Any:
         prev = self.store.one("SELECT * FROM fetches WHERE source=? AND epoch=? AND status IN ('running','failed') "
