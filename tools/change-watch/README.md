@@ -185,9 +185,9 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
 | コマンド | すること | 標準出力 |
 |---|---|---|
 | `get --source S` | 取得して（するかは取得元の予定・間隔で決める）、レコードを出す。取得が失敗しても前回までの取得結果で答える | JSON の配列 |
-| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
-| `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない） | — |
-| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON |
+| `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。出す順は `key` の順（数の `key` は小さい順）。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
+| `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない）。取得元にも C の記録にも無い KEY は記録せず、警告を出す | — |
+| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON（JSON でない応答は文字列） |
 
 変化は `{"key", "kind", "record", "before", "changes"}` の形。`kind` は `appeared`（新しく現れた）・`changed`（`--watch` の項目が変わった）・
 `removed`（一覧から消えた）、`record` は今のレコード（`removed` なら最後の姿）、`before` は前回 `commit` したときの姿（`changed` のときだけ）、

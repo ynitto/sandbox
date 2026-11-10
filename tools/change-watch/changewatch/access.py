@@ -57,12 +57,20 @@ def _need_key(src: SourceSpec, what: str) -> None:
         raise ConfigError(f"sources.{src.name}.key: {what}には、レコードを一意に指す key を取得元に書いてください")
 
 
+def key_order(key: str) -> tuple:
+    """レコードを返す順。数の key は数の小さい順（9 の次が 10。文字の順だと 10 が 9 より先になり、--one で新しいものを
+    先に渡してしまう）、ほかは文字の順で数のあと。"""
+    if key.isascii() and key.isdigit():
+        return (0, int(key), key)
+    return (1, 0, key)
+
+
 def current(store: Store, src: SourceSpec) -> dict[str, Any]:
-    """取得元のいまの姿（key ごとのレコード）。取得し終えたものが無ければ空。"""
+    """取得元のいまの姿（key ごとのレコード。key_order の順）。取得し終えたものが無ければ空。"""
     _need_key(src, "変化を見る")
     epoch = int(store.source_row(src.name)["epoch"])
-    rows = store.q("SELECT rkey, data FROM source_records WHERE source=? AND epoch=? ORDER BY rkey", (src.name, epoch))
-    return {r["rkey"]: unpack(r["data"]) for r in rows}
+    rows = store.q("SELECT rkey, data FROM source_records WHERE source=? AND epoch=?", (src.name, epoch))
+    return {r["rkey"]: unpack(r["data"]) for r in sorted(rows, key=lambda r: key_order(r["rkey"]))}
 
 
 def records(store: Store, src: SourceSpec) -> list:
@@ -106,7 +114,7 @@ def changes(store: Store, src: SourceSpec, consumer: str, watch: list[str], init
     seen = {r["rkey"]: unpack(r["data"]) for r in
             store.q("SELECT rkey, data FROM consumer_records WHERE consumer=? AND source=?", (consumer, src.name))}
     out: list[dict] = []
-    for k in sorted(set(have) | set(seen)):
+    for k in sorted(set(have) | set(seen), key=key_order):
         before, after = seen.get(k), have.get(k)
         if before is None:
             out.append({"key": k, "kind": "appeared", "record": after, "changes": []})
@@ -120,15 +128,19 @@ def changes(store: Store, src: SourceSpec, consumer: str, watch: list[str], init
     return out
 
 
-def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], refresh: bool) -> list[str]:
+def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], refresh: bool) -> tuple[list[str], list[str]]:
     """keys を consumer が処理し終えたと記録する。refresh なら取得元の item で 1 件取り直した姿を記録し、
-    取得元の姿もそれに替える（処理の中で自分が書き込んだ分を、次の get で変化として返さないため）。"""
+    取得元の姿もそれに替える（処理の中で自分が書き込んだ分を、次の get で変化として返さないため）。
+    (記録した key, 取得元にも consumer の記録にも無かった key) を返す。後者は何も記録していない（key の書き間違いに気づけるように）。"""
     store = fetcher.store
     if refresh and src.item is None:
         raise ConfigError(f"sources.{src.name}.item: --refresh には、レコードを 1 件取り直す item.url を取得元に書いてください")
     have = current(store, src)
     epoch = int(store.source_row(src.name)["epoch"])
+    seen = {r["rkey"] for r in
+            store.q("SELECT rkey FROM consumer_records WHERE consumer=? AND source=?", (consumer, src.name))}
     done: list[str] = []
+    unknown: list[str] = []
     for k in keys:
         rec = have.get(k)
         fresh = False
@@ -143,6 +155,9 @@ def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], re
                 if v is jpath.MISSING or key_string([v]) != k:
                     raise ConfigError(f"sources.{src.name}.item: 取り直したレコードの key が {k} ではありません")
                 rec, fresh = got, True
+        if rec is None and k not in seen:
+            unknown.append(k)
+            continue
         with store.tx() as db:
             if rec is None:
                 db.execute("DELETE FROM consumer_records WHERE consumer=? AND source=? AND rkey=?", (consumer, src.name, k))
@@ -153,4 +168,4 @@ def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], re
                     db.execute("UPDATE source_records SET data=?, seen_at=? WHERE source=? AND rkey=? AND epoch=?",
                                (pack(rec), now(), src.name, k, epoch))
         done.append(k)
-    return done
+    return done, unknown
