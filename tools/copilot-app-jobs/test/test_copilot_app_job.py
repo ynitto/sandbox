@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import subprocess
 import sys
 import tempfile
 import threading
@@ -14,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import copilot_app_job as job  # noqa: E402
+
+SCRIPT = Path(job.__file__).resolve()
 
 
 class FakeClock:
@@ -106,21 +109,57 @@ class BoxTest(unittest.TestCase):
         self.assertIn(job_id, message)
         self.assertTrue((self.box / "running" / f"{job_id}.md").exists())
 
-    def test_wait_pending(self):
-        fake = FakeClock()
-        self.assertFalse(job.wait_pending(self.box, 3, poll=1, clock=fake.clock, sleep=fake.sleep))
-        job.submit(self.box, "やって")
-        self.assertTrue(job.wait_pending(self.box, 3, poll=1, clock=fake.clock, sleep=fake.sleep))
+    def test_claim_takes_oldest_first_and_only_once(self):
+        first = job.submit(self.box, "1 つ目", "a")
+        time.sleep(1.1)
+        second = job.submit(self.box, "2 つ目", "b")
+        self.assertEqual(job.claim_next(self.box), first)
+        self.assertEqual(job.claim_next(self.box), second)
+        self.assertIsNone(job.claim_next(self.box))
+        self.assertTrue((self.box / "running" / f"{first}.md").exists())
 
-    def test_automation_prompt_names_the_box_and_every_state(self):
-        text = job.automation_prompt(self.work, self.box)
-        for state in job.STATES:
-            self.assertIn(f"{job.BOX_NAME}/{state}", text)
-        self.assertIn("status: ok", text)
-        self.assertNotIn(" wait ", text)
-        stay = job.automation_prompt(self.work, self.box, stay_min=50)
-        self.assertIn(f'wait --dir "{self.work}"', stay)
-        self.assertIn("50 分", stay)
+    def test_claim_reoffers_a_job_left_running_by_a_dead_session(self):
+        job_id = job.submit(self.box, "やって")
+        self.assertEqual(job.claim_next(self.box, wall=lambda: 1000.0), job_id)
+        self.assertIsNone(job.claim_next(self.box, stale_sec=600, wall=lambda: 1500.0))
+        self.assertEqual(job.claim_next(self.box, stale_sec=600, wall=lambda: 1700.0), job_id)
+        # 出し直した直後は、また取りかかり中として扱う
+        self.assertIsNone(job.claim_next(self.box, stale_sec=600, wall=lambda: 1800.0))
+
+    def test_wait_claim_waits_in_chunks_until_the_deadline(self):
+        job.ensure_box(self.box)
+        fake = FakeClock()
+        got, more = job.wait_claim(self.box, until=100, chunk=10, poll=1, wall=fake.clock, sleep=fake.sleep)
+        self.assertEqual((got, more, fake.now), (None, True, 10))
+        fake.now = 95
+        got, more = job.wait_claim(self.box, until=100, chunk=10, poll=1, wall=fake.clock, sleep=fake.sleep)
+        self.assertEqual((got, more, fake.now), (None, False, 100))
+
+    def test_wait_claim_returns_as_soon_as_a_job_arrives(self):
+        job.ensure_box(self.box)
+        ids = []
+        fake = FakeClock(lambda now: ids.append(job.submit(self.box, "やって")) if now == 3 else None)
+        got, _ = job.wait_claim(self.box, until=100, chunk=100, poll=1, wall=fake.clock, sleep=fake.sleep)
+        self.assertEqual((got, fake.now), (ids[0], 3))
+
+    def test_finish_writes_a_result_run_can_read(self):
+        job_id = job.submit(self.box, "やって")
+        self.assertFalse(job.finish(self.box, job_id, "ok", "まだ取っていない"))
+        job.claim_next(self.box)
+        self.assertTrue(job.finish(self.box, job_id, "failed", "無理でした\n"))
+        text = (self.box / "results" / f"{job_id}.md").read_text(encoding="utf-8")
+        self.assertEqual(job.parse_result(text), ("failed", "無理でした"))
+        self.assertTrue((self.box / "done" / f"{job_id}.md").exists())
+
+    def test_automation_prompt_is_one_command_and_no_procedure(self):
+        text = job.automation_prompt(self.work, None)
+        self.assertIn(f'next --dir "{self.work}"', text)
+        self.assertNotIn("--stay", text)
+        self.assertLess(len(text), 400)  # 依頼が無い回に毎回読ませるので、短いままにする
+        for word in ("pending", "results", "status:"):
+            self.assertNotIn(word, text)
+        stay = job.automation_prompt(self.work, None, stay_min=50, chunk=600)
+        self.assertIn("--stay 3000 --chunk 600", stay)
 
 
 class CliTest(unittest.TestCase):
@@ -136,19 +175,33 @@ class CliTest(unittest.TestCase):
             code = job.main(list(argv))
         return code, out.getvalue(), err.getvalue()
 
-    def test_run_end_to_end_with_an_app_that_follows_the_prompt(self):
+    def test_next_says_nashi_when_empty(self):
+        code, out, _ = self.run_cli("next", "--dir", str(self.work))
+        self.assertEqual((code, out), (job.EXIT_OK, "なし\n"))
+
+    def test_next_with_stay_hands_back_the_command_to_continue(self):
+        code, out, _ = self.run_cli("next", "--dir", str(self.work), "--stay", "60", "--chunk", "0.1", "--poll", "0.05")
+        self.assertEqual(code, job.EXIT_OK)
+        self.assertIn("next --dir", out)
+        self.assertRegex(out, r"--until \d+ --chunk 0")
+
+    def test_run_end_to_end_with_an_app_that_calls_next_and_done(self):
+        seen = []
+
+        def app_cli(*argv: str) -> str:
+            # アプリ役は別プロセスで呼ぶ（本物と同じ。同じプロセスだと標準出力の差し替えが run と混ざる）
+            done = subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, check=True)
+            return done.stdout.decode("utf-8").replace("\r\n", "\n")
+
         def app():
-            pending = self.box / "pending"
             deadline = time.time() + 10
             while time.time() < deadline:
-                files = sorted(pending.glob("*.md")) if pending.is_dir() else []
-                if files:
-                    running = self.box / "running" / files[0].name
-                    files[0].rename(running)
-                    (self.box / "results" / files[0].name).write_text(
-                        f"status: ok\n\n受け取った依頼: {running.read_text(encoding='utf-8').strip()}\n", encoding="utf-8"
-                    )
-                    running.rename(self.box / "done" / files[0].name)
+                out = app_cli("next", "--dir", str(self.work))
+                if out != "なし\n":
+                    seen.append(out)
+                    job_id = out.split()[1]
+                    (self.box / "tmp" / f"{job_id}.report.md").write_text("テストを 2 件足しました\n", encoding="utf-8")
+                    seen.append(app_cli("done", "--dir", str(self.work), "--id", job_id, "--status", "ok"))
                     return
                 time.sleep(0.05)
 
@@ -159,7 +212,16 @@ class CliTest(unittest.TestCase):
         )
         thread.join()
         self.assertEqual(code, job.EXIT_OK)
-        self.assertEqual(out.strip(), "受け取った依頼: テストを足して")
+        self.assertEqual(out.strip(), "テストを 2 件足しました")
+        self.assertTrue(seen[0].rstrip().endswith("--- 依頼 ---\nテストを足して"))
+        self.assertIn("done --dir", seen[0])
+        self.assertEqual(seen[1], "なし\n")  # done は次の依頼も見る
+        self.assertEqual(list((self.box / "tmp").iterdir()), [])
+
+    def test_done_rejects_an_unknown_id(self):
+        code, _, err = self.run_cli("done", "--dir", str(self.work), "--id", "nope", "--status", "ok")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("nope", err)
 
     def test_run_rejects_empty_prompt_and_missing_dir(self):
         code, _, err = self.run_cli("run", "--dir", str(self.work), "--prompt", "  ")

@@ -13,6 +13,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   処理し、結果を書き戻す形にする。GitHub のリポジトリが無いローカルのフォルダでも使える
 - `copilot_app_job.py run` が依頼を置いて結果を待ち、できた・できなかった・拾われなかった・終わらなかったを
   終了コードで分ける。`prompt` がアプリの自動実行に貼るプロンプトを出す。標準ライブラリだけで動く
+- 依頼が無い回に読ませる量を最小にする: 貼るプロンプトは「コマンドを 1 回実行する」だけにし、依頼の取り出し・結果の
+  書き込み・ファイルの移動はアプリが呼ぶ `next`・`done` がする。`--stay` で、依頼が無い間はコマンドが待ち続ける
 - `dags/copilot-app-job.example.yaml` に Dagu のワークフローの例を足す
 
 ### change-watch: ルールと受け渡しをなくし、API を使う口（`get`・`commit`・`call`）だけにする（0.8.0）
