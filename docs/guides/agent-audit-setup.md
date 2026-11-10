@@ -445,6 +445,9 @@ intake_cmd: agent-audit tasks --mark-exported
 0 * * * * PATH=$HOME/.local/bin:$PATH agent-audit --config $HOME/.agents/agent-audit.yaml collect && agent-audit --config $HOME/.agents/agent-audit.yaml extract && agent-audit --config $HOME/.agents/agent-audit.yaml distill
 ```
 
+Dagu を使っているなら、[`tools/agent-audit/dags/agent-audit.example.yaml`](../../tools/agent-audit/dags/agent-audit.example.yaml) を
+`~/.config/dagu/dags/` にコピーしてパスを直します。3 つが順に動き、落ちたステップは Dagu の履歴に残ります。
+
 agent-loop を使っているなら、定期プロンプトに
 `agent-audit collect && agent-audit extract && agent-audit distill` を書くだけです。
 

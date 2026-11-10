@@ -1,0 +1,15 @@
+# gitlab-repo-sync を Dagu で毎晩動かす例（~/.config/dagu/dags/gitlab-repo-sync.yaml にコピーして使う）。
+# 設定の fail_on_diverged を true にすると、分岐・衝突が残っているとき終了コード 2 でステップが失敗になり、Dagu の履歴で気づける。
+# 呼び出しが重なっても、後から来た方はロックを見て黙って降りる。
+# command は install.sh が置いた gitlab-repo-sync（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
+description: "設定したリポジトリの組を毎晩同期する"
+schedule: "30 2 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: sync
+    action: exec
+    with:
+      command: "/home/you/.local/bin/gitlab-repo-sync"
+      args: ["--config", "/home/you/gitlab-repo-sync.yaml", "--quiet", "sync"]
+    timeout_sec: 7200

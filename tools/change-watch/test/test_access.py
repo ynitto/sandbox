@@ -10,17 +10,15 @@ from helpers import Env
 class AccessTest(unittest.TestCase):
     def setUp(self):
         self.env = Env(self)
-        self.env.plugins = []
         self.env.write_config({"items": self.env.source("/all", key="id",
-                                                        item={"url": "{{ conn.url }}/item/{{ key }}"})}, {},
-                              delivery=None)
+                                                        item={"url": "{{ conn.url }}/item/{{ key }}"})})
 
     def get(self, *args: str):
         self.env.ok(self, "get", "--source", "items", "--no-jitter", *args)
         out = self.env.stdout.strip()
         return json.loads(out) if out else None
 
-    def test_records_without_rules(self):
+    def test_records_without_consumer(self):
         self.env.api.put(1, status="a")
         self.env.api.put(2, status="b")
         self.assertEqual([r["id"] for r in self.get()], [1, 2])
@@ -71,7 +69,7 @@ class AccessTest(unittest.TestCase):
         self.assertIsNone(self.get("--consumer", "flow", "--one"))            # 取り直した姿を基準にした
 
     def test_refresh_needs_item(self):
-        self.env.write_config({"items": self.env.source("/all", key="id")}, {}, delivery=None)
+        self.env.write_config({"items": self.env.source("/all", key="id")})
         self.env.api.put(1, status="a")
         self.get("--consumer", "flow")
         code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "1")
@@ -100,11 +98,58 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(self.env.api.count("/_put"), 1)
 
+    def test_numeric_keys_come_in_numeric_order(self):
+        self.env.api.put(1, status="a")
+        self.get("--consumer", "flow")
+        for i in (10, 9, 100):
+            self.env.api.put(i, status="a")
+        self.assertEqual([c["key"] for c in self.get("--consumer", "flow")], ["9", "10", "100"])
+        self.assertEqual(self.get("--consumer", "flow", "--one")["key"], "9")       # 古いものから 1 件
+        self.assertEqual([r["id"] for r in self.get()], [1, 9, 10, 100])
+
+    def test_commit_warns_about_unknown_keys(self):
+        self.env.api.put(1, status="a")
+        self.get("--consumer", "flow", "--initial", "emit")
+        code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "1 ", "nope")
+        self.assertEqual(code, 0)
+        self.assertIn("'1 '", out)
+        self.assertIn("'nope'", out)
+        self.assertNotIn("記録しました", out)
+        self.assertEqual(self.get("--consumer", "flow", "--one")["key"], "1")       # 記録していない
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "1")
+        self.assertIn("記録しました: 1", out)
+        self.env.api.drop(1)
+        self.assertEqual(self.get("--consumer", "flow", "--one")["kind"], "removed")
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "1")   # 消えたレコードは記録できる
+        self.assertIn("記録しました: 1", out)
+
+    def test_commit_refresh_records_a_record_not_fetched_yet(self):
+        self.get("--consumer", "flow")
+        self.env.api.put(5, status="a")                                       # まだ取得していないが、API にはある
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "--refresh", "5")
+        self.assertIn("記録しました: 5", out)
+        code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "6")
+        self.assertIn("'6'", out)
+
+    def test_call_returns_non_json_response_as_text(self):
+        self.env.api.fail("/_put", 200, body="OK")
+        self.env.ok(self, "call", "POST", "/_put", "--source", "items", "--json", '{"id": 3}')
+        self.assertEqual(json.loads(self.env.stdout), "OK")
+
+    def test_plugin_filter_error_is_a_config_error(self):
+        plugin = self.env.tmp / "plug.py"
+        plugin.write_text("def boom(value, arg=None):\n    raise ValueError(f'bad value: {value!r}')\n\n"
+                          "def register(api):\n    api.add_filter('boom', boom)\n", encoding="utf-8")
+        self.env.plugins = [str(plugin)]
+        code, out = self.env.run("call", "GET", "{{ env.CHANGEWATCH_TEST_UNSET | boom }}/x", "--source", "items")
+        self.assertEqual(code, 1)
+        self.assertIn("フィルタ boom: bad value: None", out)
+
     def test_folder_source(self):
         inbox = self.env.tmp / "inbox"
         inbox.mkdir()
         (inbox / "a.csv").write_text("1", encoding="utf-8")
-        self.env.write_config({"inbox": {"folder": {"path": str(inbox), "include": ["*.csv"], "settle_sec": 0}}}, {}, delivery=None)
+        self.env.write_config({"inbox": {"folder": {"path": str(inbox), "include": ["*.csv"], "settle_sec": 0}}})
         run = lambda: json.loads(self.env.ok(self, "get", "--source", "inbox", "--consumer", "flow") and self.env.stdout)
         self.assertEqual(run(), [])                                            # 今あるファイルを覚えるだけ
         (inbox / "b.csv").write_text("2", encoding="utf-8")
@@ -114,7 +159,7 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(run(), [])
 
     def test_key_is_required_for_consumers(self):
-        self.env.write_config({"items": self.env.source("/all")}, {}, delivery=None)
+        self.env.write_config({"items": self.env.source("/all")})
         code, out = self.env.run("get", "--source", "items", "--consumer", "flow")
         self.assertNotEqual(code, 0)
         self.assertIn("key", out)

@@ -1,6 +1,6 @@
 # redmine-ticket-agent の change-watch の設定（~/.config/change-watch/redmine-ticket-agent/change-watch.yaml。
-# install.py install --agent redmine-ticket-agent が無ければ置く）。ルール（rules）は書かない。条件とコメントの対は Dagu のワークフロー
-# （change-watch-auto-close.yaml.example）に書く。条件も change-watch に任せる形は examples/rules/。
+# install.py install --agent redmine-ticket-agent が無ければ置く）。条件とコメントの対は Dagu のワークフロー
+# （change-watch-auto-close.yaml.example）に書く。
 #
 # change-watch が受け持つのは、Redmine への問い合わせの予定・間隔・取得中の待ち・失敗の待ちと、「前回 commit してから変わった
 # チケット」を返すこと、それにチケットの書き込み（call）を同じ API キー・同じ要求の間隔で送ることだけ。

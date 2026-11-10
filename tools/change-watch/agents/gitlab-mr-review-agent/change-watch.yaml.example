@@ -1,6 +1,6 @@
 # gitlab-mr-review-agent の change-watch の設定（~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml。
-# install.py install --agent gitlab-mr-review-agent が無ければ置く）。ルール（rules）は書かない。条件は Dagu のワークフロー
-# （change-watch-mr-review.yaml.example）に書く。条件も change-watch に任せる形は examples/rules/。
+# install.py install --agent gitlab-mr-review-agent が無ければ置く）。条件は Dagu のワークフロー
+# （change-watch-mr-review.yaml.example）に書く。
 #
 # change-watch が受け持つのは、GitLab への問い合わせの予定・間隔・取得中の待ち・失敗の待ちと、「前回 commit してから変わった MR」を
 # 返すことだけ。どの MR をレビューするか（ドラフトを除くなど）は、ワークフローの preconditions に書く。

@@ -8,7 +8,6 @@
 - preconditions の condition を展開し、expected（re: なら正規表現）に合わなければそのステップを飛ばす
 - retry_policy は exit_code に当たる終了コードのとき limit 回まで（待たずに）やり直す
 - 失敗したら、continue_on.failure が無ければそこで止める
-- handler_on の success / failure は run_handler_on で 1 つだけ動かす（${DAG_RUN_ID} などは vars で渡す）
 
 change-watch のステップ（command が例の change-watch のパス）は aw の argv で呼び、args の中の例のパスは paths で置き換え、
 先頭に head を足す（--config・--state-dir など）。exec でないステップ（handle の harness.run など）は handle(step, vars) を呼ぶ。
@@ -23,23 +22,6 @@ from pathlib import Path
 from typing import Callable
 
 EXAMPLE_COMMAND = "/home/you/.local/bin/change-watch"
-GLOBAL_OPTIONS = {"--plugin", "--config", "--connections", "--state-dir"}   # 値を 1 つ取る、サブコマンドの前のオプション
-USES_DAGU = {"dispatch", "reconcile", "retry", "run"}                       # Dagu に触る（--plugin dagu が要る）サブコマンド
-
-
-def subcommand(args: list) -> str | None:
-    """change-watch の argv からサブコマンドを取り出す（前のオプションとその値を飛ばす）。"""
-    i = 0
-    while i < len(args):
-        if str(args[i]) in GLOBAL_OPTIONS:
-            i += 2
-            continue
-        return str(args[i])
-    return None
-
-
-def plugins(args: list) -> list[str]:
-    return [str(args[i + 1]) for i in range(len(args) - 1) if str(args[i]) == "--plugin"]
 
 
 def load(path: Path) -> dict:
@@ -49,7 +31,7 @@ def load(path: Path) -> dict:
 
 def check_shape(test, dag: dict, where: str) -> None:
     """例の DAG の形: depends があれば type: graph・名前が重ならない・depends が前のステップを指す・取得は終了コード 3 だけ再試行する・
-    --plugin dagu は Dagu に触るステップ（dispatch・reconcile など）にだけ付ける。"""
+    change-watch は直接 command にする。"""
     if any(s.get("depends") for s in dag["steps"]):
         test.assertEqual(dag.get("type"), "graph", where)
     seen: set[str] = set()
@@ -63,10 +45,6 @@ def check_shape(test, dag: dict, where: str) -> None:
             test.assertFalse(Path(str(s["with"]["command"])).name.startswith("python") and
                              any(str(a) == EXAMPLE_COMMAND for a in args),
                              f"{where}: {s['name']} は change-watch を直接 command にする")
-        if s.get("action") == "exec" and s["with"]["command"] == EXAMPLE_COMMAND:
-            sub = subcommand(args)
-            test.assertEqual("dagu" in plugins(args), sub in USES_DAGU,
-                             f"{where}: {s['name']}（{sub}）の --plugin dagu は Dagu に触るステップにだけ付ける")
         if s.get("action") == "exec" and s["with"]["command"] == EXAMPLE_COMMAND and "fetch" in args:
             test.assertEqual(s["retry_policy"]["exit_code"], [3], f"{where}: fetch は一時的な失敗（3）だけ再試行する")
     for event, h in (dag.get("handler_on") or {}).items():
@@ -124,17 +102,6 @@ def _say(text: str) -> None:
 def _argv(w: dict, aw: list[str], head: list[str], paths: dict[str, str] | None, vars: dict[str, str]) -> list[str]:
     args = [_expand((paths or {}).get(a, a), vars) for a in w.get("args") or []]
     return aw + head + args if w["command"] == EXAMPLE_COMMAND else [w["command"]] + args
-
-
-def run_handler_on(dag_path: Path, event: str, *, aw: list[str], head: list[str], vars: dict[str, str],
-                   paths: dict[str, str] | None = None) -> int:
-    """handler_on.<event>（success・failure など）を 1 回動かし、終了コードを返す。"""
-    w = load(dag_path)["handler_on"][event]
-    assert w.get("action") == "exec", f"{dag_path.name}: handler_on.{event} は exec ではない"
-    p = subprocess.run(_argv(w["with"], aw, head, paths, vars), capture_output=True, text=True, encoding="utf-8")
-    if p.returncode:
-        _say(f"[{dag_path.name}:handler_on.{event}] 終了コード {p.returncode}\n{p.stdout}{p.stderr}")
-    return p.returncode
 
 
 def run(dag_path: Path, *, aw: list[str], head: list[str], paths: dict[str, str] | None = None,

@@ -347,6 +347,9 @@ cd tools/testcase-lint/examples/shipping
 testcase-lint && testcase-lint run
 ```
 
+毎晩動かすなら、[`dags/testcase-lint.example.yaml`](dags/testcase-lint.example.yaml) を Dagu に置く。点検と `run` を順に動かし、
+指摘があれば点検のステップが失敗として Dagu の履歴に残る（点検で落ちても `run` は動かす）。
+
 ## ほかの道具と組む
 
 testcase-lint は単体で動く。ほかの道具とは、コマンドの終了コードと結果ファイルだけでつながる。

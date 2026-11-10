@@ -20,7 +20,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
 
 ## 入れ方
 
-1. インストーラで入れる。change-watch と、このエージェントのプログラム（`gitlab_mr.py`）・設定の雛形・Dagu のワークフローを、
+1. インストーラで入れる。change-watch と、kiro-cli が使うコマンド（`gitlab_mr.py`）・設定の雛形・Dagu のワークフローを、
    どのエージェントも同じ決まりの場所に置く（下の表。決まりは [change-watch の README](../../README.md) の「エージェントを入れる」）。
    ワークフローと設定のパスは、この PC のものにして置く。既にある設定とワークフローは上書きしないので、入れ直すとプログラムだけが新しくなる。
 
@@ -163,30 +163,6 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 | `summary <MR> --body-file <ファイル>` | 今の差分のレビューのまとめを 1 回だけ書く（差分の中身の指紋を印に残す） |
 
 `--body-file` の代わりに `--body <文>` でもよい。手で試すときは、環境変数を読み込んでから `python3 gitlab_mr.py context 12` のように呼ぶ。
-
-## プラグイン（gitlab_mr.py）が足すもの
-
-既定のワークフローでは使わない。下の「ルールで判定する形」で使う。
-
-| 名前 | 種類 | すること |
-|---|---|---|
-| `gitlab_mr_since` | フィルタ | 前回レビューし終えたときの head のコミット（初めてなら空） |
-| `gitlab_mr_kind` | フィルタ | 初めてのレビュー / 再レビュー |
-| `gitlab_mr.changed_during_review` | チェック | レビューのあいだにコミット・ドラフト・対象ブランチが変わったか（`handled_before_if` に書く） |
-| `gitlab_mr.already_reviewed` | チェック | 今の差分の中身を既にレビューし終えているか（`skip_if` に書く。真なら kiro-cli を起こさない） |
-
-## ルールで判定する形（`examples/rules/`）
-
-条件も change-watch の設定（ルール `rules`）に書き、change-watch が MR を選んでプロンプトを組み、実行の前後に MR を取り直す形の例。
-入れ方で、`~/.config/change-watch/gitlab-mr-review-agent/change-watch.yaml` を `examples/rules/change-watch.yaml.example` に、
-`~/.config/dagu/dags/change-watch-mr-review.yaml` を `examples/rules/change-watch-mr-review.yaml.example` に替え、
-`examples/rules/prompt.md.example` を `~/.config/change-watch/gitlab-mr-review-agent/prompt.md` に置く（`/home/you` は自分の場所に直す）。
-既定の形との違い:
-
-- 差分の中身をレビューし終えているかを流す前に確かめ、kiro-cli を起こさない（チェック `gitlab_mr.already_reviewed`）
-- レビューのあいだにコミットが積まれたら、レビューし終えたのは実行前のコミットまでにする（チェック `gitlab_mr.changed_during_review`）
-- change-watch の設定の `lock` で、gitlab-issue-agent のワークフローとまたいでも同時に 1 つだけ実行する
-- 失敗したレビューは change-watch が待ってから流し直し（`retry_backoff_sec`・`max_attempts`）、`events`・`retry` で見たりやり直したりできる
 
 ## Windows で使うとき
 

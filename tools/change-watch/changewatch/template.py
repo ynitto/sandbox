@@ -4,7 +4,7 @@
     {{ env.NAME }}                   環境変数
     {{ position }}                   増分取得の位置（前回の最大値・カーソル）
     {{ now }} / {{ now_iso }}        いまの時刻（UNIX 秒 / ISO 8601 UTC）
-    {{ event.after.title }}          受け渡しのとき（イベントの中身）
+    {{ key }}                        取得元の item（1 件の取り直し）のとき、レコードの key
     {{ x | default: "" }}            無ければ既定値
     {{ x | json }}                   JSON にする（{{ x | json: 2 }} なら 2 字下げで整形する）
     {{ x | urlencode }}              URL 用にエスケープする
@@ -127,7 +127,12 @@ def evaluate(expr: str, ctx: dict) -> Any:
             if fn is None:
                 raise TemplateError(f"{{{{ {expr} }}}}: 知らないフィルタです: {name}"
                                     "（プラグインのフィルタなら --plugin を付けて実行してください）")
-            value = fn(None if value is jpath.MISSING else value, _parse_literal(arg) if arg.strip() else None)
+            try:
+                value = fn(None if value is jpath.MISSING else value, _parse_literal(arg) if arg.strip() else None)
+            except ConfigError:
+                raise
+            except Exception as e:      # プラグインのフィルタが値を受け付けなかった（設定の誤りとして、理由だけを出して終わる）
+                raise TemplateError(f"{{{{ {expr} }}}}: フィルタ {name}: {e}") from e
     if value is jpath.MISSING:
         raise TemplateError(f"{{{{ {expr} }}}}: 値がありません（| default: ... で既定値を書けます）")
     return value

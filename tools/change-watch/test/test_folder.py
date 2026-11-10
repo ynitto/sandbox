@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 import unittest
 from pathlib import Path
@@ -19,29 +18,18 @@ OLD = time.time() - 3600          # 書き込みが終わって十分たった�
 class FolderTest(unittest.TestCase):
     def setUp(self):
         self.env = Env(self)
-        self.env.plugins = []
         self.inbox = self.env.tmp / "inbox"
         self.inbox.mkdir()
         self.inbox = self.inbox.resolve()           # Windows の短い名前（RUNNER~1）を、設定が解決した長い名前にそろえる
-        self.log = self.env.tmp / "handled.jsonl"
-        self.handler = self.env.tmp / "handler.py"
-        self.handler.write_text(
-            "import json, os, sys\n"
-            "ev = json.load(open(os.environ['CHANGEWATCH_EVENT_FILE'], encoding='utf-8'))\n"
-            "with open(sys.argv[1], 'a', encoding='utf-8') as f:\n"
-            "    f.write(json.dumps({'rel': ev['record_key'], 'kinds': ev['kinds'], 'path': sys.argv[2],\n"
-            "                        'record': ev.get('record')}) + '\\n')\n", encoding="utf-8")
+        self.initial = "baseline"
+        self.found: list[dict] = []
 
-    def write(self, folder: dict | None = None, rule: dict | None = None, **src):
+    def write(self, folder: dict | None = None, initial: str = "baseline", **src):
         f = {"path": "inbox", "settle_sec": 5}
         f.update(folder or {})
-        r = {"source": "inbox", "id": "rel", "on": ["appeared", "changed", "removed"],
-             "targets": [{"name": "job", "command": [sys.executable, str(self.handler), str(self.log),
-                                                      "{{ event.record.path | default: \"-\" }}"],
-                          "timeout_sec": 30, "retry_backoff_sec": 0}]}
-        r.update(rule or {})
+        self.initial = initial
         cfg = {"version": 1, "state_dir": str(self.env.tmp / "state"),
-               "sources": {"inbox": {"folder": f, "failure_backoff_sec": 0, **src}}, "rules": {"r": r}}
+               "sources": {"inbox": {"folder": f, "failure_backoff_sec": 0, **src}}}
         self.env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
 
     def put(self, rel: str, text: str, mtime: float | None = OLD) -> Path:
@@ -53,14 +41,13 @@ class FolderTest(unittest.TestCase):
         return p
 
     def handled(self) -> list[dict]:
-        if not self.log.exists():
-            return []
-        out = [json.loads(x) for x in self.log.read_text(encoding="utf-8").splitlines()]
-        self.log.unlink()
+        out = [{"rel": f["key"], "kinds": [f["kind"]], "record": f["record"]} for f in self.found]
+        self.found = []
         return out
 
-    def run_rule(self) -> str:
-        return self.env.ok(self, "run", "--rule", "r")
+    def run_rule(self) -> None:
+        """ワークフローの 1 回の起動の代わり: 変わったファイルを受け取り、全部を処理し終えたと記録する。"""
+        self.found += self.env.take(self, "r", "--initial", self.initial, source="inbox")
 
     def test_added_changed_removed(self):
         self.write()
@@ -74,8 +61,8 @@ class FolderTest(unittest.TestCase):
         self.assertEqual(set(got), {"a.csv", "b.csv"})
         self.assertIn("appeared", got["b.csv"]["kinds"])
         self.assertIn("changed", got["a.csv"]["kinds"])
-        self.assertEqual(Path(got["b.csv"]["path"]), self.inbox / "b.csv")   # command にパスを埋められる
         rec = got["b.csv"]["record"]
+        self.assertEqual(Path(rec["path"]), self.inbox / "b.csv")          # ワークフローにパスを渡せる
         self.assertEqual((rec["name"], rec["stem"], rec["ext"], rec["dir"], rec["size"]), ("b.csv", "b", ".csv", "", 1))
         self.run_rule()                                         # 変わっていなければ何もしない
         self.assertEqual(self.handled(), [])
@@ -105,7 +92,7 @@ class FolderTest(unittest.TestCase):
         self.run_rule()
         moved = self.env.tmp / "inbox-away"
         self.inbox.rename(moved)                                # ネットワークのフォルダが切れた
-        code, out = self.env.run("run", "--rule", "r")
+        code, out = self.env.run("fetch")
         self.assertEqual(code, 3, out)
         self.assertIn("フォルダがありません", out)
         moved.rename(self.inbox)
@@ -113,7 +100,7 @@ class FolderTest(unittest.TestCase):
         self.assertEqual(self.handled(), [])                    # 戻ってきても removed / appeared にならない
 
     def test_include_exclude_hidden_and_subfolders(self):
-        self.write({"include": ["**/*.json"], "exclude": ["tmp/**", "*.skip.json"]}, rule={"initial": "emit"})
+        self.write({"include": ["**/*.json"], "exclude": ["tmp/**", "*.skip.json"]}, initial="emit")
         for rel in ("a.json", "sub/b.json", "sub/deep/c.json", "tmp/d.json", "e.skip.json", "f.txt", ".g.json",
                     ".hidden/h.json"):
             self.put(rel, "{}")
@@ -121,14 +108,14 @@ class FolderTest(unittest.TestCase):
         self.assertEqual(sorted(h["rel"] for h in self.handled()), ["a.json", "sub/b.json", "sub/deep/c.json"])
 
     def test_top_level_only_by_default(self):
-        self.write(rule={"initial": "emit"})
+        self.write(initial="emit")
         self.put("a.csv", "1")
         self.put("sub/b.csv", "2")
         self.run_rule()
         self.assertEqual([h["rel"] for h in self.handled()], ["a.csv"])
 
     def test_content_and_hash(self):
-        self.write({"content": "json", "hash": True, "max_bytes": 64}, rule={"initial": "emit"})
+        self.write({"content": "json", "hash": True, "max_bytes": 64}, initial="emit")
         self.put("ok.json", '{"n": 1}')
         self.put("bad.json", "{")
         self.put("big.json", '{"x": "' + "y" * 100 + '"}')
@@ -146,7 +133,7 @@ class FolderTest(unittest.TestCase):
         self.write({"max_files": 2})
         for i in range(3):
             self.put(f"{i}.csv", "x")
-        code, out = self.env.run("run", "--rule", "r")
+        code, out = self.env.run("fetch")
         self.assertNotEqual(code, 0, out)
         self.assertIn("max_files", out)
 
@@ -162,15 +149,15 @@ class FolderTest(unittest.TestCase):
         ]
         for src, msg in bad:
             with self.subTest(src=src):
-                cfg = {"version": 1, "sources": {"s": src}, "rules": {}}
+                cfg = {"version": 1, "sources": {"s": src}}
                 self.env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
                 with self.assertRaises(ConfigError) as cm:
                     configmod.load(self.env.config_path)
                 self.assertIn(msg, str(cm.exception))
-        self.write(rule={"targets": [{"name": "job", "command": ["x"], "refresh": {"url": "http://x"}}]})
+        self.write(item={"url": "http://x"})
         with self.assertRaises(ConfigError) as cm:
             configmod.load(self.env.config_path)
-        self.assertIn("refresh", str(cm.exception))
+        self.assertIn("item", str(cm.exception))
         self.write()
         cfg = configmod.load(self.env.config_path)
         self.assertEqual(cfg.sources["inbox"].folder.path, self.inbox)   # 相対パスは設定ファイルから
@@ -186,7 +173,7 @@ class FolderTest(unittest.TestCase):
         os.utime(other / "z.csv", (OLD, OLD))
         self.write({"path": str(other)})
         self.run_rule()
-        self.assertEqual(self.handled(), [])                    # 別のフォルダは基準値の取り直し（大量に発火しない）
+        self.assertEqual(self.handled(), [])                    # 別のフォルダは基準値の取り直し（大量に返さない）
 
 
 if __name__ == "__main__":

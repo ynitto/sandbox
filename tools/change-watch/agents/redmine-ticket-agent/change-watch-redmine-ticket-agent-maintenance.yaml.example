@@ -2,7 +2,7 @@
 # 状態はエージェントごとに分けているので、整理（gc）もエージェントごとに 1 本置く。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
 # Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラはそうして置く）。
-description: "redmine-ticket-agent の、保持期間を過ぎた取得結果・イベントを整理する"
+description: "redmine-ticket-agent の、保持期間を過ぎた取得結果を整理する"
 schedule: "17 3 * * *"
 type: graph
 hist_retention_days: 14
