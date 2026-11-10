@@ -17,6 +17,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   書き込み・ファイルの移動はアプリが呼ぶ `next`・`done` がする。`--stay` で、依頼が無い間はコマンドが待ち続ける
 - `dags/copilot-app-job.example.yaml` に Dagu のワークフローの例を足す
 
+### vscode-copilot: `--skill` でスキルの手順に従わせる
+
+- `--skill NAME|PATH` で `SKILL.md` の本文を依頼文の前に載せる。繰り返し指定でき、指定した順に
+  載る。VS Code にはスキルを列挙・実行する API が無いので、手元で読んで渡す
+- 名前は `VSCODE_COPILOT_SKILLS` → カレントの `.github/skills` など → ホームの各エージェントの
+  スキル置き場の順に探す。見つからなければ VS Code を起こす前に止まる
+- スキルのフォルダの場所も添えるので、`references/` や `scripts/` を読む・動かすことができる。
+  対話では会話の最初の手番（`/clear` の後も）にだけ載せる
+
 ### change-watch: ルールと受け渡しをなくし、API を使う口（`get`・`commit`・`call`）だけにする（0.8.0）
 
 - 条件と処理は Dagu のワークフロー（`preconditions`）に書き、change-watch はワークフローごとの受け手に前回 `commit` してからの変化を返す、

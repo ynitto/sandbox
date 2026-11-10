@@ -471,6 +471,78 @@ def agent_tools(payload: dict, requested: str | None) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+# スキル置き場。ワークスペース側（カレント）を先に、次に各エージェントのホームを見る。
+# 同じ名前は先に見つかった方を使う（dagu-workflow-builder の chain.py と同じ順）。
+WORKSPACE_SKILL_DIRS = (".github/skills", ".claude/skills", ".agents/skills")
+HOME_SKILL_DIRS = (".copilot/skills", ".claude/skills", ".codex/skills", ".kiro/skills",
+                   ".agents/skills", ".config/opencode/skills")
+SKILLS_ENV = "VSCODE_COPILOT_SKILLS"
+
+
+def skill_roots(cwd: Path | None = None) -> list[Path]:
+    """名前で探すときの置き場。環境変数 VSCODE_COPILOT_SKILLS（os.pathsep 区切り）を先頭に足す。"""
+    cwd = cwd or Path.cwd()
+    home = Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
+    extra = [Path(p).expanduser() for p in os.environ.get(SKILLS_ENV, "").split(os.pathsep)
+             if p.strip()]
+    return [*extra, *(cwd / d for d in WORKSPACE_SKILL_DIRS),
+            *(home / d for d in HOME_SKILL_DIRS)]
+
+
+def resolve_skill(spec: str, roots: list[Path]) -> Path:
+    """`--skill` の値を SKILL.md のパスにする。パス（フォルダか .md）でも名前でもよい。"""
+    given = Path(spec).expanduser()
+    if given.is_dir() and (given / "SKILL.md").is_file():
+        return (given / "SKILL.md").resolve()
+    if given.is_file():
+        return given.resolve()
+    for root in roots:
+        candidate = root / spec / "SKILL.md"
+        if candidate.is_file():
+            return candidate.resolve()
+    searched = "\n".join(f"  {root}" for root in roots)
+    raise RuntimeError(f"スキルが見つかりません: {spec}\n探した場所:\n{searched}")
+
+
+def strip_front_matter(text: str) -> str:
+    """先頭の YAML front matter（--- で囲んだ部分）を外す。発動条件の説明はもう要らない。"""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                return "\n".join(lines[index + 1:]).lstrip("\n")
+    return text
+
+
+def skill_context(specs, roots: list[Path] | None = None) -> str:
+    """依頼文の前に置く、スキルの本文。
+
+    VS Code にはスキルを列挙・実行する API が無いので、SKILL.md を読んでこちらから渡す。
+    `references/` や `scripts/` への相対パスが解けるよう、置き場所（絶対パス）を添える。
+    同じスキルを 2 回指定しても 1 回だけ載せる。
+    """
+    if not specs:
+        return ""
+    roots = skill_roots() if roots is None else roots
+    seen: list[Path] = []
+    for spec in specs:
+        path = resolve_skill(spec, roots)
+        if path not in seen:
+            seen.append(path)
+    blocks = []
+    for path in seen:
+        try:
+            body = strip_front_matter(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"スキルを読めません: {path}（{exc}）") from exc
+        name = path.parent.name if path.name == "SKILL.md" else path.stem
+        blocks.append(
+            f'<skill name="{name}" dir="{path.parent}">\n'
+            f"このスキルの手順に従ってください。本文中の相対パスは dir からのパスです。\n\n"
+            f"{body.rstrip()}\n</skill>")
+    return "\n\n".join(blocks) + "\n\n"
+
+
 def file_context(files, read_files, writable: bool) -> str:
     """依頼文の前に置く、対象ファイルの申し送り。
 
@@ -638,6 +710,8 @@ class Session:
         self.debug = debug
         self.max_tool_chars = max_tool_chars
         self.max_rounds = max_rounds
+        # 会話の最初の手番にだけ前置きする文（--skill の本文）。/clear の後もまた付く。
+        self.preamble = ""
 
     def set_rounds(self, argument: str) -> tuple[str, str]:
         if not argument:
@@ -698,6 +772,8 @@ class Session:
     def ask(self, endpoint: dict[str, object], text: str, timeout: float, on_delta) -> dict:
         """1 手番。失敗したターンは履歴に残さない（次の質問が壊れた文脈を引きずらない）。"""
         history = list(self.messages)
+        if not history and self.preamble:
+            text = self.preamble + text
         self.messages.append({"role": "user", "content": text})
         try:
             if self.tools:
@@ -787,6 +863,9 @@ def main() -> int:
                         help="編集対象ファイル。--write と併せて使う（繰り返し可）")
     parser.add_argument("--read", metavar="PATH", action="append",
                         help="参考にするだけのファイル（繰り返し可）")
+    parser.add_argument("--skill", metavar="NAME|PATH", action="append",
+                        help="スキル（SKILL.md）の手順を依頼文の前に載せる。名前かフォルダ・"
+                             "ファイルのパスで指定（繰り返し可）")
     parser.add_argument("--call", metavar="TOOL",
                         help="ツールを 1 つ呼ぶ。--input を省くと inputSchema を表示する")
     parser.add_argument("--input", metavar="JSON",
@@ -810,6 +889,8 @@ def main() -> int:
     if args.max_rounds is not None and args.max_rounds < 2:
         parser.error("--max-rounds は 2 以上で指定してください（最後の 1 回はまとめに使います）")
     try:
+        # 打ち間違いで VS Code を起こしてから失敗しないよう、スキルは先に解決する。
+        skills = skill_context(args.skill)
         path = endpoint_path()
         endpoint = ensure_bridge(
             path, args.port, Path.cwd(), args.code_bin, args.timeout, args.auto_start,
@@ -832,7 +913,7 @@ def main() -> int:
                 prompt = args.prompt if args.prompt is not None else sys.stdin.read()
             if not prompt.strip():
                 raise RuntimeError("依頼文が空です")
-            prompt = file_context(args.file, args.read, args.write) + prompt
+            prompt = skills + file_context(args.file, args.read, args.write) + prompt
             requested = args.agent_tools or ("read,write" if args.write else None)
             tools = agent_tools(fetch_tools(endpoint, args.timeout), requested)
             if not tools:
@@ -883,6 +964,7 @@ def main() -> int:
             return 0
         session = Session(args.family, debug=args.debug, max_tool_chars=args.max_tool_chars,
                           max_rounds=args.max_rounds)
+        session.preamble = skills
         if interactive:
             if as_agent:
                 # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。
