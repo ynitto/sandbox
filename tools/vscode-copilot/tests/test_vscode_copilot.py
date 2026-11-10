@@ -1317,3 +1317,115 @@ def test_a_live_bridge_says_nothing():
 
 def test_bridge_address_comes_from_the_endpoint_url():
     assert client.bridge_address({"url": "http://127.0.0.1:32191/v1/chat"}) == ("127.0.0.1", 32191)
+
+
+# --- --skill -------------------------------------------------------------------
+
+
+def _make_skill(root: Path, name: str, body: str = "手順の本文") -> Path:
+    folder = root / name
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: 説明\n---\n\n# {name}\n\n{body}\n", encoding="utf-8")
+    return folder
+
+
+def test_skill_is_found_by_name_and_front_matter_is_dropped(tmp_path):
+    folder = _make_skill(tmp_path / "skills", "review", "差分を読む")
+    text = client.skill_context(["review"], roots=[tmp_path / "skills"])
+    assert f'<skill name="review" dir="{folder.resolve()}">' in text
+    assert "差分を読む" in text
+    assert "description:" not in text
+
+
+def test_skill_can_be_given_as_a_folder_or_a_file(tmp_path):
+    folder = _make_skill(tmp_path, "a")
+    other = tmp_path / "notes.md"
+    other.write_text("# メモ\n本文\n", encoding="utf-8")
+    text = client.skill_context([str(folder), str(other)], roots=[])
+    assert 'name="a"' in text and 'name="notes"' in text
+
+
+def test_several_skills_keep_their_order_and_duplicates_are_dropped(tmp_path):
+    root = tmp_path / "skills"
+    _make_skill(root, "first")
+    _make_skill(root, "second")
+    text = client.skill_context(["second", "first", "second"], roots=[root])
+    assert text.count("<skill ") == 2
+    assert text.index('name="second"') < text.index('name="first"')
+
+
+def test_earlier_root_wins_for_the_same_name(tmp_path):
+    _make_skill(tmp_path / "workspace", "dup", "ワークスペース側")
+    _make_skill(tmp_path / "home", "dup", "ホーム側")
+    text = client.skill_context(["dup"], roots=[tmp_path / "workspace", tmp_path / "home"])
+    assert "ワークスペース側" in text and "ホーム側" not in text
+
+
+def test_unknown_skill_fails_and_lists_where_it_looked(tmp_path):
+    try:
+        client.skill_context(["nope"], roots=[tmp_path / "skills"])
+        assert False, "unknown skill must fail"
+    except RuntimeError as exc:
+        assert "nope" in str(exc) and str(tmp_path / "skills") in str(exc)
+
+
+def test_skill_roots_put_the_env_var_and_workspace_before_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("VSCODE_COPILOT_SKILLS", str(tmp_path / "extra"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    roots = client.skill_roots(tmp_path / "ws")
+    assert roots[0] == tmp_path / "extra"
+    assert roots[1] == tmp_path / "ws" / ".github" / "skills"
+    assert roots[-1].is_relative_to(tmp_path / "home")
+
+
+def test_session_preamble_goes_only_on_the_first_turn_and_again_after_clear():
+    session = client.Session()
+    session.preamble = "<skill>…</skill>\n\n"
+    fake = _FakeAsk("A1", "A2", "A3")
+    with mock.patch.object(client, "request", fake):
+        session.ask({}, "Q1", 1, None)
+        session.ask({}, "Q2", 1, None)
+        session.command("/clear")
+        session.ask({}, "Q3", 1, None)
+    assert fake.calls[0]["messages"][0]["content"] == "<skill>…</skill>\n\nQ1"
+    assert fake.calls[1]["messages"][-1]["content"] == "Q2"
+    assert fake.calls[2]["messages"][0]["content"] == "<skill>…</skill>\n\nQ3"
+
+
+def test_skill_flag_is_repeatable_and_reaches_the_one_shot_prompt(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    _make_skill(root, "one", "本文1")
+    _make_skill(root, "two", "本文2")
+    monkeypatch.setenv("VSCODE_COPILOT_SKILLS", str(root))
+    code, _, request = _main_with(["--skill", "one", "--skill", "two", "質問"], isatty=False)
+    sent = request.calls[0]["messages"][0]["content"]
+    assert code == 0
+    assert "本文1" in sent and "本文2" in sent and sent.endswith("質問")
+
+
+def test_skill_reaches_the_agent_prompt(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    _make_skill(root, "one", "本文1")
+    monkeypatch.setenv("VSCODE_COPILOT_SKILLS", str(root))
+    with mock.patch.object(client, "fetch_tools",
+                           return_value={"tools": [{"name": "copilot_readFile"}]}), \
+         mock.patch.object(client, "run_agent",
+                           return_value={"text": "done"}) as run_agent:
+        code, _, _ = _main_with(["--skill", "one", "--agent", "直して"], isatty=False)
+    prompt = run_agent.call_args.args[1]
+    assert code == 0 and "本文1" in prompt and prompt.endswith("直して")
+
+
+def test_unknown_skill_fails_before_starting_vscode(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("VSCODE_COPILOT_SKILLS", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    stdin = mock.Mock()
+    stdin.isatty.return_value = False
+    with mock.patch.object(client.sys, "argv", ["vscode-copilot", "--skill", "nope", "q"]), \
+         mock.patch.object(client.sys, "stdin", stdin), \
+         mock.patch.object(client, "ensure_bridge") as ensure_bridge:
+        code = client.main()
+    assert code == 1 and not ensure_bridge.called
+    assert "スキルが見つかりません: nope" in capsys.readouterr().err

@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### vscode-copilot: `--skill` でスキルの手順に従わせる
+
+- `--skill NAME|PATH` で `SKILL.md` の本文を依頼文の前に載せる。繰り返し指定でき、指定した順に
+  載る。VS Code にはスキルを列挙・実行する API が無いので、手元で読んで渡す
+- 名前は `VSCODE_COPILOT_SKILLS` → カレントの `.github/skills` など → ホームの各エージェントの
+  スキル置き場の順に探す。見つからなければ VS Code を起こす前に止まる
+- スキルのフォルダの場所も添えるので、`references/` や `scripts/` を読む・動かすことができる。
+  対話では会話の最初の手番（`/clear` の後も）にだけ載せる
+
 ### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
 
 - ハブは issue の URL 1 つで決める（`GITLAB_HUB_ISSUE_URL`）。プラグインのフィルタ `gitlab_issue_api` が API の URL にする

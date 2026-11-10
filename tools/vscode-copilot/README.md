@@ -240,8 +240,8 @@ vscode-copilot --tools --json   # inputSchema を含む全文
 どのツールが使えるかを手元の一覧で決め打ちせず、この口で実測してください。
 
 借りられないのは **agent skills** です（`chatSkills` は package.json の contribution point で、
-列挙・実行の API は無い）。skill・instructions は素の Markdown なので、必要なら自分で
-読んでプロンプトへ入れます。
+列挙・実行の API は無い）。skill は素の Markdown なので、`--skill` で依頼文へ載せます
+（[スキルの手順に従わせる](#スキルの手順に従わせる)）。
 
 ## ツールを呼ぶ
 
@@ -499,6 +499,37 @@ printf 'この関数名を直して\n' | vscode-copilot --write --file src/a.py 
 **提示していないツールは実行しません。** モデルが提示外の名前を返しても、拡張が
 invoke せずに `tool error` としてモデルへ返します。allowlist を「渡す側」だけで守ると、
 読み取り専用の手番で書き込みツールが動きえます（スタブで実際に起きました）。
+
+### スキルの手順に従わせる
+
+`--skill` に名前かパスを渡すと、その `SKILL.md` の本文を依頼文の前に載せます。
+繰り返し指定でき、指定した順に載ります。
+
+```bash
+vscode-copilot --skill code-review --agent "直近の変更をレビューして"
+vscode-copilot --skill code-review --skill ./my-rules --agent-tools read,run --agent "…"
+vscode-copilot --skill ./notes/手順.md "この手順で要約して"
+```
+
+| 書き方 | 読むもの |
+|---|---|
+| フォルダのパス | その中の `SKILL.md` |
+| ファイルのパス | そのファイル |
+| 名前 | 下の置き場を順に見て、最初に見つかった `<名前>/SKILL.md` |
+
+名前で探す順は次のとおりです。
+
+1. 環境変数 `VSCODE_COPILOT_SKILLS`（複数なら Windows は `;`、それ以外は `:` 区切り）
+2. カレントの `.github/skills` `.claude/skills` `.agents/skills`
+3. ホームの `.copilot/skills` `.claude/skills` `.codex/skills` `.kiro/skills`
+   `.agents/skills` `.config/opencode/skills`
+
+- 見つからなければ、探した場所を並べて **VS Code を起こす前に**止まります。
+- 先頭の front matter（`---` で囲んだ name・description）は外して載せます。
+- スキルのフォルダの場所も一緒に伝えるので、本文が `references/` や `scripts/` を指していれば、
+  モデルはそれを読む・動かすことができます。読むには `read`、スクリプトを動かすには `run` を
+  持たせてください。ワークスペースの外にあるスキルは、VS Code が読み込みの確認を出すことがあります。
+- 対話（`-i`）では、会話の最初の手番にだけ載せます。`/clear` の後の最初の手番にもまた載ります。
 
 ### agent-herd のハーネス engine として使う
 
