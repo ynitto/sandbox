@@ -102,6 +102,10 @@ jobs:
           # 保持期間と、dags/ の例を Dagu と同じ順で流したときの動きを見る（Dagu 本体は入れない）。
           - package: change-watch
             suites: tools/change-watch/test
+          # copilot-app-jobs。Copilot のデスクトップアプリ役をテストが演じ、受け箱のやりとり
+          # （置く・拾われる・結果を読む・時間切れ）を見る。アプリ本体は呼ばない。
+          - package: copilot-app-jobs
+            suites: tools/copilot-app-jobs/test
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
           # Python で順に流す（Dagu 本体は入れない）。同梱の chain.json の検査もここで回す。
           - package: dagu-workflow-builder
@@ -177,6 +181,8 @@ jobs:
             suites: tools/change-watch/agents/redmine-ticket-agent/test
           - package: gitlab-idd
             suites: .github/skills/gitlab-idd/tests
+          - package: copilot-app-jobs
+            suites: tools/copilot-app-jobs/test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
