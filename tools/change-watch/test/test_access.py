@@ -100,6 +100,53 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(self.env.api.count("/_put"), 1)
 
+    def test_numeric_keys_come_in_numeric_order(self):
+        self.env.api.put(1, status="a")
+        self.get("--consumer", "flow")
+        for i in (10, 9, 100):
+            self.env.api.put(i, status="a")
+        self.assertEqual([c["key"] for c in self.get("--consumer", "flow")], ["9", "10", "100"])
+        self.assertEqual(self.get("--consumer", "flow", "--one")["key"], "9")       # 古いものから 1 件
+        self.assertEqual([r["id"] for r in self.get()], [1, 9, 10, 100])
+
+    def test_commit_warns_about_unknown_keys(self):
+        self.env.api.put(1, status="a")
+        self.get("--consumer", "flow", "--initial", "emit")
+        code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "1 ", "nope")
+        self.assertEqual(code, 0)
+        self.assertIn("'1 '", out)
+        self.assertIn("'nope'", out)
+        self.assertNotIn("記録しました", out)
+        self.assertEqual(self.get("--consumer", "flow", "--one")["key"], "1")       # 記録していない
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "1")
+        self.assertIn("記録しました: 1", out)
+        self.env.api.drop(1)
+        self.assertEqual(self.get("--consumer", "flow", "--one")["kind"], "removed")
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "1")   # 消えたレコードは記録できる
+        self.assertIn("記録しました: 1", out)
+
+    def test_commit_refresh_records_a_record_not_fetched_yet(self):
+        self.get("--consumer", "flow")
+        self.env.api.put(5, status="a")                                       # まだ取得していないが、API にはある
+        out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "--refresh", "5")
+        self.assertIn("記録しました: 5", out)
+        code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "6")
+        self.assertIn("'6'", out)
+
+    def test_call_returns_non_json_response_as_text(self):
+        self.env.api.fail("/_put", 200, body="OK")
+        self.env.ok(self, "call", "POST", "/_put", "--source", "items", "--json", '{"id": 3}')
+        self.assertEqual(json.loads(self.env.stdout), "OK")
+
+    def test_plugin_filter_error_is_a_config_error(self):
+        plugin = self.env.tmp / "plug.py"
+        plugin.write_text("def boom(value, arg=None):\n    raise ValueError(f'bad value: {value!r}')\n\n"
+                          "def register(api):\n    api.add_filter('boom', boom)\n", encoding="utf-8")
+        self.env.plugins = [str(plugin)]
+        code, out = self.env.run("call", "GET", "{{ env.CHANGEWATCH_TEST_UNSET | boom }}/x", "--source", "items")
+        self.assertEqual(code, 1)
+        self.assertIn("フィルタ boom: bad value: None", out)
+
     def test_folder_source(self):
         inbox = self.env.tmp / "inbox"
         inbox.mkdir()

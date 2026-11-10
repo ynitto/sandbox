@@ -127,7 +127,12 @@ def evaluate(expr: str, ctx: dict) -> Any:
             if fn is None:
                 raise TemplateError(f"{{{{ {expr} }}}}: 知らないフィルタです: {name}"
                                     "（プラグインのフィルタなら --plugin を付けて実行してください）")
-            value = fn(None if value is jpath.MISSING else value, _parse_literal(arg) if arg.strip() else None)
+            try:
+                value = fn(None if value is jpath.MISSING else value, _parse_literal(arg) if arg.strip() else None)
+            except ConfigError:
+                raise
+            except Exception as e:      # プラグインのフィルタが値を受け付けなかった（設定の誤りとして、理由だけを出して終わる）
+                raise TemplateError(f"{{{{ {expr} }}}}: フィルタ {name}: {e}") from e
     if value is jpath.MISSING:
         raise TemplateError(f"{{{{ {expr} }}}}: 値がありません（| default: ... で既定値を書けます）")
     return value

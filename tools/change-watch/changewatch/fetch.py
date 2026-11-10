@@ -429,7 +429,10 @@ class Fetcher:
             if isinstance(e, TransientError):
                 self._cool_down(src, REDACT(str(e)), getattr(e, "retry_after", None))
             raise
-        return resp.status, (resp.json() if resp.body else None)
+        try:
+            return resp.status, (resp.json() if resp.body else None)
+        except PermanentError:          # 呼び出しは済んでいる。JSON でない本文（"OK" など）を失敗にせず、文字列で返す
+            return resp.status, resp.body.decode("utf-8-sig", errors="replace")
 
     def refresh_one(self, src: SourceSpec, spec, event: dict) -> Any:
         """受け渡し先の refresh でレコードを 1 件取り直す。見つからなければ None。"""
