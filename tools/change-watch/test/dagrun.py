@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -114,6 +115,12 @@ def _ok(pre: list | None, vars: dict[str, str]) -> bool:
     return True
 
 
+def _say(text: str) -> None:
+    """失敗の様子を出す。コンソールの文字コード（Windows の cp1252 など）で書けない文字があっても止まらない。"""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(enc, "backslashreplace").decode(enc))
+
+
 def _argv(w: dict, aw: list[str], head: list[str], paths: dict[str, str] | None, vars: dict[str, str]) -> list[str]:
     args = [_expand((paths or {}).get(a, a), vars) for a in w.get("args") or []]
     return aw + head + args if w["command"] == EXAMPLE_COMMAND else [w["command"]] + args
@@ -126,7 +133,7 @@ def run_handler_on(dag_path: Path, event: str, *, aw: list[str], head: list[str]
     assert w.get("action") == "exec", f"{dag_path.name}: handler_on.{event} は exec ではない"
     p = subprocess.run(_argv(w["with"], aw, head, paths, vars), capture_output=True, text=True, encoding="utf-8")
     if p.returncode:
-        print(f"[{dag_path.name}:handler_on.{event}] 終了コード {p.returncode}\n{p.stdout}{p.stderr}")
+        _say(f"[{dag_path.name}:handler_on.{event}] 終了コード {p.returncode}\n{p.stdout}{p.stderr}")
     return p.returncode
 
 
@@ -149,7 +156,7 @@ def run(dag_path: Path, *, aw: list[str], head: list[str], paths: dict[str, str]
                                    env={**os.environ, **(env or {})}, cwd=s.get("working_dir"))
                 code, out = p.returncode, p.stdout
                 if code and not (codes and code in codes):
-                    print(f"[{dag_path.name}:{s['name']}] 終了コード {code}\n{p.stdout}{p.stderr}")
+                    _say(f"[{dag_path.name}:{s['name']}] 終了コード {code}\n{p.stdout}{p.stderr}")
             else:
                 if handle is None:
                     raise AssertionError(f"{dag_path.name}: {s['name']} は exec ではないので handle を渡してください")

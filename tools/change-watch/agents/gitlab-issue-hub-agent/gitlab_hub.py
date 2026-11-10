@@ -75,13 +75,13 @@ def disarm(text: str) -> str:
 
 
 def note_json(text: str) -> str:
-    return json.dumps({"body": disarm(text.strip())}, ensure_ascii=False)
+    return json.dumps({"body": disarm(text.strip())})        # ASCII だけで出す（Windows のコンソールの文字コードに依らない）
 
 
 def _run(command: list[str]) -> tuple[int, str]:
     try:
         p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           env=dict(os.environ, PYTHONUTF8="1"))
+                           env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"))
     except OSError as e:
         print(f"コマンドを動かせません: {e}", file=sys.stderr)
         return NOT_FOUND, ""
@@ -129,7 +129,7 @@ def cmd_fields(a) -> int:
     if not out:
         print("項目がありません（title=... のように渡してください）", file=sys.stderr)
         return USAGE
-    print(json.dumps(out, ensure_ascii=False))
+    print(json.dumps(out))
     return OK
 
 
@@ -147,4 +147,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):      # 案内の文が、コンソールの文字コードで書けなくても止まらない
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     sys.exit(main())
