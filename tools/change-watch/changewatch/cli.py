@@ -485,11 +485,15 @@ def cmd_commit(cfg, store, a) -> int:
         log("処理し終えたレコードがありません")
         return EXIT_OK
     try:
-        done = access.commit(Fetcher(cfg, store), cfg.sources[name], a.consumer, keys, a.refresh)
+        done, unknown = access.commit(Fetcher(cfg, store), cfg.sources[name], a.consumer, keys, a.refresh)
     except Deferred as e:
         warn(str(e))
         return EXIT_TRANSIENT
-    log(f"[{name}] {a.consumer} が処理し終えたと記録しました: {', '.join(done)}")
+    if unknown:
+        warn(f"[{name}] 取得元にも {a.consumer} の記録にも無い key です（何も記録していません。"
+             f"get の出力の key をそのまま渡してください）: {', '.join(repr(k) for k in unknown)}")
+    if done:
+        log(f"[{name}] {a.consumer} が処理し終えたと記録しました: {', '.join(done)}")
     return EXIT_OK
 
 

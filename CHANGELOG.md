@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: `get`・`commit`・`call` の取りこぼしと分かりにくい失敗を直す（0.7.1）
+
+- プラグインのフィルタが値を受け付けなかったとき（`gitlab_issue_api` に issue の URL でないものを渡した・環境変数を書き忘れたなど）、
+  Python のエラーの長い出力で止まらず、どの `{{ }}` のどのフィルタかと理由の 1 行で、設定の誤りとして終わる
+- `get` が出す順を、数の `key` では数の小さい順にする。以前は文字の順で、`10` が `9` より先になり、`--one` で新しいコメントを先に渡していた
+- `commit` に、取得元にも記録にも無い `key`（書き間違い・前後に空白が付いたもの）を渡したとき、「記録しました」と出さず、警告を出す。
+  以前は成功したように見え、同じ変化を受け取り続ける理由が分からなかった
+- `call` の応答が JSON でないとき（`OK` だけを返す API など）、呼び出しは済んでいるのに失敗で終わっていたのを直す。本文を文字列で出す
+
 ### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
 
 - ハブは issue の URL 1 つで決める（`GITLAB_HUB_ISSUE_URL`）。プラグインのフィルタ `gitlab_issue_api` が API の URL にする
