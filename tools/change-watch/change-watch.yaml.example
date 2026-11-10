@@ -1,7 +1,6 @@
 # change-watch の設定の例。~/.config/change-watch/change-watch.yaml などにコピーして使う。
 # ここに書くのは API への問い合わせ方だけ（取得元）。どのレコードをどう処理するか（条件）は Dagu のワークフローに書き、
 # ワークフローの各ステップが change-watch get / commit / call を呼ぶ（例: dags/change-watch-get.example.yaml）。
-# 条件も change-watch に任せる（ルールを書く）形は change-watch.rules.yaml.example。
 # 認証情報はここに書かず、connections.yaml（スキル共通の接続設定）に書き、そのパスを実行時に渡す:
 #   change-watch --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml get --source gitlab-issues
 

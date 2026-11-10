@@ -1,0 +1,30 @@
+# agent-audit の収集と蒸留を Dagu で 1 時間ごとに動かす例（~/.config/dagu/dags/agent-audit.yaml にコピーして使う）。
+#   collect → extract → distill（cron の collect && extract && distill と同じ。前が落ちたら後ろは動かない）
+# extract / distill は既定で LLM を呼ばない。LLM を選んでも間隔・蓄積のゲートがあるので、1 時間ごとに起こしても設定したリズムを超えない。
+# command は install.sh が置いた agent-audit（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
+# --config は明示する（Dagu から動かすとカレントディレクトリが変わるため）。
+description: "エージェントの実行記録を集め、観測と洞察に蒸留する"
+schedule: "5 * * * *"
+type: graph
+hist_retention_days: 14
+steps:
+  - name: collect
+    action: exec
+    with:
+      command: "/home/you/.local/bin/agent-audit"
+      args: ["--config", "/home/you/.agents/agent-audit.yaml", "collect"]
+    timeout_sec: 1800
+  - name: extract
+    depends: [collect]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/agent-audit"
+      args: ["--config", "/home/you/.agents/agent-audit.yaml", "extract"]
+    timeout_sec: 1800
+  - name: distill
+    depends: [extract]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/agent-audit"
+      args: ["--config", "/home/you/.agents/agent-audit.yaml", "distill"]
+    timeout_sec: 1800

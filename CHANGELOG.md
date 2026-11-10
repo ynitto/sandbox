@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: ルールと受け渡しをなくし、API を使う口（`get`・`commit`・`call`）だけにする（0.8.0）
+
+- 条件と処理は Dagu のワークフロー（`preconditions`）に書き、change-watch はワークフローごとの受け手に前回 `commit` してからの変化を返す、
+  API に書き込む、だけを受け持つ。条件が change-watch と Dagu に分かれず、Dagu の画面から全部追える
+- 消したもの: 設定の `rules`・`delivery`・`retention.events_days`・`removed_days`、コマンドの `evaluate`・`dispatch`・`work`・`claim`・
+  `render`・`finish`・`run`・`ack`・`retry`・`skip`・`events`・`forget-handled` など、`--plugin dagu`、プラグインの `add_adapter`・`add_check`、
+  `dags/` のルール用の例、`change-watch.rules.yaml.example`、エージェントの `examples/rules/`、`gitlab_issue.py`・`redmine_issue.py`、
+  `gitlab_mr.py` のフィルタとチェック（`gitlab_mr.py` のコマンドはそのまま）
+- `rules` か `delivery` を書いた設定は、移し方を示して読み込みを断る（README の「0.7 からの移行」）。`gc` が古い表と `events/` を片付ける
+- プラグインは `.py` のパスで渡し、テンプレートのフィルタとコマンドだけを足せる
+- 終了コードは 0（成功）・1（設定の誤りなど）・2（使い方の誤り）・3（一時的な失敗）になる（一部だけ失敗したことを表す終了コードはなくした）
+
+### 夜間点検の Dagu のワークフローの例を足す
+
+- codd-agent（`codd.py lint`）・testcase-lint（点検と `run`）・agent-audit（collect → extract → distill）・gitlab-repo-sync（`sync`）に、
+  それぞれ `dags/*.example.yaml` を足す。コピーしてパスを直せば、落ちたものが Dagu の履歴に失敗として残る
+- CI: 各ツールの `dags/*.example.yaml` が置ける形か（description・cron・depends・exec の command と `~`）を
+  `tools/ci/check_dagu_examples.py` で見る
+
 ### change-watch: GitLab の 1 つの issue をメールのハブにするエージェント gitlab-issue-hub-agent を足す（0.7.0）
 
 - ハブは issue の URL 1 つで決める（`GITLAB_HUB_ISSUE_URL`）。プラグインのフィルタ `gitlab_issue_api` が API の URL にする

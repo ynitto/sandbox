@@ -1,0 +1,26 @@
+# testcase-lint を Dagu で毎晩動かす例（~/.config/dagu/dags/testcase-lint.yaml にコピーして使う）。
+#   lint  ケースを点検する（設定の fail_on 以上の指摘があれば終了コード 1 でステップが失敗になり、Dagu の履歴に残る）
+#   run   設定の run に書いたテストを実行し、結果ファイル（evidence）を残す
+# 点検で落ちても run は動かす（どちらの結果も残す）。working_dir を testcase-lint.config.yaml のあるフォルダに直す。
+# command は npm install -g で入れた testcase-lint（exec は ~ を展開しないので、PATH に無ければ絶対パスで書く）。
+description: "テストケースを毎晩点検し、テストを実行して結果を残す"
+schedule: "30 2 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: lint
+    action: exec
+    working_dir: /home/you/work/my-app
+    with:
+      command: testcase-lint
+    continue_on:
+      failure: true             # 指摘があっても run は動かす
+    timeout_sec: 600
+  - name: run
+    depends: [lint]
+    action: exec
+    working_dir: /home/you/work/my-app
+    with:
+      command: testcase-lint
+      args: ["run"]
+    timeout_sec: 3600

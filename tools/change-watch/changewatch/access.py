@@ -1,7 +1,7 @@
 """ワークフローから API を使う口（get / commit）。
 
 条件の判定はワークフロー（Dagu）側が持ち、change-watch は取得をまとめて（予定・間隔・取得中の待ち・失敗の待ち）、
-「前回 commit してから変わったレコード」を返すだけにする。ルール（rules）を書かなくても使える。
+「前回 commit してから変わったレコード」を返すだけにする。
 
     get    --consumer C   取得元のレコードのうち、C が前回 commit した姿から変わったものを返す（commit するまで何度でも返す）
     commit --consumer C   そのレコードを「処理し終えた」と記録する（--refresh なら 1 件取り直した姿で）
@@ -11,13 +11,45 @@ from __future__ import annotations
 from typing import Any
 
 from . import jpath
-from .config import Config, SourceSpec
-from .detect import diff
+from .config import SourceSpec
 from .fetch import Fetcher, load_records
 from .store import Store
 from .util import ConfigError, key_string, now, pack, unpack
 
 INITIAL = ("baseline", "emit")
+
+
+def _join(path: str, key: str) -> str:
+    if key.replace("_", "").replace("-", "").isalnum():
+        return f"{path}.{key}" if path else key
+    return f'{path}["{key}"]'
+
+
+def diff_values(path: str, a: Any, b: Any, out: list) -> None:
+    M = jpath.MISSING
+    if a is M and b is M:
+        return
+    if a is M:
+        out.append({"path": path or "$", "type": "added", "after": b})
+    elif b is M:
+        out.append({"path": path or "$", "type": "removed", "before": a})
+    elif isinstance(a, dict) and isinstance(b, dict):
+        for k in sorted(set(a) | set(b)):
+            diff_values(_join(path, k), a.get(k, M), b.get(k, M), out)
+    elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        for i, (x, y) in enumerate(zip(a, b)):
+            diff_values(f"{path}[{i}]", x, y, out)
+    elif not jpath.equal(a, b):
+        out.append({"path": path or "$", "type": "changed", "before": a, "after": b})
+
+
+def diff(before: dict | None, after: dict | None) -> list:
+    out: list = []
+    b = before or {}
+    a = after or {}
+    for k in sorted(set(b) | set(a)):
+        diff_values(k, b.get(k, jpath.MISSING), a.get(k, jpath.MISSING), out)
+    return out
 
 
 def _need_key(src: SourceSpec, what: str) -> None:

@@ -1,11 +1,10 @@
-"""テスト用の偽の API・偽の dagu・設定の組み立て（標準ライブラリだけ）。"""
+"""テスト用の偽の API・設定の組み立て（標準ライブラリだけ）。"""
 from __future__ import annotations
 
 import contextlib
 import hashlib
 import io
 import json
-import os
 import sys
 import tempfile
 import threading
@@ -21,7 +20,6 @@ from changewatch import cli  # noqa: E402
 from changewatch.store import Store  # noqa: E402
 
 TOKEN = "secret-token-123456"
-FAKE_DAGU = HERE / "fake_dagu.py"
 
 
 class FakeAPI:
@@ -176,97 +174,26 @@ class FakeAPI:
         return self._send(h, 404, {"message": "not found"})
 
 
-class FakeDaguAPI:
-    """Dagu の REST API（/api/v1）の偽物。enqueue・状態・retry。"""
-
-    def __init__(self, token: str = "dagu-api-token-xyz"):
-        self.runs: dict[tuple[str, str], dict] = {}
-        self.calls: list[tuple[str, str, dict]] = []
-        self.token = token
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def _send(self, status, body):
-                raw = json.dumps(body).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-
-            def do_GET(self):
-                parts = urlparse(self.path).path.split("/")
-                outer.calls.append(("GET", self.path, {}))
-                key = (parts[4], parts[5])
-                if key not in outer.runs:
-                    return self._send(404, {"code": "not_found", "message": "DAGRun not found"})
-                return self._send(200, {"dagRunDetails": {"dagRunId": key[1], "statusLabel": outer.runs[key]["status"]}})
-
-            def do_POST(self):
-                n = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(n) or b"{}")
-                outer.calls.append(("POST", self.path, body))
-                if self.headers.get("Authorization") != f"Bearer {outer.token}":
-                    return self._send(401, {"message": "unauthorized"})
-                parts = urlparse(self.path).path.split("/")
-                if parts[3] == "dags" and parts[5] == "enqueue":
-                    key = (parts[4], body["dagRunId"])
-                    if key in outer.runs:
-                        return self._send(409, {"code": "already_exists",
-                                                "message": f"dag-run ID {key[1]} already exists for DAG {key[0]}"})
-                    outer.runs[key] = {"status": "queued", "params": json.loads(body["params"])}
-                    return self._send(200, {"dagRunId": key[1]})
-                if parts[3] == "dag-runs" and parts[6] == "retry":
-                    outer.runs[(parts[4], parts[5])]["status"] = "queued"
-                    return self._send(200, {})
-                return self._send(404, {})
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-
-
 class Env:
-    """一時フォルダ・偽の API・偽の dagu・設定ファイルをまとめて用意する。"""
+    """一時フォルダ・偽の API・設定ファイルをまとめて用意する。"""
 
     def __init__(self, test):
         self.tmp = Path(tempfile.mkdtemp(prefix="changewatch-test-"))
         test.addCleanup(self._cleanup)
         self.api = FakeAPI()
         test.addCleanup(self.api.close)
-        self.dagu_log = self.tmp / "dagu" / "runs.jsonl"
-        self.dagu_log.parent.mkdir()
-        self._old_env = {k: os.environ.get(k) for k in ("FAKE_DAGU_LOG",)}
-        os.environ["FAKE_DAGU_LOG"] = str(self.dagu_log)
-        test.addCleanup(self._restore_env)
         self.conn_file = self.tmp / "connections.json"
         self.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": self.api.url,
                                                            "token": TOKEN}]}), encoding="utf-8")
         self.config_path = self.tmp / "change-watch.json"
-        self.plugins = ["dagu"]       # 受け渡しは既定で dagu アダプタ（偽の dagu）を使う
+        self.plugins: list[str] = []
 
     def _cleanup(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _restore_env(self):
-        for k, v in self._old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-    def write_config(self, sources: dict, rules: dict, **extra) -> Path:
-        cfg = {"version": 1, "state_dir": str(self.tmp / "state"),
-               "delivery": {"adapter": "dagu", "mode": "cli", "executable": [sys.executable, str(FAKE_DAGU)]},
-               "sources": sources, "rules": rules}
+    def write_config(self, sources: dict, **extra) -> Path:
+        cfg = {"version": 1, "state_dir": str(self.tmp / "state"), "sources": sources}
         cfg.update(extra)
         self.config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         return self.config_path
@@ -299,22 +226,14 @@ class Env:
         test.assertEqual(code, 0, out)
         return out
 
+    def take(self, test, consumer: str = "c", *args: str, source: str = "items") -> list[dict]:
+        """get --consumer で変わったレコードを受け取り、全部を commit する（ワークフローの 1 回の起動の代わり）。"""
+        self.ok(test, "get", "--source", source, "--consumer", consumer, "--no-jitter", *args)
+        found = json.loads(self.stdout)
+        keys = [f["key"] for f in found]
+        if keys:
+            self.ok(test, "commit", "--source", source, "--consumer", consumer, *keys)
+        return found
+
     def store(self) -> Store:
         return Store(self.tmp / "state")
-
-    def enqueued(self) -> list[dict]:
-        if not self.dagu_log.exists():
-            return []
-        return [json.loads(x) for x in self.dagu_log.read_text(encoding="utf-8").splitlines() if x.strip()]
-
-    def fail_dags(self, *dags: str):
-        (self.dagu_log.parent / "fail_dags").write_text("\n".join(dags), encoding="utf-8")
-
-    def deliveries(self) -> list[dict]:
-        s = self.store()
-        try:
-            return [dict(r) for r in s.q("SELECT * FROM deliveries ORDER BY seq, target")]
-        finally:
-            s.close()
-
-

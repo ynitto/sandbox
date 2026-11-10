@@ -165,10 +165,10 @@ def uninstall(dest: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def available_agents() -> list[str]:
-    """agents/ の下で、プログラム（.py）を持つフォルダの名前。"""
+    """agents/ の下で、設定の雛形（change-watch.yaml.example）を持つフォルダの名前。"""
     if not AGENTS.is_dir():
         return []
-    return sorted(d.name for d in AGENTS.iterdir() if d.is_dir() and any(d.glob("*.py")))
+    return sorted(d.name for d in AGENTS.iterdir() if (d / "change-watch.yaml.example").is_file())
 
 
 def agents_home(windows: bool, home: Path, bin_dir: Path) -> Path:
@@ -216,7 +216,8 @@ def install_agent(agent: str, *, windows: bool, home: Path, bin_dir: Path, pytho
     """エージェントを 1 つ入れる。直すところ（残った /home/you）の一覧を返す。"""
     programs, templates, dags = agent_files(agent)
     prog_dir = agents_home(windows, home, bin_dir) / agent
-    prog_dir.mkdir(parents=True, exist_ok=True)
+    if programs:
+        prog_dir.mkdir(parents=True, exist_ok=True)
     for f in programs:
         shutil.copy2(f, prog_dir / f.name)
         print(f"置きました: {prog_dir / f.name}")

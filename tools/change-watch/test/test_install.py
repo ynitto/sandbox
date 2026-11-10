@@ -9,7 +9,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from helpers import FAKE_DAGU, ROOT, Env
+from helpers import ROOT, Env
 
 INSTALL = ROOT / "install.py"
 
@@ -27,22 +27,21 @@ class InstallTest(unittest.TestCase):
         names = zipfile.ZipFile(pyz).namelist()
         self.assertIn("__main__.py", names)
         self.assertIn("changewatch/cli.py", names)
-        self.assertIn("changewatch/plugins/dagu.py", names)
         self.assertFalse([n for n in names if "__pycache__" in n or n.startswith(("test/", "tests/"))])
         # 置き場所を変えても、その 1 ファイルだけで動く（ソースの木を見ない）
         far = env.tmp / "elsewhere" / "aw.pyz"
         far.parent.mkdir()
         pyz.replace(far)
         env.api.put(1, status="a")
-        env.write_config({"items": env.source("/all")}, {"r": {"source": "items", "id": "id", "watch": ["status"],
-                                                               "targets": ["d"]}})
-        base = [sys.executable, str(far), "--plugin", "dagu", "--config", str(env.config_path),
-                "--connections", str(env.conn_file)]
+        env.write_config({"items": env.source("/all", key="id")})
+        base = [sys.executable, str(far), "--config", str(env.config_path), "--connections", str(env.conn_file)]
+        got = []
         for _ in range(2):
-            p = run(base + ["run"], cwd=str(far.parent))
+            p = run(base + ["get", "--source", "items", "--consumer", "c"], cwd=str(far.parent))
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            got.append(json.loads(p.stdout))
             env.api.put(1, status="b")
-        self.assertEqual(len(env.enqueued()), 1)
+        self.assertEqual([[c["kind"] for c in g] for g in got], [[], ["changed"]])
 
     def test_bundled_yaml_works_without_site_packages(self):
         try:
@@ -56,7 +55,7 @@ class InstallTest(unittest.TestCase):
         self.assertIn("yaml/__init__.py", zipfile.ZipFile(pyz).namelist())
         cfg = env.tmp / "c.yaml"
         cfg.write_text(f"state_dir: {json.dumps(str(env.tmp / 'st'))}\nsources:\n  s:\n    request:\n"
-                       f"      url: http://127.0.0.1:9/\nrules: {{}}\n", encoding="utf-8")
+                       "      url: http://127.0.0.1:9/\n", encoding="utf-8")
         # -S で site-packages を読まない（PyYAML は zip の中のものだけ）
         p = run([sys.executable, "-S", str(pyz), "--config", str(cfg), "check"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -157,16 +156,16 @@ class AgentInstallTest(unittest.TestCase):
         self.assertIn("問題ありません", p.stdout + p.stderr)
 
     def test_reinstall_updates_programs_but_keeps_edited_files(self):
-        self.install("install", "--agent", "redmine-ticket-agent")
-        cfg = self.home / ".config" / "change-watch" / "redmine-ticket-agent" / "change-watch.yaml"
-        prog = self.agents_dir() / "redmine-ticket-agent" / "redmine_issue.py"
+        self.install("install", "--agent", "gitlab-mr-review-agent")
+        cfg = self.home / ".config" / "change-watch" / "gitlab-mr-review-agent" / "change-watch.yaml"
+        prog = self.agents_dir() / "gitlab-mr-review-agent" / "gitlab_mr.py"
         cfg.write_text("# 直した設定\n", encoding="utf-8")
         prog.write_text("# 古い版\n", encoding="utf-8")
-        out = self.install("install", "--agent", "redmine-ticket-agent")
+        out = self.install("install", "--agent", "gitlab-mr-review-agent")
         self.assertIn("既にあるので触りません", out)
         self.assertEqual(cfg.read_text(encoding="utf-8"), "# 直した設定\n")
         self.assertNotEqual(prog.read_text(encoding="utf-8"), "# 古い版\n")
-        p = run([sys.executable, str(INSTALL), "uninstall", "--agent", "redmine-ticket-agent", "--dir", str(self.bin)],
+        p = run([sys.executable, str(INSTALL), "uninstall", "--agent", "gitlab-mr-review-agent", "--dir", str(self.bin)],
                 env=self.osenv)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertFalse(prog.parent.exists())
@@ -181,16 +180,12 @@ class AgentInstallTest(unittest.TestCase):
         import install
         home, bin_dir = Path("C:/Users/me"), Path("C:/Users/me/AppData/Local/Programs/change-watch")
         kw = dict(windows=True, home=home, bin_dir=bin_dir, python="C:/Python311/python.exe")
-        dag = install.render((install.AGENTS / "redmine-ticket-agent" / "examples" / "rules" / "change-watch-auto-close.yaml.example")
+        dag = install.render((install.AGENTS / "redmine-ticket-agent" / "change-watch-auto-close.yaml.example")
                              .read_text(encoding="utf-8"), is_dag=True, **kw)
         self.assertNotIn("/home/you/.local/bin", dag)
         self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'
                       '        - "C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz"\n'
                       '        - "--config"\n        - "C:/Users/me/.config/change-watch/redmine-ticket-agent/change-watch.yaml"', dag)
-        self.assertIn("C:/Users/me/AppData/Local/Programs/change-watch/agents/redmine-ticket-agent/redmine_issue.py", dag)
-        cfg = install.render((install.AGENTS / "redmine-ticket-agent" / "examples" / "rules" / "change-watch.yaml.example")
-                             .read_text(encoding="utf-8"), is_dag=False, **kw)
-        self.assertIn("          - C:/Python311/python.exe\n          - C:/Users/me/AppData/Local/Programs/change-watch/agents/", cfg)
         env = install.render((install.AGENTS / "gitlab-mr-review-agent" / "gitlab-mr-review-agent.env.example")
                              .read_text(encoding="utf-8"), is_dag=False, **kw)
         self.assertIn("MR_REVIEW_CLI=C:/Python311/python.exe C:/Users/me/AppData/Local/Programs/change-watch/agents/"

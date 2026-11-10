@@ -1,0 +1,29 @@
+# codd-agent の機械の点検（lint）を Dagu で毎晩動かす例（~/.config/dagu/dags/codd-lint.yaml にコピーして使う）。
+# 見つかれば終了コード 1 でステップが失敗になり、Dagu の履歴に残る。中身は working_dir の .codd/lint.md にある。
+# 何も直さない。直すときは、.codd/lint.md の 1 行をいつもどおりエージェント codd に伝える。
+# working_dir を codd を置いたリポジトリに直す。リポジトリが複数なら、このファイルをリポジトリごとにコピーする。
+# Windows では command を python にする。
+description: "codd を置いたリポジトリを毎晩点検する（何も直さない）"
+schedule: "0 2 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: pull
+    action: exec
+    working_dir: /home/you/work/my-app
+    with:
+      command: git
+      args: ["pull", "--ff-only"]
+    timeout_sec: 300
+  - name: lint
+    depends: [pull]
+    action: exec
+    working_dir: /home/you/work/my-app
+    with:
+      command: python3
+      args:
+        - ".statemachine/codd/codd.py"
+        - "lint"
+        - "--since"
+        - "2 days ago"           # 毎晩なら、前の回と少し重ねる
+    timeout_sec: 3600

@@ -10,17 +10,15 @@ from helpers import Env
 class AccessTest(unittest.TestCase):
     def setUp(self):
         self.env = Env(self)
-        self.env.plugins = []
         self.env.write_config({"items": self.env.source("/all", key="id",
-                                                        item={"url": "{{ conn.url }}/item/{{ key }}"})}, {},
-                              delivery=None)
+                                                        item={"url": "{{ conn.url }}/item/{{ key }}"})})
 
     def get(self, *args: str):
         self.env.ok(self, "get", "--source", "items", "--no-jitter", *args)
         out = self.env.stdout.strip()
         return json.loads(out) if out else None
 
-    def test_records_without_rules(self):
+    def test_records_without_consumer(self):
         self.env.api.put(1, status="a")
         self.env.api.put(2, status="b")
         self.assertEqual([r["id"] for r in self.get()], [1, 2])
@@ -71,7 +69,7 @@ class AccessTest(unittest.TestCase):
         self.assertIsNone(self.get("--consumer", "flow", "--one"))            # 取り直した姿を基準にした
 
     def test_refresh_needs_item(self):
-        self.env.write_config({"items": self.env.source("/all", key="id")}, {}, delivery=None)
+        self.env.write_config({"items": self.env.source("/all", key="id")})
         self.env.api.put(1, status="a")
         self.get("--consumer", "flow")
         code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "1")
@@ -104,7 +102,7 @@ class AccessTest(unittest.TestCase):
         inbox = self.env.tmp / "inbox"
         inbox.mkdir()
         (inbox / "a.csv").write_text("1", encoding="utf-8")
-        self.env.write_config({"inbox": {"folder": {"path": str(inbox), "include": ["*.csv"], "settle_sec": 0}}}, {}, delivery=None)
+        self.env.write_config({"inbox": {"folder": {"path": str(inbox), "include": ["*.csv"], "settle_sec": 0}}})
         run = lambda: json.loads(self.env.ok(self, "get", "--source", "inbox", "--consumer", "flow") and self.env.stdout)
         self.assertEqual(run(), [])                                            # 今あるファイルを覚えるだけ
         (inbox / "b.csv").write_text("2", encoding="utf-8")
@@ -114,7 +112,7 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(run(), [])
 
     def test_key_is_required_for_consumers(self):
-        self.env.write_config({"items": self.env.source("/all")}, {}, delivery=None)
+        self.env.write_config({"items": self.env.source("/all")})
         code, out = self.env.run("get", "--source", "items", "--consumer", "flow")
         self.assertNotEqual(code, 0)
         self.assertIn("key", out)

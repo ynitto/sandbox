@@ -21,7 +21,6 @@ EXIT_OK = 0
 EXIT_ERROR = 1          # 設定の誤りなど、再試行しても直らないもの
 EXIT_USAGE = 2
 EXIT_TRANSIENT = 3      # 通信の失敗・タイムアウト・レート制限。再試行してよい
-EXIT_PARTIAL = 4        # 一部のルール・受け渡しが失敗した（他は進めた。失敗分は状態に残る）
 
 
 class ConfigError(Exception):

@@ -1,7 +1,7 @@
 """状態の保存先（SQLite）。
 
-1 つのファイル（<state_dir>/state.db）に、取得元の取得状態・取得結果・ルールごとの観測値・
-イベント・受け渡しをまとめて持つ。状態の遷移は 1 つのトランザクションで書くので、
+1 つのファイル（<state_dir>/state.db）に、取得元の取得状態・取得結果・consumer ごとの
+処理し終えた姿をまとめて持つ。状態の遷移は 1 つのトランザクションで書くので、
 途中でプロセスや PC が止まっても「半分だけ進んだ」状態は残らない。
 
 表:
@@ -10,14 +10,9 @@
     fetch_pages     取得したページのレコード（圧縮した JSON）
     http_cache      条件付き要求用の ETag / Last-Modified と本文
     source_records  取得元の key ごとの最新のレコード（増分取得の取得元で、全体を組み立てた姿）
-    rules           ルールごとの判定状態（どの取得まで判定したか・指紋・最後のエラー）
-    rule_records    ルール × レコードの前回の観測値
-    handled_records 受け渡し先（refresh のある command）× レコードの、最後に処理し終えた状態
-    events          検知した変更（ルール × レコード × 取得 で 1 件）
-    deliveries      イベント × 受け渡し先 ごとの受け渡し状態
     consumers       get --consumer で変化を受け取るワークフローごとの基準（取得元の世代）
     consumer_records consumer × レコードの、commit で処理し終えたと記録した姿
-    leases          取得・判定の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
+    leases          取得の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
 """
 from __future__ import annotations
 
@@ -26,9 +21,9 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
-from .util import hostname, now, pack, pid_alive
+from .util import hostname, now, pid_alive
 
 SCHEMA_VERSION = 1
 
@@ -49,22 +44,6 @@ CREATE TABLE IF NOT EXISTS sources (
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     retry_not_before REAL,      -- 取得が失敗したあと、どのプロセスもこの時刻までは問い合わせない
     recent_requests TEXT        -- 直近 60 秒に送った要求の時刻（JSON。rate_limit.per_minute をプロセスをまたいで数える）
-);
-CREATE TABLE IF NOT EXISTS handled_records (   -- refresh のある受け渡し先が、最後に処理し終えたレコードの状態
-    rule TEXT NOT NULL,
-    target TEXT NOT NULL,
-    rkey TEXT NOT NULL,
-    vhash TEXT NOT NULL,        -- 監視する値（ルールの watch）のハッシュ。イベントや取り直した値と比べる
-    value BLOB,                 -- 監視する値そのもの（次の実行に「前回処理したときの値」として渡す）
-    updated_at REAL NOT NULL,
-    PRIMARY KEY (rule, target, rkey)
-);
-CREATE TABLE IF NOT EXISTS delivery_runs (   -- begin から finish までの、実行中の受け渡し（別のプロセスがつなぐ）
-    delivery TEXT PRIMARY KEY,
-    started_at REAL NOT NULL,
-    before_hash TEXT,           -- refresh で取り直した、実行前の監視する値のハッシュ
-    before_value BLOB,
-    lock TEXT                   -- 持っている受け渡し先の lock の名前
 );
 CREATE TABLE IF NOT EXISTS rate_groups (   -- rate_limit.group ごとに共有する要求の記録と失敗の待ち
     name TEXT PRIMARY KEY,
@@ -116,62 +95,6 @@ CREATE TABLE IF NOT EXISTS source_records (
     seen_at REAL,
     PRIMARY KEY (source, rkey)
 );
-CREATE TABLE IF NOT EXISTS rules (
-    name TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    fingerprint TEXT,
-    epoch INTEGER,
-    last_fetch_id INTEGER,
-    baseline_fetch_id INTEGER,
-    last_eval_at REAL,
-    last_error TEXT,
-    last_events INTEGER NOT NULL DEFAULT 0,
-    needs_rebaseline INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS rule_records (
-    rule TEXT NOT NULL,
-    rkey TEXT NOT NULL,
-    present INTEGER NOT NULL,
-    matched INTEGER,
-    vhash TEXT,
-    value BLOB,
-    last_fetch_id INTEGER,
-    updated_at REAL,
-    PRIMARY KEY (rule, rkey)
-);
-CREATE TABLE IF NOT EXISTS events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    id TEXT NOT NULL UNIQUE,
-    rule TEXT NOT NULL,
-    source TEXT NOT NULL,
-    rkey TEXT NOT NULL,
-    fetch_id INTEGER,
-    kinds TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    payload BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS events_rule ON events(rule, seq);
-CREATE TABLE IF NOT EXISTS deliveries (
-    id TEXT PRIMARY KEY,
-    seq INTEGER NOT NULL,
-    event_id TEXT NOT NULL,
-    rule TEXT NOT NULL,
-    target TEXT NOT NULL,
-    workflow TEXT NOT NULL,
-    rkey TEXT NOT NULL,
-    status TEXT NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at REAL NOT NULL DEFAULT 0,
-    lease_until REAL,
-    owner TEXT,
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    dispatched_at REAL,
-    completed_at REAL,
-    last_error TEXT
-);
-CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status, next_attempt_at);
-CREATE INDEX IF NOT EXISTS deliveries_key ON deliveries(rule, target, rkey, seq);
 CREATE TABLE IF NOT EXISTS consumers (   -- get --consumer で変化を受け取るワークフロー（Dagu 側）ごとの基準
     consumer TEXT NOT NULL,
     source TEXT NOT NULL,
@@ -196,24 +119,14 @@ CREATE TABLE IF NOT EXISTS leases (
 );
 """
 
-# 受け渡しの状態
-PENDING = "pending"          # まだ Dagu に渡していない
-SENDING = "sending"          # 渡している最中（期限つき。期限切れは渡せたか分からないので同じ ID で渡し直す）
-SEND_FAILED = "send_failed"  # 渡せなかった。時間をおいて同じ ID で渡し直す
-DEAD = "dead"                # 渡し直しの上限に達した。手で retry するまで止まる
-DISPATCHED = "dispatched"    # Dagu のキューに入った（後続処理の完了待ち）
-DONE = "done"                # 後続処理が成功した
-FAILED = "failed"            # 後続処理が失敗した（Dagu で再試行・復旧する）
-SKIPPED = "skipped"          # 手で飛ばした
-FINAL = (DONE, SKIPPED)
-ALL_STATUSES = (PENDING, SENDING, SEND_FAILED, DEAD, DISPATCHED, DONE, FAILED, SKIPPED)
+# 0.7 まで（ルールと受け渡し）の表。gc が見つけたら消す
+LEGACY_TABLES = ("handled_records", "delivery_runs", "rules", "rule_records", "events", "deliveries")
 
 
 class Store:
     def __init__(self, state_dir: Path):
         self.dir = Path(state_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
-        (self.dir / "events").mkdir(exist_ok=True)
         self.path = self.dir / "state.db"
         self.db = sqlite3.connect(str(self.path), timeout=60, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -338,18 +251,6 @@ class Store:
         assert row is not None
         return row
 
-    def event_file(self, event_id: str, target: str | None = None) -> Path:
-        """イベントの JSON。受け渡し先が取り直したレコードを入れたものは `<イベント ID>--<受け渡し先>.json`。"""
-        return self.dir / "events" / (f"{event_id}--{target}.json" if target else f"{event_id}.json")
-
-    def handled(self, rule: str, target: str, rkey: str) -> sqlite3.Row | None:
-        return self.one("SELECT * FROM handled_records WHERE rule=? AND target=? AND rkey=?", (rule, target, rkey))
-
-    def set_handled(self, rule: str, target: str, rkey: str, vhash: str, value: Any) -> None:
-        with self.tx() as db:
-            db.execute("INSERT OR REPLACE INTO handled_records(rule, target, rkey, vhash, value, updated_at) "
-                       "VALUES(?,?,?,?,?,?)", (rule, target, rkey, vhash, pack(value), now()))
-
     # -- 容量 -----------------------------------------------------------------
 
     def storage(self) -> dict:
@@ -360,13 +261,10 @@ class Store:
             except OSError:
                 return 0
         page = self.one("PRAGMA page_size")[0]
-        events = [f for f in (self.dir / "events").glob("*.json")]
         return {
             "db_bytes": size(self.path),
             "wal_bytes": size(self.path.with_name(self.path.name + "-wal")),
             "free_bytes": self.one("PRAGMA freelist_count")[0] * page,
-            "event_files": len(events),
-            "event_files_bytes": sum(size(f) for f in events),
             "auto_vacuum": {0: "none", 1: "full", 2: "incremental"}.get(self.one("PRAGMA auto_vacuum")[0], "?"),
         }
 

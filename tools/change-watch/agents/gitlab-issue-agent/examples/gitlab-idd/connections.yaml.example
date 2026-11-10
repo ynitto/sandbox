@@ -1,6 +1,6 @@
 # connections.yaml（例: ~/.github/connections.yaml）の gitlab の項目。値は gitlab-issue-agent.env から取る。
 #   default  gitlab-idd スキルが使う（url はプロジェクトの URL）
-#   watch    change-watch と gitlab_issue.py が使う（url は GitLab の URL）
+#   watch    change-watch が使う（url は GitLab の URL）
 gitlab:
   - label: default
     url: ${GITLAB_URL}/${GITLAB_PROJECT}
