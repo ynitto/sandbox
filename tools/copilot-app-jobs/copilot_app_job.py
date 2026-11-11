@@ -31,6 +31,7 @@ from pathlib import Path
 
 BOX_NAME = ".copilot-jobs"
 STATES = ("pending", "running", "done", "results")
+JOB_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 STATUS_LINE = re.compile(r"^\s*status\s*:\s*(ok|failed)\s*$", re.IGNORECASE)
 
 EXIT_OK = 0
@@ -94,6 +95,7 @@ def wait_result(
     deadline = clock() + timeout
     seen: "tuple[int, int] | None" = None
     seen_at = 0.0
+    grace = True
     while True:
         now = clock()
         try:
@@ -110,7 +112,11 @@ def wait_result(
                     status, body = parsed
                     return (EXIT_OK if status == "ok" else EXIT_FAILED), body
         if now >= deadline:
-            break
+            if mark is None or not grace:
+                break
+            # 締め切りの間際に結果が出た。書き終わりを見届けるぶんだけ待つ（「終わらなかった」と取り違えない）。
+            grace = False
+            deadline = now + settle + poll
         sleep(poll)
     # 時間切れ。まだ拾われていなければ取り下げる（あとから勝手に走らないように）。
     try:
@@ -232,16 +238,36 @@ def read_prompt(args: argparse.Namespace) -> str:
     if args.prompt is not None:
         return args.prompt
     if args.prompt_file:
-        return Path(args.prompt_file).read_text(encoding="utf-8")
-    return sys.stdin.read()
+        return Path(args.prompt_file).read_text(encoding="utf-8-sig")
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read()
+    # Windows のコンソールの文字コードに引きずられないよう、UTF-8 として読む。違えば端末の文字コードで読み直す。
+    raw = buffer.read()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode(sys.stdin.encoding or "utf-8", errors="replace")
+
+
+def work_dir_of(args: argparse.Namespace) -> "Path | None":
+    """作業フォルダ。無ければ知らせて None（打ち間違えた場所に受け箱を作って、黙って待ち続けないように）。"""
+    work_dir = Path(args.dir).resolve()
+    if work_dir.is_dir():
+        return work_dir
+    print(f"フォルダがありません: {work_dir}", file=sys.stderr)
+    return None
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    work_dir = Path(args.dir).resolve()
-    if not work_dir.is_dir():
-        print(f"フォルダがありません: {work_dir}", file=sys.stderr)
+    work_dir = work_dir_of(args)
+    if work_dir is None:
         return EXIT_USAGE
-    prompt = read_prompt(args)
+    try:
+        prompt = read_prompt(args)
+    except OSError as error:
+        print(f"依頼の本文を読めません: {error}", file=sys.stderr)
+        return EXIT_USAGE
     if not prompt.strip():
         print("依頼の本文が空です（--prompt・--prompt-file・標準入力のどれかで渡します）", file=sys.stderr)
         return EXIT_USAGE
@@ -257,7 +283,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_prompt(args: argparse.Namespace) -> int:
-    work_dir = Path(args.dir).resolve()
+    work_dir = work_dir_of(args)
+    if work_dir is None:
+        return EXIT_USAGE
     ensure_box(box_of(work_dir, args.box))
     print(automation_prompt(work_dir, args.box, args.stay, args.chunk, args.python), end="")
     return EXIT_OK
@@ -271,19 +299,29 @@ def print_next(args: argparse.Namespace, work_dir: Path, box: Path) -> None:
 
 
 def cmd_next(args: argparse.Namespace) -> int:
-    work_dir = Path(args.dir).resolve()
+    work_dir = work_dir_of(args)
+    if work_dir is None:
+        return EXIT_USAGE
     print_next(args, work_dir, box_of(work_dir, args.box))
     return EXIT_OK
 
 
 def cmd_done(args: argparse.Namespace) -> int:
-    work_dir = Path(args.dir).resolve()
+    work_dir = work_dir_of(args)
+    if work_dir is None:
+        return EXIT_USAGE
+    if not JOB_ID.match(args.id):
+        print(f"依頼の ID ではありません: {args.id}", file=sys.stderr)
+        return EXIT_USAGE
     box = box_of(work_dir, args.box)
     report_file = Path(args.report_file) if args.report_file else box / "tmp" / f"{args.id}.report.md"
-    report = report_file.read_text(encoding="utf-8", errors="replace") if report_file.exists() else ""
+    report = report_file.read_text(encoding="utf-8-sig", errors="replace") if report_file.exists() else ""
     if not finish(box, args.id, args.status, report):
-        print(f"取りかかり中の依頼に {args.id} はありません", file=sys.stderr)
-        return EXIT_USAGE
+        if not (box / "results" / f"{args.id}.md").exists():
+            print(f"取りかかり中の依頼に {args.id} はありません", file=sys.stderr)
+            return EXIT_USAGE
+        # 同じ done をもう一度呼んだ・出し直された依頼をほかのセッションが済ませた。結果はそのままにして次へ進む。
+        print(f"{args.id} の結果は既に書かれています（そのままにします）", file=sys.stderr)
     if not args.report_file:
         report_file.unlink(missing_ok=True)
     print_next(args, work_dir, box)
@@ -291,7 +329,10 @@ def cmd_done(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    box = box_of(Path(args.dir).resolve(), args.box)
+    work_dir = work_dir_of(args)
+    if work_dir is None:
+        return EXIT_USAGE
+    box = box_of(work_dir, args.box)
     for state in STATES:
         names = sorted(p.stem for p in (box / state).glob("*.md")) if (box / state).is_dir() else []
         print(f"{state}: {len(names)}")

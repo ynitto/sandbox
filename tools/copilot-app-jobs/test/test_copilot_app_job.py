@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,18 @@ class BoxTest(unittest.TestCase):
         self.assertEqual(code, job.EXIT_NOT_FINISHED)
         self.assertIn(job_id, message)
         self.assertTrue((self.box / "running" / f"{job_id}.md").exists())
+
+    def test_wait_reads_a_result_written_just_before_the_deadline(self):
+        job_id = job.submit(self.box, "やって")
+        self.claim(job_id)
+
+        def app(now):
+            if now == 4:  # 締め切り（5 秒）の直前に書き終わる
+                job.finish(self.box, job_id, "ok", "間に合いました")
+
+        fake = FakeClock(app)
+        code, body = job.wait_result(self.box, job_id, 5, poll=1, settle=3, clock=fake.clock, sleep=fake.sleep)
+        self.assertEqual((code, body), (job.EXIT_OK, "間に合いました"))
 
     def test_claim_takes_oldest_first_and_only_once(self):
         first = job.submit(self.box, "1 つ目", "a")
@@ -222,6 +235,44 @@ class CliTest(unittest.TestCase):
         code, _, err = self.run_cli("done", "--dir", str(self.work), "--id", "nope", "--status", "ok")
         self.assertEqual(code, job.EXIT_USAGE)
         self.assertIn("nope", err)
+
+    def test_done_twice_keeps_the_first_result_and_goes_on(self):
+        self.run_cli("run", "--dir", str(self.work), "--prompt", "x", "--no-wait")
+        job_id = job.claim_next(self.box)
+        (self.box / "tmp" / f"{job_id}.report.md").write_text("\ufeff最初の報告\n", encoding="utf-8")
+        self.assertEqual(self.run_cli("done", "--dir", str(self.work), "--id", job_id, "--status", "ok")[0], job.EXIT_OK)
+        code, out, err = self.run_cli("done", "--dir", str(self.work), "--id", job_id, "--status", "failed")
+        self.assertEqual((code, out), (job.EXIT_OK, "なし\n"))
+        self.assertIn(job_id, err)
+        self.assertEqual(job.parse_result((self.box / "results" / f"{job_id}.md").read_text(encoding="utf-8")), ("ok", "最初の報告"))
+
+    def test_done_rejects_an_id_that_points_outside_the_box(self):
+        code, _, err = self.run_cli("done", "--dir", str(self.work), "--id", "../x", "--status", "ok")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("../x", err)
+
+    def test_app_side_commands_reject_a_missing_dir_without_creating_it(self):
+        missing = self.work / "nope"
+        for argv in (["prompt"], ["next"], ["status"], ["done", "--id", "x", "--status", "ok"]):
+            code, out, err = self.run_cli(*argv, "--dir", str(missing))
+            self.assertEqual((code, out), (job.EXIT_USAGE, ""), argv)
+            self.assertIn("nope", err)
+        self.assertFalse(missing.exists())
+
+    def test_prompt_file_with_bom_and_stdin_are_read_as_utf8(self):
+        source = self.work / "p.md"
+        source.write_bytes("\ufeff誤字を直して\n".encode("utf-8"))
+        _, out, _ = self.run_cli("run", "--dir", str(self.work), "--prompt-file", str(source), "--no-wait")
+        self.assertEqual((self.box / "pending" / f"{out.strip()}.md").read_text(encoding="utf-8"), "誤字を直して\n")
+        done = subprocess.run(
+            [sys.executable, str(SCRIPT), "run", "--dir", str(self.work), "--no-wait"],
+            input="標準入力から".encode("utf-8"), capture_output=True, check=True, env={**os.environ, "PYTHONIOENCODING": "cp932"},
+        )
+        job_id = done.stdout.decode("utf-8").strip()
+        self.assertEqual((self.box / "pending" / f"{job_id}.md").read_text(encoding="utf-8"), "標準入力から\n")
+        code, _, err = self.run_cli("run", "--dir", str(self.work), "--prompt-file", str(self.work / "none.md"))
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("none.md", err)
 
     def test_run_rejects_empty_prompt_and_missing_dir(self):
         code, _, err = self.run_cli("run", "--dir", str(self.work), "--prompt", "  ")
