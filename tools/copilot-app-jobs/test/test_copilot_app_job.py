@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -164,6 +165,18 @@ class BoxTest(unittest.TestCase):
         self.assertEqual(job.parse_result(text), ("failed", "無理でした"))
         self.assertTrue((self.box / "done" / f"{job_id}.md").exists())
 
+    def test_continuation_commands_preserve_wait_settings(self):
+        job_id = job.submit(self.box, "やって")
+        self.claim(job_id)
+        base = job.self_command("python", self.work, None)
+        for claimed in (None, job_id):
+            with self.subTest(claimed=claimed), patch.object(job, "wait_claim", return_value=(claimed, True)) as wait:
+                text = job.next_text(self.box, base, 100.75, 0.25, "python", 2, 60)
+            wait.assert_called_once_with(self.box, 100.75, 0.25, 2, 60)
+            self.assertIn("--until 100.75 --chunk 0.25", text)
+            self.assertIn("--stale 60", text)
+            self.assertIn("done --dir" if claimed else "next --dir", text)
+
     def test_automation_prompt_is_one_command_and_no_procedure(self):
         text = job.automation_prompt(self.work, None)
         self.assertIn(f'next --dir "{self.work}"', text)
@@ -196,7 +209,7 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.run_cli("next", "--dir", str(self.work), "--stay", "60", "--chunk", "0.1", "--poll", "0.05")
         self.assertEqual(code, job.EXIT_OK)
         self.assertIn("next --dir", out)
-        self.assertRegex(out, r"--until \d+ --chunk 0")
+        self.assertRegex(out, r"--until \d+(?:\.\d+)? --chunk 0\.1(?:\s|$)")
 
     def test_run_end_to_end_with_an_app_that_calls_next_and_done(self):
         seen = []
@@ -273,6 +286,14 @@ class CliTest(unittest.TestCase):
         code, _, err = self.run_cli("run", "--dir", str(self.work), "--prompt-file", str(self.work / "none.md"))
         self.assertEqual(code, job.EXIT_USAGE)
         self.assertIn("none.md", err)
+
+    def test_run_rejects_a_prompt_file_that_is_not_utf8(self):
+        source = self.work / "invalid.md"
+        source.write_bytes(b"\xff")
+        code, out, err = self.run_cli("run", "--dir", str(self.work), "--prompt-file", str(source), "--no-wait")
+        self.assertEqual((code, out), (job.EXIT_USAGE, ""))
+        self.assertIn("依頼の本文を読めません", err)
+        self.assertFalse(self.box.exists())
 
     def test_run_rejects_empty_prompt_and_missing_dir(self):
         code, _, err = self.run_cli("run", "--dir", str(self.work), "--prompt", "  ")
