@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### copilot-app-jobs: GitHub Copilot のデスクトップアプリに、Dagu からフォルダ越しで依頼を渡す道具を足す
+
+- アプリには外からセッションを始める口が無いので、作業フォルダの中の受け箱に依頼を置き、アプリの自動実行が拾って
+  処理し、結果を書き戻す形にする。GitHub のリポジトリが無いローカルのフォルダでも使える
+- `copilot_app_job.py run` が依頼を置いて結果を待ち、できた・できなかった・拾われなかった・終わらなかったを
+  終了コードで分ける。`prompt` がアプリの自動実行に貼るプロンプトを出す。標準ライブラリだけで動く
+- 依頼が無い回に読ませる量を最小にする: 貼るプロンプトは「コマンドを 1 回実行する」だけにし、依頼の取り出し・結果の
+  書き込み・ファイルの移動はアプリが呼ぶ `next`・`done` がする。`--stay` で、依頼が無い間はコマンドが待ち続ける
+- `dags/copilot-app-job.example.yaml` に Dagu のワークフローの例を足す
+
 ### vscode-copilot: `--skill` でスキルの手順に従わせる
 
 - `--skill NAME|PATH` で `SKILL.md` の本文を依頼文の前に載せる。繰り返し指定でき、指定した順に

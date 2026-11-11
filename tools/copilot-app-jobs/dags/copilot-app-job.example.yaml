@@ -1,0 +1,32 @@
+# GitHub Copilot のデスクトップアプリに、Dagu から依頼を渡して結果を待つ例（Windows）。
+# アプリ側の用意（作業フォルダをプロジェクトとして開く・自動実行にプロンプトを貼る）は README を参照。
+# command と args のパスを自分の場所に直す。依頼の本文は --prompt-file のファイルに書く（短ければ --prompt に直接書ける）。
+# 終了コード 3（アプリが拾わなかった。依頼は取り下げ済み）だけ再試行する。4（取りかかったが終わらなかった）は再試行しない
+# ——依頼が残っていて、やり直すと二重になるため。結果はステップの出力（REPORT）に入る。
+# timeout_sec は --timeout より少し長くする。--timeout は「自動実行の間隔 + 作業にかかる時間」より長くする。
+description: "Copilot のデスクトップアプリに、作業フォルダでの作業を毎晩頼む"
+schedule: "0 2 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: ask
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"         # アプリでプロジェクトとして開いているフォルダ
+        - "--prompt-file"
+        - "C:/work/prompts/nightly.md"
+        - "--name"
+        - "nightly"
+        - "--timeout"
+        - "7200"
+    timeout_sec: 7500
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+      exit_code: [3]
+    output: REPORT
