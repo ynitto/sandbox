@@ -136,9 +136,12 @@ def cmd_commit(cfg, store, a) -> int:
         return EXIT_OK
     try:
         done, unknown = access.commit(Fetcher(cfg, store), cfg.sources[name], a.consumer, keys, a.refresh)
-    except Deferred as e:
+    except (Deferred, TransientError) as e:
         warn(str(e))
         return EXIT_TRANSIENT
+    except PermanentError as e:
+        warn(str(e))
+        return EXIT_ERROR
     if unknown:
         warn(f"[{name}] 取得元にも {a.consumer} の記録にも無い key です（何も記録していません。"
              f"get の出力の key をそのまま渡してください）: {', '.join(repr(k) for k in unknown)}")
