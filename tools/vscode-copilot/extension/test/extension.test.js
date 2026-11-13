@@ -2,6 +2,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadExtension } = require('./fake-vscode');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const READ = { name: 'copilot_readFile', description: 'read', inputSchema: {} };
 const EDIT = { name: 'bridge_replaceString', description: 'edit', inputSchema: {} };
@@ -173,6 +176,37 @@ test('writes outside the workspace are refused', async () => {
   const { error } = await replace({ '/etc/hosts': 'x' },
     { filePath: '/etc/hosts', oldString: 'x', newString: 'y' });
   assert.match(error, /ワークスペースの外/);
+});
+
+test('whitespace-only missing strings do not loop forever during diagnosis', async () => {
+  const { error } = await replace({ '/ws/a.py': 'abc' },
+    { filePath: '/ws/a.py', oldString: '   ', newString: 'x' });
+  assert.match(error, /読み直して/);
+});
+
+test('both writers reject symlink escapes, including new files under linked directories', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-path-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, 'workspace');
+  const outside = path.join(base, 'outside');
+  fs.mkdirSync(root);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'a'), 'x');
+  fs.symlinkSync(outside, path.join(root, 'link'), 'junction');
+  fs.symlinkSync(path.join(outside, 'a'), path.join(root, 'file'));
+  const { extension, state } = loadExtension({ roots: [root] });
+  for (const target of ['file', 'link/a', 'link/new/a', '../outside/a']) {
+    const filePath = path.resolve(root, target);
+    for (const tool of Object.values(extension._internal.BRIDGE_TOOLS)) {
+      await assert.rejects(tool.invoke({ input: { filePath, oldString: 'x', newString: 'y', content: 'y' } }),
+        /ワークスペースの外/);
+    }
+  }
+  assert.equal(state.files.size, 0);
+  const create = extension._internal.BRIDGE_TOOLS.bridge_createFile;
+  await create.invoke({ input: { filePath: path.join(root, 'new/a'), content: 'ok' } });
+  assert.equal(state.files.get(path.join(root, 'new/a')), 'ok');
+  await assert.rejects(create.invoke({ input: { filePath: 'relative', content: 'x' } }), /絶対パス/);
 });
 
 test('an oldString that starts with a blank line is still located by its first real line', async () => {

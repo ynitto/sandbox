@@ -12,10 +12,11 @@ if [ -e "${BIN_DIR}/vscode-copilot-chat" ]; then
 fi
 if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
   WIN_SOURCE="$(wslpath -w "${ROOT}/extension")"
+  WIN_SOURCE="${WIN_SOURCE//\'/\'\'}"
   powershell.exe -NoProfile -NonInteractive -Command \
     '$dst=Join-Path $env:USERPROFILE ".vscode\extensions\local.vscode-copilot-bridge-0.1.0";' \
     'New-Item -ItemType Directory -Force $dst | Out-Null;' \
-    "Copy-Item -Force '${WIN_SOURCE}\\package.json','${WIN_SOURCE}\\extension.js' \$dst;" \
+    "Copy-Item -Force -LiteralPath '${WIN_SOURCE}\\package.json','${WIN_SOURCE}\\extension.js' \$dst;" \
     '$cache=Join-Path $env:LOCALAPPDATA "vscode-copilot-bridge\CachedProfilesData";' \
     'if (Test-Path $cache) { Get-ChildItem -Path $cache -Recurse -Filter extensions.user.cache | Remove-Item -Force }'
   printf 'Installed Windows VS Code extension and WSL CLI: %s\n' "${BIN_DIR}/vscode-copilot"

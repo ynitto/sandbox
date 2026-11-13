@@ -1417,6 +1417,59 @@ def test_skill_reaches_the_agent_prompt(tmp_path, monkeypatch):
     assert code == 0 and "本文1" in prompt and prompt.endswith("直して")
 
 
+def test_interactive_agent_tools_and_file_context_are_not_ignored():
+    code, repl, run = _main_agent(
+        ["-i", "--agent-tools", "read"], tools=AGENT_TOOLS)
+    assert code == 0 and repl.called and not run.called
+    assert repl.call_args.args[1].tools == ["copilot_readFile", "copilot_findFiles"]
+    code, repl, _ = _main_agent(
+        ["-i", "--write", "--file", "a.py", "--read", "spec.md"], tools=AGENT_TOOLS)
+    assert code == 0
+    preamble = repl.call_args.args[1].preamble
+    assert str(Path("a.py").resolve()) in preamble
+    assert str(Path("spec.md").resolve()) in preamble
+    assert "これ以外は書き換えない" in preamble
+
+
+def test_empty_final_answer_does_not_reuse_intermediate_agent_text():
+    result, _, _ = _agent_stream([
+        {"delta": "これから編集します"},
+        {"done": True, "text": "", "rounds": 2, "exhausted": True},
+    ])
+    assert result["text"] == ""
+
+
+def test_windows_path_decodes_utf8_and_cp932():
+    for encoding in ("utf-8", "cp932"):
+        output = "C:\\作業\\repo\r\n".encode(encoding)
+        with mock.patch.object(client.subprocess, "run", return_value=mock.Mock(stdout=output)):
+            assert client.windows_path(Path("/work/repo")) == "C:\\作業\\repo"
+
+
+def test_installer_quotes_windows_source_path(tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    root = tmp_path / "repo's [test]"
+    shutil.copytree(SCRIPT.parent, root)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    capture = tmp_path / "powershell-args"
+    for name, body in {
+        "wslpath": "printf '%s\\n' \"C:\\repo's [test]\\extension\"",
+        "powershell.exe": 'printf "%s\\n" "$@" > "$CAPTURE"',
+    }.items():
+        executable = bin_dir / name
+        executable.write_text("#!/bin/sh\n" + body + "\n")
+        executable.chmod(0o755)
+    env = {**os.environ, "HOME": str(tmp_path / "home"),
+           "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "CAPTURE": str(capture)}
+    subprocess.run(["bash", str(root / "install.sh")], env=env, check=True, capture_output=True)
+    command = capture.read_text()
+    assert "-LiteralPath 'C:\\repo''s [test]\\extension\\package.json'" in command
+
+
 def test_unknown_skill_fails_before_starting_vscode(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("VSCODE_COPILOT_SKILLS", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))

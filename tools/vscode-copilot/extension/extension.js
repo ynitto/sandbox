@@ -271,8 +271,25 @@ function workspaceRoots() {
 
 // 書き込み先はワークスペースの中だけにする。パスを組み立てるのはモデルで、
 // 打ち間違いも思い違いもワークスペースの外へ届く——読むのと違って戻せない。
+// 新規ファイルは存在する親まで辿る。途中の symlink / junction も解決して判定する。
+function realWritePath(target) {
+  try {
+    return fs.realpathSync(target);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    try {
+      if (fs.lstatSync(target).isSymbolicLink()) throw new Error(`リンク先が存在しません: ${target}`);
+    } catch (statError) {
+      if (statError.code !== 'ENOENT') throw statError;
+    }
+    const parent = path.dirname(target);
+    if (parent === target) throw error;
+    return path.join(realWritePath(parent), path.basename(target));
+  }
+}
+
 function writableUri(input) {
-  if (typeof input !== 'string' || !input.trim()) {
+  if (typeof input !== 'string' || !input.trim() || !path.isAbsolute(input)) {
     throw new Error('filePath は絶対パスの文字列で渡してください');
   }
   const target = path.resolve(input);
@@ -280,7 +297,11 @@ function writableUri(input) {
   if (!roots.length) {
     throw new Error('VS Code がフォルダを開いていないので、書き込んでよい場所を決められません');
   }
-  if (!roots.some(root => target === root || target.startsWith(root + path.sep))) {
+  const realTarget = realWritePath(target);
+  if (!roots.some(root => {
+    const relative = path.relative(realWritePath(path.resolve(root)), realTarget);
+    return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+  })) {
     throw new Error(`ワークスペースの外へは書けません: ${target}（${roots.join(', ')} の下だけ）`);
   }
   return vscode.Uri.file(target);
@@ -304,6 +325,7 @@ function lineNumberAt(text, offset) {
 }
 
 function findAll(text, needle) {
+  if (!needle) return [];
   const offsets = [];
   for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
     offsets.push(at);
