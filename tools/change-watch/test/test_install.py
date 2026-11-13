@@ -1,12 +1,14 @@
 """インストーラのテスト: 1 つの実行可能な zip（.pyz）を作り、そのファイルだけで取得から受け渡しまで動くこと。"""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import unittest
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 from helpers import ROOT, Env
@@ -19,6 +21,24 @@ def run(argv, **kw):
 
 
 class InstallTest(unittest.TestCase):
+    def test_build_accepts_source_timestamps_before_1980(self):
+        env = Env(self)
+        source = env.tmp / "source"
+        package = source / "changewatch"
+        package.mkdir(parents=True)
+        module = package / "__init__.py"
+        module.write_text('VERSION = "0.8.0"\n', encoding="utf-8")
+        os.utime(module, (0, 0))
+        spec = importlib.util.spec_from_file_location("change_watch_install", INSTALL)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        pyz = env.tmp / "change-watch.pyz"
+        with patch.object(installer, "HERE", source):
+            installer.build(pyz, None, False)
+        with zipfile.ZipFile(pyz) as archive:
+            self.assertEqual(archive.read("changewatch/__init__.py"), module.read_bytes())
+        self.assertEqual(module.stat().st_mtime, 0)  # 元のファイルは変更しない
+
     def test_build_and_run_single_file(self):
         env = Env(self)
         pyz = env.tmp / "dist" / "change-watch.pyz"

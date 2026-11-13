@@ -69,7 +69,8 @@ def _copy_py(src: Path, dst: Path) -> int:
             continue
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(f, out)
+        # zipapp は 1980 年より古い日時を扱えない（同梱する依存の日時が 0 のこともある）。
+        shutil.copy(f, out)
         n += 1
     return n
 

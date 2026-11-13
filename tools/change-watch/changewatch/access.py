@@ -165,7 +165,9 @@ def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], re
                 db.execute("INSERT OR REPLACE INTO consumer_records(consumer, source, rkey, data, updated_at) "
                            "VALUES(?,?,?,?,?)", (consumer, src.name, k, pack(rec), now()))
                 if fresh:
-                    db.execute("UPDATE source_records SET data=?, seen_at=? WHERE source=? AND rkey=? AND epoch=?",
-                               (pack(rec), now(), src.name, k, epoch))
+                    db.execute("INSERT INTO source_records(source, rkey, epoch, data, seen_at) VALUES(?,?,?,?,?) "
+                               "ON CONFLICT(source, rkey) DO UPDATE SET epoch=excluded.epoch, "
+                               "data=excluded.data, seen_at=excluded.seen_at",
+                               (src.name, k, epoch, pack(rec), now()))
         done.append(k)
     return done, unknown

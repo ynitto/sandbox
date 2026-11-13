@@ -128,8 +128,24 @@ class AccessTest(unittest.TestCase):
         self.env.api.put(5, status="a")                                       # まだ取得していないが、API にはある
         out = self.env.ok(self, "commit", "--source", "items", "--consumer", "flow", "--refresh", "5")
         self.assertIn("記録しました: 5", out)
+        self.assertEqual(self.get("--consumer", "flow", "--no-fetch"), [])
+        self.assertEqual([r["id"] for r in self.get("--no-fetch")], [5])
         code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "6")
         self.assertIn("'6'", out)
+
+    def _check_refresh_error(self, status, expected):
+        self.env.api.put(1, status="a")
+        self.get("--consumer", "flow")
+        self.env.api.fail("/item/1", status, count=5)
+        code, out = self.env.run("commit", "--source", "items", "--consumer", "flow", "--refresh", "1")
+        self.assertEqual(code, expected)
+        self.assertIn(str(status), out)
+
+    def test_commit_refresh_reports_permanent_http_error(self):
+        self._check_refresh_error(403, 1)
+
+    def test_commit_refresh_reports_transient_http_error(self):
+        self._check_refresh_error(503, 3)
 
     def test_call_returns_non_json_response_as_text(self):
         self.env.api.fail("/_put", 200, body="OK")
