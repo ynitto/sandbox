@@ -18,6 +18,7 @@
 const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
+const { pipeline } = require('stream');
 
 const MAX_BODY = 4 * 1024 * 1024;
 const TIMEOUT_MS = 5000;
@@ -157,9 +158,10 @@ function download(peer, pathname, target, { key, timeoutMs = 30000 } = {}) {
     const req = http.request({ host: peer.address, port: peer.port, method: 'GET', path: pathname, timeout: timeoutMs, headers: { 'x-share-key': key } }, (res) => {
       if (res.statusCode !== 200) { res.resume(); reject(new Error(`添付を取れません（${res.statusCode}）`)); return; }
       const out = fs.createWriteStream(target);
-      res.pipe(out);
-      out.on('finish', () => resolve(target));
-      out.on('error', reject);
+      pipeline(res, out, (err) => {
+        if (err) reject(err);
+        else resolve(target);
+      });
     });
     req.on('timeout', () => { req.destroy(new Error('応答がありません')); });
     req.on('error', reject);
