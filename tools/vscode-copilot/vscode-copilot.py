@@ -615,7 +615,7 @@ def _consume_agent_stream(response, on_event) -> dict:
             done = event
     if done is None:
         raise RuntimeError("エージェントの応答が途中で切れました")
-    return {"text": done.get("text") or "".join(chunks),
+    return {"text": done.get("text", "".join(chunks)),
             "rounds": done.get("rounds"), "model": done.get("model"),
             "exhausted": bool(done.get("exhausted"))}
 
@@ -881,7 +881,7 @@ def main() -> int:
     parser.add_argument("--code-bin", default="code", help="Windows側のcode command（既定: code）")
     args = parser.parse_args()
     # 端末から引数なしで起動したら対話。パイプ入力は従来どおり片道実行のまま。
-    as_agent = bool(args.agent or args.write or args.file or args.read)
+    as_agent = bool(args.agent is not None or args.agent_tools or args.write or args.file or args.read)
     one_off = args.tools or args.models or args.call or as_agent
     interactive = args.interactive or (args.prompt is None and not one_off and sys.stdin.isatty())
     if interactive and args.json:
@@ -964,7 +964,7 @@ def main() -> int:
             return 0
         session = Session(args.family, debug=args.debug, max_tool_chars=args.max_tool_chars,
                           max_rounds=args.max_rounds)
-        session.preamble = skills
+        session.preamble = skills + file_context(args.file, args.read, args.write)
         if interactive:
             if as_agent:
                 # 対話でも道具を持てる。`-i --write` は「読み書きできる対話」を意味する。
