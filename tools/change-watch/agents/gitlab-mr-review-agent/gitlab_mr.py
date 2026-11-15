@@ -66,6 +66,19 @@ class GitLabError(Exception):
         self.status = status
 
 
+class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        def origin(url):
+            parts = urllib.parse.urlsplit(url)
+            return (parts.scheme.lower(), parts.hostname,
+                    parts.port or (443 if parts.scheme.lower() == "https" else 80))
+
+        # PRIVATE-TOKEN を別ホスト・別ポートや HTTP への降格で漏らさない。
+        if origin(req.full_url) != origin(newurl):
+            raise urllib.error.URLError("別の接続先へのリダイレクトを拒否しました")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class GitLab:
     def __init__(self, url: str, token: str, project: str, timeout: float = 60):
         self.api = url.rstrip("/") + "/api/v4"
@@ -83,7 +96,8 @@ class GitLab:
                                      headers={"PRIVATE-TOKEN": self.token, "Accept": "application/json",
                                               **({"Content-Type": "application/json"} if data else {})})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            opener = urllib.request.build_opener(_SameOriginRedirect())
+            with opener.open(req, timeout=self.timeout) as resp:
                 content = resp.read()
                 headers = {k.lower(): v for k, v in resp.headers.items()}
         except urllib.error.HTTPError as e:

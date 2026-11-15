@@ -294,6 +294,42 @@ class UnitTest(unittest.TestCase):
         self.assertIn("- f4.py", out)
 
 
+class RedirectTest(_GitLabBase):
+    def redirect_server(self, target):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/destination":
+                    raw = json.dumps({"authenticated": self.headers.get("PRIVATE-TOKEN") == TOKEN}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                else:
+                    self.send_response(302)
+                    self.send_header("Location", target)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_cross_origin_redirect_is_refused_before_sending_token(self):
+        url = self.redirect_server(f"{self.gl.url}/api/v4/projects/g%2Fp")
+        with self.assertRaises(gm.GitLabError):
+            gm.GitLab(url, TOKEN, PROJECT).project_info()
+        self.assertEqual(self.gl.requests, [])
+
+    def test_same_origin_redirect_keeps_authentication(self):
+        url = self.redirect_server("/destination")
+        self.assertEqual(gm.GitLab(url, TOKEN, PROJECT).project_info(), {"authenticated": True})
+
+
 class CommandTest(_GitLabBase):
     def setUp(self):
         super().setUp()
