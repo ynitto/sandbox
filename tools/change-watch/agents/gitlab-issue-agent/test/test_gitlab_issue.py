@@ -162,6 +162,23 @@ class DefaultExampleTest(unittest.TestCase):
         self.assertEqual(self.run_dag(exit_code=1)[0], "update")              # 失敗しても commit する
         self.assertIsNone(self.run_dag())
 
+    def test_closed_issue_is_committed_without_refresh(self):
+        self.run_dag()
+        self.gl.put(make_issue(1, state="closed"))
+        self.gl.requests.clear()
+        self.assertIsNone(self.run_dag())
+        self.assertIsNone(self.run_dag())
+        self.assertNotIn("/api/v4/projects/g%2Fp/issues/1", self.gl.requests)
+
+    def test_deleted_issue_is_committed_without_refresh(self):
+        self.run_dag()
+        with self.gl.lock:
+            del self.gl.world["issues"]["1"]
+        self.gl.requests.clear()
+        self.assertIsNone(self.run_dag())
+        self.assertIsNone(self.run_dag())
+        self.assertNotIn("/api/v4/projects/g%2Fp/issues/1", self.gl.requests)
+
 
 # ---------------------------------------------------------------------------
 # examples/gitlab-idd（gitlab-idd スキルと繋ぐ設定の例）

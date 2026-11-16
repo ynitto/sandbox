@@ -5,6 +5,7 @@
 #   new     新しい issue なら、エージェント CLI に着手させる          ← 条件で分ける（Dagu の preconditions）
 #   update  変わった issue なら、変わったところを見て対応させる
 #   commit  処理し終えたと記録する（issue を取り直した姿で。エージェント自身のコメントで次に起きない）
+#   commit-removed  一覧から消えた issue は取り直さず記録する（閉じた issue を取得結果へ戻さない）
 # 処理が失敗しても commit する（Dagu の retry_policy でやり直し、尽きたら失敗として Dagu の履歴に残る）。
 # 同じ issue に次の変化があれば、また流れる。
 # 分け方を足すなら、同じ形のステップを足して preconditions を変え、commit の depends に足す
@@ -105,9 +106,11 @@ steps:
       dangerously_skip_permissions: true
   - name: commit
     depends: [update]
-    preconditions:              # 受け取った変化があるときだけ
-      - condition: "${CHANGE.key}"
-        expected: "re:."
+    preconditions:              # 一覧にある issue だけ取り直す（removed は commit-removed で記録する）
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    continue_on:
+      skipped: true
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
@@ -122,6 +125,30 @@ steps:
         - "--consumer"
         - "issue-agent"
         - "--refresh"            # issue を取り直した姿で記録する（エージェント自身のコメントで次に起きない）
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit-removed
+    depends: [commit]
+    preconditions:              # 消えた issue を取り直すと、閉じた issue が取得結果に復活してしまう
+      - condition: "${CHANGE.kind}"
+        expected: "removed"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-agent"
         - "${CHANGE.key}"
     timeout_sec: 600
     retry_policy:
