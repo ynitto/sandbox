@@ -13,6 +13,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
    new      新しい issue で、開いていれば → エージェント CLI に着手させる                ← 条件（Dagu の preconditions）
    update   変わった issue で、開いていれば → 変わったところ（before・changes）を見て対応させる
    commit   issue を取り直した姿で、処理し終えたと記録する（エージェント自身のコメントで次に起きない）
+   commit-removed   一覧から消えた issue は、取り直さずに処理し終えたと記録する
 
  変わった issue が無ければ get のあとは動かない。複数あれば、次の起動（1 分後）が次の 1 件を受け取る
 ```
@@ -74,7 +75,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
 
 分け方を足すなら、同じ形のステップを足して `preconditions` を変え、`commit` の `depends` に足す。例えば、ラベル `bug` が付いた issue だけ
 別のプロンプトにするなら `condition: "${CHANGE.record.labels}"`・`expected: 're:"bug"'`。どのステップにも合わなかった変化も `commit` する
-（`continue_on.skipped`）ので、同じ変化が何度も来ることはない。
+（`continue_on.skipped`）ので、同じ変化が何度も来ることはない。一覧から消えた変化（`removed`）は `commit-removed` が取り直さずに記録する。
 
 ## GitLab への問い合わせの回数
 
@@ -99,6 +100,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
 
 - 「前回処理し終えた姿」は change-watch がこのワークフロー（`--consumer issue-agent`）ごとに覚えていて、`get` はそこから変わった issue だけを返す。
   `commit` するまで同じ issue を返し続ける
+- 一覧から消えた issue は取り直さずに記録する。閉じた issue を取得結果に戻して、毎回同じ消失を拾うことを避ける
 - `commit --refresh` は、処理し終えたときに issue を取り直し、その姿を「処理し終えた姿」にする。**エージェント自身のコメントやラベル変更で
   もう一度起きることはない**
 - 処理を待つ間に同じ issue が何度か変わっても、受け取るのは最新の取得結果の姿で、まとめて 1 回流れる
