@@ -169,6 +169,14 @@ class NoteTest(unittest.TestCase):
         f.write_text("ファイルの本文\n", encoding="utf-8")
         self.assertEqual(json.loads(run_main("note", "--text-file", str(f))[1])["body"], "ファイルの本文")
 
+    def test_invalid_utf8_file_is_reported_without_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.txt"
+            path.write_bytes(b"\xff")
+            code, out, err = run_main("note", "--text-file", str(path))
+        self.assertEqual((code, out), (gh.USAGE, ""))
+        self.assertIn("本文のファイルを読めません", err)
+
     def test_command_output_becomes_the_text(self):
         code, out, _ = run_main("note", "--", sys.executable, "-c", "import sys; print('結果: ' + sys.argv[1]); print('/close')", "{}")
         self.assertEqual((code, json.loads(out)["body"]), (0, "結果: {}\n\\/close"))

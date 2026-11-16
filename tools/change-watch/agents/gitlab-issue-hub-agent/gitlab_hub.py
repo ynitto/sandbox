@@ -108,7 +108,7 @@ def cmd_note(a) -> int:
         try:
             with open(a.text_file, encoding="utf-8-sig") as f:
                 text = f.read()
-        except OSError as e:
+        except (OSError, UnicodeError) as e:
             print(f"本文のファイルを読めません: {e}", file=sys.stderr)
             return USAGE
     else:
