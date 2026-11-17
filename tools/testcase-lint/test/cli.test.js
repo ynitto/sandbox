@@ -113,14 +113,25 @@ test('オプション無し: 点検するものが無ければ init を勧めて
   assert.match(r.err, /testcase-lint init/);
 });
 
+test('init: YAMLの特殊文字やスカラーに見えるパスも文字列として保存する', async () => {
+  const dir = tmp({ 'README.md': 'x' });
+  const paths = ['qa,archive', '[cases]', 'true', '123', 'docs: specs', 'source #1'];
+  const args = paths.flatMap((p) => ['--cases', p]);
+  const r = await inDir(dir, ['init', ...args]);
+  assert.equal(r.code, 0);
+  const parsed = require('yaml').parse(fs.readFileSync(path.join(dir, 'testcase-lint.config.yaml'), 'utf8'));
+  assert.deepEqual(parsed.cases, paths);
+});
+
 test('init: 見つけたフォルダで設定ファイルを作り、既存のものは上書きしない', async () => {
   const dir = tmp({ 'tests/e2e/a.yaml': '- {id: A, title: a, steps: [押す], expected: [出る]}\n', 'docs/specs/x.md': '# x\n' });
   let r = await inDir(dir, ['init', '--source', '../app/src']);
   assert.equal(r.code, 0);
   const conf = fs.readFileSync(path.join(dir, 'testcase-lint.config.yaml'), 'utf8');
-  assert.match(conf, /^cases: \[tests\/e2e\]/m);
-  assert.match(conf, /^spec: \[docs\/specs\]/m);
-  assert.match(conf, /^source: \[\.\.\/app\/src\]/m);
+  const parsed = require('yaml').parse(conf);
+  assert.deepEqual(parsed.cases, ['tests/e2e']);
+  assert.deepEqual(parsed.spec, ['docs/specs']);
+  assert.deepEqual(parsed.source, ['../app/src']);
   fs.appendFileSync(path.join(dir, 'testcase-lint.config.yaml'), '# 手で足した\n');
   r = await inDir(dir, ['init']);
   assert.match(r.out, /上書きしません/);

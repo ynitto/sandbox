@@ -37,6 +37,18 @@ class CheckDoc(unittest.TestCase):
         doc = dict(GOOD, steps=[{"name": "a", "action": "exec", "with": {"command": "~/.local/bin/x"}}])
         self.assertTrue(any("~" in e for e in checker.check_doc(doc)))
 
+    def test_invalid_field_types_are_reported_without_crashing(self):
+        for step in (
+            {"name": ["a"]},
+            {"name": "a", "depends": 1},
+            {"name": "a", "depends": [["b"]]},
+            {"name": "a", "action": "exec", "with": ["git"]},
+            {"name": "a", "action": "exec", "with": {"command": "git", "args": 1}},
+            {"name": "a", "action": "exec", "with": {"command": 1}},
+        ):
+            with self.subTest(step=step):
+                self.assertTrue(checker.check_doc(dict(GOOD, steps=[step])))
+
     def test_exec_needs_command(self):
         doc = dict(GOOD, steps=[{"name": "a", "action": "exec", "with": {}}])
         self.assertTrue(any("command" in e for e in checker.check_doc(doc)))

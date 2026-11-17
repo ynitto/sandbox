@@ -178,7 +178,7 @@ def sync_group(cfg, group, pairs, log, dry_run=False):
         try:
             observed[slug] = store.ls_remote(cfg.credentials.authenticated_url(url))
         except GitError as exc:
-            unreachable[slug] = str(exc)
+            unreachable[slug] = log.redact(exc)
             log.error("[%s] ref 一覧の取得に失敗しました: %s" % (slug, exc))
             continue
         log.debug("[%s] ref %d 件" % (slug, len(observed[slug])))

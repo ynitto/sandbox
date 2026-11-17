@@ -84,7 +84,7 @@ function init(args, io) {
   const rel = (p) => path.relative(dir, path.resolve(p)).split(path.sep).join('/') || '.';
   const pick = (given, auto) => (given && given.length ? given.map(rel) : auto.map(rel));
   const cases = pick(values.cases, found.cases); const spec = pick(values.spec, found.spec); const source = pick(values.source, found.source);
-  const yamlList = (xs) => `[${xs.join(', ')}]`;
+  const yamlList = (xs) => JSON.stringify(xs);
   const body = [
     '# testcase-lint の設定。このフォルダか下のフォルダで testcase-lint を実行すると読まれる。',
     '# パスはこのファイルからの相対。別のリポジトリのフォルダも書ける（例: ../my-app-docs/docs）。',
