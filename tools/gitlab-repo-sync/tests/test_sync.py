@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -425,6 +426,21 @@ class LockTest(SyncTestCase):
 
 
 class CliTest(SyncTestCase):
+    def test_remote_error_report_redacts_credentials(self):
+        from gitlab_repo_sync.store import GitError
+        from gitlab_repo_sync.util import read_json
+
+        token = "dummy-test-secret"
+        log = Logger("", [token], quiet=True)
+        with patch.object(runner.Store, "ls_remote", side_effect=GitError(
+                "cannot access https://user:dummy-password@example.invalid/repo " + token)):
+            self.assertEqual(runner.run(self.cfg, log), 1)
+        report = read_json(os.path.join(self.cfg.state_dir, "last-report.json"))
+        error = report["pairs"][0]["error"]
+        self.assertIn("***", error)
+        self.assertNotIn(token, error)
+        self.assertNotIn("dummy-password", error)
+
     def test_status_and_list_render(self):
         self.run_sync()
         lines = []

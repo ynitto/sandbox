@@ -1,6 +1,6 @@
 {
   "name": "testcase-lint",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "自然文ケース（JSON / YAML / Gherkin）の妥当性とテストコードの重複を静的に点検し、ケースに対応するテストを実行して結果を残す。LLM は使わない",
   "author": "sandbox",
   "license": "MIT",

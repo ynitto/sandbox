@@ -35,20 +35,31 @@ def check_doc(doc: object) -> "list[str]":
     seen: set[str] = set()
     for step in steps:
         name = step.get("name") if isinstance(step, dict) else None
-        if not name:
+        if not isinstance(name, str) or not name.strip():
             errors.append(f"name の無いステップ: {step!r}")
             continue
         if name in seen:
             errors.append(f"{name}: ステップ名が重なっている")
-        for dep in step.get("depends") or []:
-            if dep not in seen:
+        depends = step.get("depends") or []
+        if not isinstance(depends, list):
+            errors.append(f"{name}: depends がリストではない")
+            depends = []
+        for dep in depends:
+            if not isinstance(dep, str) or dep not in seen:
                 errors.append(f"{name}: depends の {dep} が前に無い")
         seen.add(name)
         if step.get("action") == "exec":
-            command = (step.get("with") or {}).get("command")
-            if not command:
+            options = step.get("with") or {}
+            if not isinstance(options, dict):
+                errors.append(f"{name}: exec の with がマップではない")
+                continue
+            command = options.get("command")
+            if not isinstance(command, str) or not command.strip():
                 errors.append(f"{name}: exec に command が無い")
-            args = (step.get("with") or {}).get("args") or []
+            args = options.get("args") or []
+            if not isinstance(args, list):
+                errors.append(f"{name}: exec の args がリストではない")
+                args = []
             for value in [command, step.get("working_dir"), *args]:
                 if isinstance(value, str) and value.startswith("~"):
                     errors.append(f"{name}: exec は ~ を展開しない: {value}")
