@@ -38,6 +38,9 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 | `changewatch.plugins` / `changewatch.hooks` | `--plugin <.py>` で指定されたプラグインの読み込みと、プラグインが足すテンプレートのフィルタの登録先 | 本体だけ |
 | `dags/*.example.yaml` | change-watch を使う Dagu のワークフローの例（§2.0.1）。利用者がコピーして直す | Dagu |
 
+- `--plugin` の値は `.py` のパスか、名前（`gitlab_hub`・`gitlab_hub.py`）。名前は、エージェントのプログラムの置き場所
+  （change-watch のとなりの `agents/<エージェント>/` と `~/.local/share/change-watch/agents/<エージェント>/`。インストーラが置く場所と、ソースの木）から
+  探す。置き場所は change-watch から決まるので、ワークフローと `.env` に長いパスを書かせない。同じ名前が 2 つあれば止める。
 - プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_filter(name, fn)`・`api.add_command(name, fn, help)` を呼ぶ。
   エージェントに固有の処理（書くものを作る・レビューの中で GitLab に読み書きする）も、ワークフローからは change-watch のコマンドとして呼ぶ
   （入り口を 1 つにし、Windows でも Python と `.pyz` の同じ置き換えで済ませる）。設定と状態が要らないコマンドは `needs_config=False` で足し、

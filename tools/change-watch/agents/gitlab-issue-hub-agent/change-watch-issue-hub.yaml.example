@@ -22,7 +22,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"
@@ -58,7 +58,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "note"
         - "--"
         - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
@@ -79,7 +79,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"
@@ -106,7 +106,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"

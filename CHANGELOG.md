@@ -9,10 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ### change-watch: エージェントに固有のコマンドも change-watch から呼ぶ（0.9.0）
 
+- `--plugin` に、入れてあるエージェントのプログラムを名前だけで書ける（`--plugin gitlab_hub`）。置き場所は change-watch が探す。`.py` のパスも使える
 - プラグインが足すコマンドに、設定と状態を読まないもの（`api.add_command(..., needs_config=False)`）を足す。`--config`・`--connections` が要らない
-- gitlab-issue-hub-agent: `note`・`description`・`fields`・`api-url` を `change-watch --plugin gitlab_hub.py <コマンド>` で呼ぶ。
+- gitlab-issue-hub-agent: `note`・`description`・`fields`・`api-url` を `change-watch --plugin gitlab_hub <コマンド>` で呼ぶ。
   例のワークフローの `python3 gitlab_hub.py …` のステップを、どれも change-watch を呼ぶ形にする
-- gitlab-mr-review-agent: レビューの中で使うコマンドを `change-watch --plugin gitlab_mr.py mr <コマンド>` で呼ぶ（`.env` の `MR_REVIEW_CLI` の例を直す）
+- gitlab-mr-review-agent: レビューの中で使うコマンドを `change-watch --plugin gitlab_mr mr <コマンド>` で呼ぶ（`.env` の `MR_REVIEW_CLI` の例を直す）
 - どちらも `python3 <.py> <コマンド>` と直接呼ぶ形はそのまま動く（既に置いたワークフローと `.env` は直さなくてよい）。
   gitlab-issue-agent・redmine-ticket-agent は、もともと change-watch だけを呼んでいるので変わらない
 - インストーラ: Windows で、`.env` の change-watch のコマンドも Python と `change-watch.pyz` に置き換える

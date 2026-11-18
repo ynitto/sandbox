@@ -6,10 +6,14 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from helpers import ROOT, TOKEN, Env
 
@@ -347,6 +351,33 @@ class OpsTest(unittest.TestCase):
         code, out = env.run("status")
         self.assertEqual(code, 1)
         self.assertIn("nosuch.py", out)
+
+    def test_plugin_by_name(self):
+        """--plugin は、入れてあるエージェントのプログラムの名前（gitlab_hub・gitlab_hub.py）でもよい。パスがあればパスを使う。"""
+        from changewatch import plugins
+        home = Path(tempfile.mkdtemp(prefix="changewatch-home-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        hub = ROOT / "agents" / "gitlab-issue-hub-agent" / "gitlab_hub.py"
+        with patch.object(Path, "home", lambda: home):
+            self.assertEqual(plugins.resolve("gitlab_hub"), hub)                      # change-watch のとなりの agents/
+            self.assertEqual(plugins.resolve("gitlab_hub.py"), hub)
+            mine = home / ".local" / "share" / "change-watch" / "agents" / "my-agent" / "mine.py"
+            mine.parent.mkdir(parents=True)
+            mine.write_text("def register(api):\n    api.add_command('hello', lambda c, s, a: print('hi') or 0, 'x', needs_config=False)\n",
+                            encoding="utf-8")
+            self.assertEqual(plugins.resolve("mine"), mine)                           # ~/.local/share/change-watch/agents/
+            self.assertEqual(plugins.resolve(str(mine)), mine)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                from changewatch import cli
+                self.assertEqual(cli.main(["--plugin", "mine", "hello"]), 0)
+            self.assertEqual(out.getvalue(), "hi\n")
+            (mine.parent.parent / "other-agent").mkdir()
+            (mine.parent.parent / "other-agent" / "mine.py").write_text("", encoding="utf-8")
+            for bad, word in (("mine", "2 つ以上"), ("nosuch", "見つかりません"), ("sub/gitlab_hub.py", "見つかりません")):
+                with self.assertRaises(Exception) as e:
+                    plugins.resolve(bad)
+                self.assertIn(word, str(e.exception))
 
     def test_plugin_command_without_config(self):
         """needs_config=False のコマンドは、設定も状態も読まずに動く（--config が無くても、設定が壊れていても）。"""

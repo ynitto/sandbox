@@ -111,7 +111,7 @@
 dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
 ```
 
-ラベル・題・説明・状態などを変えるなら、ワークフローに `change-watch --plugin <gitlab_hub.py> fields`（更新の JSON を `名前=値` から作る）と
+ラベル・題・説明・状態などを変えるなら、ワークフローに `change-watch --plugin gitlab_hub fields`（更新の JSON を `名前=値` から作る）と
 `change-watch call PUT` のステップを書く（項目は GitLab の issue の編集のもの: `title`・`add_labels`・`remove_labels`・`description`・`state_event` など）。
 何を書くかはワークフローで決める。
 
@@ -127,7 +127,7 @@ Dagu のワークフローから change-watch の CLI を呼んで、ハブの i
 | `fields` → `retitle` | `change-watch fields "title=【完了】${CHANGE.record.title}"` → `change-watch call PUT "<issue の API>" --json "${UPDATE}"` | 同じ条件で題を変える |
 | `commit` | `change-watch commit --source gitlab-hub-issue --consumer get-post --refresh ${CHANGE.key}` | 見終えたと記録する。自分が変えたあとの姿を基準にするので、自分の変更では次に起きない |
 
-どのステップも change-watch を `--plugin <gitlab_hub.py>` を付けて呼ぶ（下の「このエージェントが足すコマンド」。`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
+どのステップも change-watch を `--plugin gitlab_hub` を付けて呼ぶ（下の「このエージェントが足すコマンド」。`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
 change-watch が issue の URL から作る）。コメントを見るなら `get` を `--source gitlab-hub-notes` にする。
 
 変わったことは GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める。
@@ -168,11 +168,11 @@ Power Automate のフローをそのメールボックスの「新しいメー�
 
 ## このエージェントが足すコマンド
 
-書くものを作るコマンドも、取得・書き込みと同じ change-watch から呼ぶ（`--plugin` に `gitlab_hub.py` を渡す）。設定は読まないので、
-`--config`・`--connections` は付けなくてよい。
+書くものを作るコマンドも、取得・書き込みと同じ change-watch から呼ぶ（`--plugin gitlab_hub`。インストーラが置いたプログラムを
+change-watch が探すので、パスは書かなくてよい）。設定は読まないので、`--config`・`--connections` は付けなくてよい。
 
 ```bash
-change-watch --plugin ~/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py note --text="夜間バッチが終わりました"
+change-watch --plugin gitlab_hub note --text="夜間バッチが終わりました"
 ```
 
 | コマンド | 出すもの | 渡す先 |

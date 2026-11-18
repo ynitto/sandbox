@@ -15,7 +15,7 @@ Dagu の定期実行と change-watch の上に組み、MR に固有の部分だ�
 |---|---|---|
 | GitLab への問い合わせ（いつ取得するか・まとめる・失敗の待ち）と、前回 commit してからの変化 | change-watch | 取得元 `gitlab-mrs`、受け手 `mr-review`（`get --watch sha --watch draft --watch target_branch --one`・`commit`） |
 | 起動・条件・kiro-cli の実行と停止・再試行・ログと実行履歴 | Dagu | ワークフロー `change-watch-mr-review`（`get` → `review`（`preconditions` と `harness.run`、provider: kiro）→ `commit`） |
-| GitLab への読み書き（レビューの中身） | `gitlab_mr.py`（change-watch のプラグインが足すコマンド `mr`） | `context` / `show` / `comment` / `resolve` / `summary`。kiro-cli がプロンプトの指示で `change-watch --plugin gitlab_mr.py mr <コマンド>` を呼ぶ（`.env` の `MR_REVIEW_CLI`。change-watch の設定は読まない。`python3 gitlab_mr.py <コマンド>` と直接呼ぶ口も残す） |
+| GitLab への読み書き（レビューの中身） | `gitlab_mr.py`（change-watch のプラグインが足すコマンド `mr`） | `context` / `show` / `comment` / `resolve` / `summary`。kiro-cli がプロンプトの指示で `change-watch --plugin gitlab_mr mr <コマンド>` を呼ぶ（`.env` の `MR_REVIEW_CLI`。change-watch の設定は読まない。`python3 gitlab_mr.py <コマンド>` と直接呼ぶ口も残す） |
 
 kiro-cli はプロンプトを引数で受け取る（`agents/kiro.json` の `prompt_via: argv`）。差分を引数に載せると長さの上限（Windows は 32K 字）に
 当たるので、プロンプトは MR の番号と手順だけにし、差分は kiro-cli が `context` で取りに行く。

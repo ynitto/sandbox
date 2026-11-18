@@ -211,12 +211,12 @@ class AgentInstallTest(unittest.TestCase):
         env = install.render((install.AGENTS / "gitlab-mr-review-agent" / "gitlab-mr-review-agent.env.example")
                              .read_text(encoding="utf-8"), is_dag=False, **kw)
         self.assertIn("MR_REVIEW_CLI=C:/Python311/python.exe C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz "
-                      "--plugin C:/Users/me/AppData/Local/Programs/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py mr\n", env)
+                      "--plugin gitlab_mr mr\n", env)
         hub = install.render((install.AGENTS / "gitlab-issue-hub-agent" / "change-watch-issue-hub.yaml.example")
                              .read_text(encoding="utf-8"), is_dag=True, **kw)
         self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'            # エージェントのコマンドも change-watch を通す
                       '        - "C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz"\n        - "--plugin"\n'
-                      '        - "C:/Users/me/AppData/Local/Programs/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"\n'
+                      '        - "gitlab_hub"\n'                                   # プラグインは名前で（置き場所は change-watch が探す）
                       '        - "note"\n        - "--"\n        - "C:/Python311/python.exe"', hub)
         self.assertNotIn('"python3"', hub)                              # ワークフローの中の Python も、この PC の Python に
         self.assertNotIn("/home/you/.local/bin", hub)

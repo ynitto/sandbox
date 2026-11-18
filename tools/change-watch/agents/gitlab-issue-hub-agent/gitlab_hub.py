@@ -2,7 +2,7 @@
 
 change-watch のプラグイン（register(api)）として、フィルタとコマンドを足す:
 
-    change-watch --plugin <このファイル> ...
+    change-watch --plugin gitlab_hub ...        （入れてあれば名前で。ほかの場所ならこのファイルのパス）
         フィルタ gitlab_issue_api      {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}
                                        issue の URL（https://gitlab.example.com/group/project/-/issues/42）を、その issue の
                                        API の URL（https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/42）にする。

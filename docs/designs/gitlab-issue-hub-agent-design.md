@@ -25,7 +25,7 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 |---|---|---|
 | ハブの issue の取得・変化を返す・書き込み | change-watch | 取得元 `gitlab-hub-notes`（`GET <issue の API>/notes`、page のページング）と `gitlab-hub-issue`（`GET <issue の API>`、1 件）、どちらも 5 分ごと。`get --consumer`・`commit`・`call`（POST notes / PUT issue） |
 | 起動・条件の分岐・何を書くか・再試行・履歴 | Dagu | 例の `change-watch-issue-hub`（毎分。get → request → reply → commit）、例の `change-watch-issue-hub-update`（params の COMMENT で呼ばれる。compose → comment）、整理 |
-| GitLab に固有のこと | `gitlab_hub.py`（change-watch のプラグイン。コマンドも `change-watch --plugin gitlab_hub.py <コマンド>` で呼び、設定は読まない） | フィルタ `gitlab_issue_api` と、コマンド `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）・`description`（説明の JSON を、`note` と同じ渡し方で作る）・`api-url`（issue の URL から API の URL を出す。無ければハブ）。条件も本文の形も持たない。HTTP は送らない |
+| GitLab に固有のこと | `gitlab_hub.py`（change-watch のプラグイン。コマンドも `change-watch --plugin gitlab_hub <コマンド>` で呼び、設定は読まない） | フィルタ `gitlab_issue_api` と、コマンド `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）・`description`（説明の JSON を、`note` と同じ渡し方で作る）・`api-url`（issue の URL から API の URL を出す。無ければハブ）。条件も本文の形も持たない。HTTP は送らない |
 
 `note` が要るのは、Dagu の引数に任意の文（改行・引用符を含む）を JSON として埋め込むと壊れるため。認証と要求の間隔は change-watch の
 `call` に一本化する。
@@ -34,7 +34,7 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 
 ```
 Dagu: change-watch-issue-hub（毎分。例）
-  （change-watch のステップはどれも --plugin gitlab_hub.py。URL は {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}）
+  （change-watch のステップはどれも --plugin gitlab_hub。URL は {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}）
   get      change-watch get --source gitlab-hub-notes --consumer hub --watch body --one              → CHANGE
   request  preconditions（例）: CHANGE.kind = appeared・CHANGE.record.system = false・CHANGE.record.body が ^【依頼】
            change-watch note -- python3 on_request.py "${CHANGE}"                          → NOTE（{"body": …}）

@@ -8,7 +8,7 @@
 #
 #   compose  説明を JSON（{"description": …}）にする（change-watch の description。改行・引用符を含む文をそのまま渡せる）
 #   target   書き換える issue の API の URL を決める（change-watch の api-url）
-# description・api-url は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub.py を付けて呼ぶ。設定は読まない）。
+# description・api-url は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub を付けて呼ぶ。設定は読まない）。
 #   update   issue を更新する（change-watch call PUT）
 description: "決めた GitLab の issue の説明を書き換える（ISSUE_URL を渡さなければハブの issue）"
 type: graph
@@ -25,7 +25,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "description"
         - "--text=${params.DESCRIPTION}"
     timeout_sec: 60
@@ -40,7 +40,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "api-url"
         - "--url=${params.ISSUE_URL}"
     timeout_sec: 60
@@ -55,7 +55,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"

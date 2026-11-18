@@ -188,7 +188,7 @@ def cmd_call(cfg, store, a) -> int:
 
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--plugin", action="append", default=[],
-                   help="読み込むプラグイン（.py のパス。繰り返し可）")
+                   help="読み込むプラグイン（入れてあるエージェントのプログラムの名前か、.py のパス。繰り返し可）")
 
 
 def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentParser:
