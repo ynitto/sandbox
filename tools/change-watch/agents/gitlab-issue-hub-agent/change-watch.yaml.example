@@ -7,7 +7,7 @@
 # 取得元は 2 つ: issue に付いたコメント（gitlab-hub-notes）と、issue そのもの（gitlab-hub-issue。題・説明・ラベル・状態など）。
 #
 # ハブの issue の URL とトークンは ~/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env にだけ書く。
-# URL から API の URL を作るフィルタ gitlab_issue_api は gitlab_hub.py のもの（change-watch を --plugin gitlab_hub.py で呼ぶ）。
+# URL から API の URL を作るフィルタ gitlab_issue_api は gitlab_hub.py のもの（change-watch を --plugin gitlab_hub.py で呼ぶ。コメントの本文などを作るコマンドも同じ口から呼ぶ）。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る（ほかの GitLab のエージェントと同じものでよい。url は使わない）:
 #
 #   gitlab:

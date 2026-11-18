@@ -198,6 +198,7 @@ def render(text: str, *, windows: bool, home: Path, bin_dir: Path, python: str, 
         text = re.sub(r"(?m)^(\s*- )python3$", lambda m: m.group(1) + py, text)     # 設定のコマンドの argv
         text = re.sub(r'(?m)^(\s*(?:command: |- ))"python3"', lambda m: f'{m.group(1)}"{py}"', text)   # ワークフローの Python
         text = text.replace("=python3 ", f"={py} ")                                 # .env のコマンド
+        text = text.replace(f"={exe} ", f"={py} {pyz} ")                            # .env の change-watch のコマンド
     else:
         text = text.replace(exe, _posix(bin_dir / NAME))
     return text

@@ -1,7 +1,8 @@
 """gitlab-mr-review-agent — GitLab の MR をエージェント CLI（kiro-cli など）にレビューさせるときに、エージェントが使うコマンド。
 どの MR をいつレビューするかは Dagu のワークフロー（change-watch get / commit）が決める。
 
-    python3 <このファイル> <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
+    change-watch --plugin <このファイル> mr <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
+                                      python3 <このファイル> <コマンド> ... と直接呼んでも同じ
         prepare                       レビュー用の作業フォルダ（MR_REVIEW_WORKTREE）を作る。手元のリポジトリ
                                       （MR_REVIEW_REPO_DIR。既にある作業コピーでよい）が無ければ 1 回だけ取ってくる
         context IID [--since SHA]     MR の概要・前回の指摘（このツールが書いた未解決のスレッド）・差分を出す。
@@ -810,13 +811,7 @@ def _add_body(p) -> None:
     g.add_argument("--body-file", help="本文のファイル（UTF-8）")
 
 
-def main(argv: list[str] | None = None) -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")     # Windows の cp932 / cp1252 でも日本語を出す
-        except (AttributeError, ValueError):
-            pass
-    p = argparse.ArgumentParser(prog="gitlab_mr.py", description="GitLab の MR のレビューで使うコマンド")
+def _add_arguments(p) -> None:
     p.add_argument("--project", default=os.environ.get("GITLAB_PROJECT", ""),
                    help="プロジェクト（group/project か ID。既定は環境変数 GITLAB_PROJECT）")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -842,8 +837,9 @@ def main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("summary", help="今のコミットのレビューのまとめを 1 回だけ書く")
     u.add_argument("iid", type=_iid)
     _add_body(u)
-    args = p.parse_args(argv)
 
+
+def run(args) -> int:
     url, token = os.environ.get("GITLAB_URL", ""), os.environ.get("GITLAB_TOKEN", "")
     if not url or not token or not args.project:
         print("環境変数 GITLAB_URL・GITLAB_TOKEN・GITLAB_PROJECT を設定してください", file=sys.stderr)
@@ -869,6 +865,23 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, GitLabError, GitError, subprocess.TimeoutExpired) as e:
         print(str(e), file=sys.stderr)
         return FAILED
+
+
+def register(api) -> None:
+    """change-watch のコマンド mr（change-watch --plugin <このファイル> mr context 12 など。change-watch の設定は読まない）。"""
+    _add_arguments(api.add_command("mr", lambda _cfg, _store, a: run(a), "GitLab の MR のレビューで使うコマンド", needs_config=False))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """python3 <このファイル> ... で直接呼ぶ口（change-watch を通すのと同じコマンド）。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")     # Windows の cp932 / cp1252 でも日本語を出す
+        except (AttributeError, ValueError):
+            pass
+    p = argparse.ArgumentParser(prog="gitlab_mr.py", description="GitLab の MR のレビューで使うコマンド")
+    _add_arguments(p)
+    return run(p.parse_args(argv))
 
 
 if __name__ == "__main__":

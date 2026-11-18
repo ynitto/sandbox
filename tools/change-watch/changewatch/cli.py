@@ -200,9 +200,9 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name: str, fn, help: str):
+    def add(name: str, fn, help: str, needs_config: bool = True):
         sp = sub.add_parser(name, help=help, description=help)
-        sp.set_defaults(fn=fn)
+        sp.set_defaults(fn=fn, needs_config=needs_config)
         return sp
 
     add("check", cmd_check, "設定と接続設定を確かめる（API には問い合わせない）")
@@ -248,7 +248,7 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
 
 def main(argv: list[str] | None = None) -> int:
     setup_stdio()
-    pre = argparse.ArgumentParser(add_help=False)
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)   # サブコマンドの --p… を --plugin と読まない
     _common(pre)
     known, _ = pre.parse_known_args(argv)
     hooks.reset_plugins()
@@ -258,6 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         warn(str(e))
         return EXIT_ERROR
     a = parser.parse_args(argv)
+    if not a.needs_config:                  # 設定も状態も要らない、プラグインのコマンド（書くものを作るだけ、など）
+        try:
+            return a.fn(None, None, a)
+        except ConfigError as e:
+            warn(str(e))
+            return EXIT_ERROR
     try:
         cfg = configmod.load(a.config, a.connections, a.state_dir)
         store = Store(cfg.state_dir)

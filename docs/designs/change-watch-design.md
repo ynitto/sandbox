@@ -39,6 +39,9 @@ GitLab の issue の変化でエージェントを動かす [gitlab-issue-agent]
 | `dags/*.example.yaml` | change-watch を使う Dagu のワークフローの例（§2.0.1）。利用者がコピーして直す | Dagu |
 
 - プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_filter(name, fn)`・`api.add_command(name, fn, help)` を呼ぶ。
+  エージェントに固有の処理（書くものを作る・レビューの中で GitLab に読み書きする）も、ワークフローからは change-watch のコマンドとして呼ぶ
+  （入り口を 1 つにし、Windows でも Python と `.pyz` の同じ置き換えで済ませる）。設定と状態が要らないコマンドは `needs_config=False` で足し、
+  本体は設定の読み込みと状態の DB を開くのを飛ばして `fn(None, None, args)` を呼ぶ。
   本体はコマンド行の `--plugin` を先に読み（`parse_known_args`）、指定されたプラグインだけを読み込んでから残りの引数を解釈する。
   1 回の実行の始めにプラグインの登録を外すので、同じプロセスで続けて呼んでも前の指定は残らない
 - 配布: `install.py build` が `changewatch/` の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば

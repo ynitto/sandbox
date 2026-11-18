@@ -2,6 +2,8 @@
 設定と接続設定の読み方を確かめる。"""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -345,6 +347,28 @@ class OpsTest(unittest.TestCase):
         code, out = env.run("status")
         self.assertEqual(code, 1)
         self.assertIn("nosuch.py", out)
+
+    def test_plugin_command_without_config(self):
+        """needs_config=False のコマンドは、設定も状態も読まずに動く（--config が無くても、設定が壊れていても）。"""
+        env = Env(self)
+        plugin = env.tmp / "p.py"
+        plugin.write_text("def register(api):\n"
+                          "    p = api.add_command('shout', lambda cfg, store, a: print(a.word.upper(), cfg, store) or 0,\n"
+                          "                        '大文字にする', needs_config=False)\n"
+                          "    p.add_argument('--word')\n"
+                          "    p.add_argument('rest', nargs='*')\n"
+                          "    api.add_command('count', lambda cfg, store, a: print(len(cfg.sources)) or 0, '取得元の数')\n",
+                          encoding="utf-8")
+        from changewatch import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--plugin", str(plugin), "--config", str(env.tmp / "nosuch.yaml"), "shout", "--word=a", "--", "--p", "x"])
+        self.assertEqual((code, out.getvalue()), (0, "A None None\n"), err.getvalue())
+        self.assertFalse((env.tmp / "state").exists())
+        env.write_config({"items": env.source()})
+        env.plugins = [str(plugin)]
+        env.ok(self, "count")                                            # 既定（needs_config=True）は設定を読んで渡す
+        self.assertEqual(env.stdout, "1\n")
 
     def test_connections_only_from_cli_path(self):
         try:

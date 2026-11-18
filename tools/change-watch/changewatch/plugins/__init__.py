@@ -5,6 +5,8 @@
 プラグインは `register(api)` を持つ 1 つの Python ファイルで、api を通じて次を足す:
 
     api.add_command(name, fn, help) -> parser   サブコマンド。fn(cfg, store, args) -> 終了コード
+        needs_config=False を付けると、設定と状態を読まずに fn(None, None, args) を呼ぶ（--config が要らない。
+        エージェントに固有の、書くものを作るだけのコマンドなど）。返る parser に引数（やサブコマンド）を足す
     api.add_filter(name, fn)                    テンプレートのフィルタ。fn(value, arg) -> 値（changewatch.hooks）
 
 どの口も名前で登録し、本体は使う時点で名前から探す。プラグインは本体の内部（DB・取得の仕組み）に直接触らない。
@@ -30,10 +32,10 @@ class PluginAPI:
     def add_filter(self, name: str, fn) -> None:
         hooks.add_filter(name, fn, f"プラグイン {self.plugin}")
 
-    def add_command(self, name: str, fn, help: str):
+    def add_command(self, name: str, fn, help: str, needs_config: bool = True):
         if self._add_command is None:
             raise ConfigError(f"プラグイン {self.plugin}: ここではコマンドを足せません")
-        return self._add_command(name, fn, help)
+        return self._add_command(name, fn, help, needs_config)
 
 
 def _import(spec: str) -> ModuleType:

@@ -1,6 +1,6 @@
 """gitlab-issue-hub-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_hub.py のフィルタ gitlab_issue_api・note・description・api-url・fields と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
+gitlab_hub.py のフィルタ gitlab_issue_api とコマンド note・description・api-url・fields（直接と、change-watch を通して）と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
 Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -314,6 +314,23 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["get"], 0)
         self.gl.add("あとから付いたコメント")
         self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["request"], None)
+
+    def test_commands_run_through_change_watch_without_config(self):
+        """note・description・fields・api-url は change-watch --plugin gitlab_hub.py <コマンド> で動く（設定は読まない）。"""
+        def cw(*args):
+            return subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PROGRAM), *args], capture_output=True,
+                                  text=True, encoding="utf-8", env=self.env)
+        p = cw("note", "--text=1 行目\n/close")
+        self.assertEqual((p.returncode, json.loads(p.stdout)), (0, {"body": "1 行目\n\\/close"}), p.stderr)
+        p = cw("description", "--", sys.executable, "-c", "print('出力 --plugin x')")
+        self.assertEqual((p.returncode, json.loads(p.stdout)), (0, {"description": "出力 --plugin x"}), p.stderr)
+        p = cw("note", "--", sys.executable, "-c", "import sys; sys.exit(5)")
+        self.assertEqual((p.returncode, p.stdout), (5, ""))
+        p = cw("fields", "title=【完了】題", "add_labels=完了")
+        self.assertEqual(json.loads(p.stdout), {"title": "【完了】題", "add_labels": "完了"})
+        p = cw("api-url")
+        self.assertEqual(p.stdout.strip(), f"{self.gl.url}/api/v4/projects/group%2Fhub/issues/{ISSUE}")
+        self.assertFalse((self.tmp / "state").exists())
 
     def test_issue_itself_changes_are_detected_and_it_can_be_edited(self):
         def cw(*args):

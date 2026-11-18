@@ -55,8 +55,9 @@ steps:
       failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
     action: exec
     with:
-      command: "python3"
+      command: "/home/you/.local/bin/change-watch"
       args:
+        - "--plugin"
         - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
         - "note"
         - "--"
