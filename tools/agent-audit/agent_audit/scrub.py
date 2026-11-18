@@ -10,11 +10,12 @@ import re
 
 # 資格情報らしいパターン（値の形で判る系 + key=value の系）。
 _SECRET_VALUE_RES = (
-    re.compile(r"\b(?:gh[pousr]|glpat|xox[baprs])-[A-Za-z0-9_-]{8,}\b"),   # GitHub/GitLab/Slack トークン
+    re.compile(r"\b(?:gh[pousr][_-]|github_pat_|glpat-|xox[baprs]-)[A-Za-z0-9_-]{8,}\b"),  # GitHub/GitLab/Slack トークン
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),                              # APIキー（sk- 系）
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                    # AWS access key id
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b"),  # JWT
 )
+_BEARER_RE = re.compile(r"(?i)\bBearer[ \t]+[^\s\"'`,;]+")
 _SECRET_KV_RE = re.compile(
     r"(?i)\b(password|passwd|secret|token|api[_-]?key|authorization|bearer)"
     r"([=:]\s*)(\S+)")
@@ -36,6 +37,7 @@ def scrub_text(text: str) -> str:
     out = text
     for rex in _SECRET_VALUE_RES:
         out = rex.sub("[REDACTED]", out)
+    out = _BEARER_RE.sub("[REDACTED]", out)
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", out)
     out = _home_pattern().sub("~", out)
     return out
