@@ -355,7 +355,7 @@ class OpsTest(unittest.TestCase):
     def test_plugin_by_name(self):
         """--plugin は、入れてあるエージェントのプログラムの名前（gitlab_hub・gitlab_hub.py）でもよい。パスがあればパスを使う。"""
         from changewatch import plugins
-        home = Path(tempfile.mkdtemp(prefix="changewatch-home-"))
+        home = Path(tempfile.mkdtemp(prefix="changewatch-home-")).resolve()      # Windows の短い名前（RUNNER~1）を長い名前に
         self.addCleanup(shutil.rmtree, home, True)
         hub = ROOT / "agents" / "gitlab-issue-hub-agent" / "gitlab_hub.py"
         with patch.object(Path, "home", lambda: home):
