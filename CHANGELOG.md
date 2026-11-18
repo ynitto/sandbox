@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: gitlab-issue-hub-agent に、決めた issue の説明を書き換えるコマンドと例を足す
+
+- `gitlab_hub.py description` が、文・ファイル・コマンドの出力から issue の説明を書き換える JSON を作る（渡し方と、行頭の `/` を
+  効かなくすること・空なら何も出さないことは `note` と同じ）。`gitlab_hub.py api-url --url=<issue の URL>` が、その issue の API の URL を
+  出す（無ければハブの issue）
+- Dagu の例 `examples/change-watch-issue-hub-description.yaml.example` を足す。`ISSUE_URL`（無ければハブ）と `DESCRIPTION` を渡して呼ぶ
+
 ### copilot-app-jobs: 締め切り間際の結果の取りこぼしと、分かりにくい失敗を直す
 
 - 待つ時間の終わり際に結果が出ると、書き終わりを見届ける前に「終わらなかった」（終了コード 4）と返していたのを直す。

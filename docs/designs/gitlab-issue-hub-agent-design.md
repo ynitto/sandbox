@@ -25,7 +25,7 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 |---|---|---|
 | ハブの issue の取得・変化を返す・書き込み | change-watch | 取得元 `gitlab-hub-notes`（`GET <issue の API>/notes`、page のページング）と `gitlab-hub-issue`（`GET <issue の API>`、1 件）、どちらも 5 分ごと。`get --consumer`・`commit`・`call`（POST notes / PUT issue） |
 | 起動・条件の分岐・何を書くか・再試行・履歴 | Dagu | 例の `change-watch-issue-hub`（毎分。get → request → reply → commit）、例の `change-watch-issue-hub-update`（params の COMMENT で呼ばれる。compose → comment）、整理 |
-| GitLab に固有のこと | `gitlab_hub.py` | フィルタ `gitlab_issue_api`（プラグイン）と `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）。条件も本文の形も持たない。HTTP は送らない |
+| GitLab に固有のこと | `gitlab_hub.py` | フィルタ `gitlab_issue_api`（プラグイン）と `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）・`description`（説明の JSON を、`note` と同じ渡し方で作る）・`api-url`（issue の URL から API の URL を出す。無ければハブ）。条件も本文の形も持たない。HTTP は送らない |
 
 `note` が要るのは、Dagu の引数に任意の文（改行・引用符を含む）を JSON として埋め込むと壊れるため。認証と要求の間隔は change-watch の
 `call` に一本化する。
@@ -54,7 +54,15 @@ examples/change-watch-issue-hub-get-post（インストーラは置かない。g
   compose → comment   条件（例: ラベル「完了」・題がまだ【完了】で始まらない）で note → call POST …/notes
   fields → retitle    同じ条件で fields title=【完了】… → call PUT <issue の API>
   commit   commit --refresh（取得元 gitlab-hub-issue の item で取り直し、自分の変更を次の変化にしない）
+
+examples/change-watch-issue-hub-description（インストーラは置かない。予定なし。dagu start … -- ISSUE_URL=… DESCRIPTION=…）
+  compose  python3 gitlab_hub.py description --text=${params.DESCRIPTION}                            → UPDATE（{"description": …}）
+  target   preconditions: UPDATE が ^{"description"。python3 gitlab_hub.py api-url --url=${params.ISSUE_URL}   → ISSUE_API
+  update   change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"
 ```
+
+ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
+`api-url` が API の URL を先に作って渡す。接続と要求の間隔は取得元 `gitlab-hub-issue` のものを借りる。
 
 ### 3.1 自分の書き込みでループしない
 
@@ -104,6 +112,7 @@ issue が閉じられる。`note` は本文の行頭の `/` を `\/` にする�
 GET・PUT。プロジェクトは `group/hub` で `%2F` になること）、設定の例とワークフローの例をそのまま本物の change-watch と `test/dagrun.py` で回す。
 
 - `gitlab_issue_api`: issue の URL（下のグループ・`#note_…`・旧形式の `/issues/`・`work_items`）と API の URL、ほかの URL は止める
+- `description`・`api-url`: 説明の JSON（`note` と同じ渡し方・空なら出さない）、指した issue かハブの API の URL、issue でない URL は止める
 - `fields`: `名前=値` を JSON にする（引用符を含む題・`=` を含む値、`description` のクイックアクション）、形の誤りは止める
 - `note`: 本文をそのまま、クイックアクションを効かなくする、`-` で始まる本文・ファイル・コマンドの出力。空なら何も出さない。
   コマンドの失敗は何も出さずに終了コードを返す。本文の渡し方は 1 つだけ

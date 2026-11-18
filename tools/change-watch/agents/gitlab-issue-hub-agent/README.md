@@ -132,6 +132,28 @@ change-watch が issue の URL から作る）。コメントを見るなら `ge
 
 変わったことは GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める。
 
+## 決めた issue の説明を書き換える例（`examples/change-watch-issue-hub-description.yaml.example`）
+
+issue の説明を、渡した文に丸ごと入れ替える。インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
+`ISSUE_URL` を渡さなければハブの issue、渡せばその issue（同じ GitLab の、トークンで変えられるもの）を書き換える。`DESCRIPTION` が空なら何もしない。
+
+```bash
+dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが終わりました"
+```
+
+```bash
+dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.example.com/group/project/-/issues/7" DESCRIPTION="夜間バッチが終わりました"
+```
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `compose` | `gitlab_hub.py description --text=…` | 説明を `call` に渡す形にする。何行もある説明は `--text-file=<ファイル>` か `-- <コマンド> [引数...]`（標準出力が説明になる）で渡す |
+| `target` | `gitlab_hub.py api-url --url=…` | 書き換える issue を決める（URL が空ならハブの issue） |
+| `update` | `change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"` | issue を更新する |
+
+前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
+書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
+
 ## Power Automate とつなぐ
 
 **メール → ハブの issue（頼まれる）**。Power Automate のフローを「新しいメールが届いたとき」で始め、件名や差出人で絞って、次のどちらかで

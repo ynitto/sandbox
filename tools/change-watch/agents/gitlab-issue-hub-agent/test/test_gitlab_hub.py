@@ -1,6 +1,6 @@
 """gitlab-issue-hub-agent のテスト（標準ライブラリと PyYAML。`python -m unittest discover -s test`）。
 
-gitlab_hub.py のフィルタ gitlab_issue_api・note・fields と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
+gitlab_hub.py のフィルタ gitlab_issue_api・note・description・api-url・fields と、設定の例（change-watch.yaml.example）と Dagu のワークフローの例を本物の change-watch で
 Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる。GitLab は手元の HTTP サーバで偽装する。
 """
 from __future__ import annotations
@@ -36,6 +36,7 @@ spec.loader.exec_module(gh)
 TOKEN = "glpat-test"
 PROJECT = "group/hub"
 ISSUE = 42
+OTHER = 7                # ハブでない issue（説明を書き換える例が、URL で指す）
 BOT = {"id": 1, "username": "hub-bot"}
 ALICE = {"id": 2, "username": "alice"}
 
@@ -55,10 +56,12 @@ class FakeGitLab:
         self.posted: list[str] = []
         self.updates: list[dict] = []
         self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
+        self.other = {"iid": OTHER, "title": "ほかの issue", "description": "前の説明", "labels": [], "state": "opened"}
         self.lock = threading.Lock()
         outer = self
         issue_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{ISSUE}"
         path = issue_path + "/notes"
+        other_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{OTHER}"
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -93,9 +96,13 @@ class FakeGitLab:
             def do_PUT(self):
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if urlparse(self.path).path == other_path:
+                    with outer.lock:
+                        outer.other.update(body)
+                        return self._send(200, dict(outer.other))
                 if urlparse(self.path).path != issue_path:
                     return self._send(404, {"message": "404 Not found"})
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 with outer.lock:
                     outer.updates.append(body)
                     if "add_labels" in body:
@@ -209,6 +216,25 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), {"title": '【完了】"引用"の題', "add_labels": "完了,済",
                                            "description": "\\/close\n本文", "a": "b=c"})
+
+    def test_description_takes_the_text_like_note(self):
+        code, out, _ = run_main("description", "--text=1 行目\n/close\n")
+        self.assertEqual((code, json.loads(out)), (gh.OK, {"description": "1 行目\n\\/close"}))
+        code, out, _ = run_main("description", "--", sys.executable, "-c", "print('出力')")
+        self.assertEqual((code, json.loads(out)), (gh.OK, {"description": "出力"}))
+        self.assertEqual(run_main("description", "--text= ")[:2], (gh.OK, ""))       # 空なら何も出さない（説明を消さない）
+
+    def test_api_url_of_the_given_issue_or_the_hub(self):
+        old = os.environ.get("GITLAB_HUB_ISSUE_URL")
+        os.environ["GITLAB_HUB_ISSUE_URL"] = "https://gitlab.example.com/group/hub/-/issues/42"
+        self.addCleanup(lambda: os.environ.pop("GITLAB_HUB_ISSUE_URL") if old is None else os.environ.update(GITLAB_HUB_ISSUE_URL=old))
+        self.assertEqual(run_main("api-url", "--url=https://gitlab.example.com/a/b/-/issues/7")[:2],
+                         (gh.OK, "https://gitlab.example.com/api/v4/projects/a%2Fb/issues/7\n"))
+        for argv in (["api-url"], ["api-url", "--url="]):
+            self.assertEqual(run_main(*argv)[:2], (gh.OK, "https://gitlab.example.com/api/v4/projects/group%2Fhub/issues/42\n"))
+        code, out, err = run_main("api-url", "--url=https://example.com/x")
+        self.assertEqual((code, out), (gh.USAGE, ""))
+        self.assertIn("issue の URL ではありません", err)
 
     def test_bad_pairs_are_refused(self):
         self.assertEqual(run_main("fields", "title")[0], gh.USAGE)
@@ -325,6 +351,18 @@ class ExampleFlowTest(unittest.TestCase):
             self.gl.issue["description"] = "もう一度変えた"
         self.assertEqual(self.run_dag(dag)["comment"], None)             # 題が【完了】で始まるので、二度は書かない
         self.assertEqual(len(self.gl.posted), 1)
+
+    def test_description_example(self):
+        dag = "examples/change-watch-issue-hub-description.yaml.example"
+        done = {"compose": 0, "target": 0, "update": 0}
+        self.assertEqual(self.run_dag(dag, DESCRIPTION='## 状況\n"夜間バッチ" 済\n/close', ISSUE_URL=""), done)   # 指さなければハブ
+        self.assertEqual(self.gl.issue["description"], '## 状況\n"夜間バッチ" 済\n\\/close')
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="書き換えた説明", ISSUE_URL=f"{self.gl.url}/{PROJECT}/-/issues/{OTHER}"), done)
+        self.assertEqual(self.gl.other["description"], "書き換えた説明")              # URL で指した issue だけが変わる
+        self.assertEqual(self.gl.issue["description"], '## 状況\n"夜間バッチ" 済\n\\/close')
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="", ISSUE_URL=""), {"compose": 0, "target": None, "update": None})   # 空なら消さない
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="x", ISSUE_URL="https://example.com/not-an-issue")["target"], gh.USAGE)
+        self.assertEqual(len(self.gl.updates), 1)
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})
