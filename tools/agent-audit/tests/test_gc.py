@@ -64,6 +64,23 @@ class ScrubTests(unittest.TestCase):
         self.assertNotIn("hunter2", s)
         self.assertIn("[REDACTED]", s)
 
+    def test_github_token_formats_redacted(self):
+        for prefix in ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"):
+            with self.subTest(prefix=prefix):
+                secret = prefix + "abcdefghijklmnop12345678"
+                self.assertEqual(scrub.scrub_text(f"credential: {secret}"),
+                                 "credential: [REDACTED]")
+
+    def test_bearer_authorization_redacted(self):
+        for text in ("Authorization: Bearer opaque-credential",
+                     "authorization=Bearer\topaque-credential",
+                     "curl -H 'Authorization: bearer opaque-credential'",
+                     "Bearer opaque-credential"):
+            with self.subTest(text=text):
+                result = scrub.scrub_text(text)
+                self.assertNotIn("opaque-credential", result)
+                self.assertIn("[REDACTED]", result)
+
     def test_home_path_relativized(self):
         home = os.path.expanduser("~")
         self.assertEqual(scrub.scrub_text(f"see {home}/repo/file.py"), "see ~/repo/file.py")
