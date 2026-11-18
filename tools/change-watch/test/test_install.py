@@ -1,7 +1,9 @@
 """インストーラのテスト: 1 つの実行可能な zip（.pyz）を作り、そのファイルだけで取得から受け渡しまで動くこと。"""
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -33,8 +35,8 @@ class InstallTest(unittest.TestCase):
         installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installer)
         pyz = env.tmp / "change-watch.pyz"
-        with patch.object(installer, "HERE", source):
-            installer.build(pyz, None, False)
+        with patch.object(installer, "HERE", source), contextlib.redirect_stdout(io.StringIO()):
+            installer.build(pyz, None, False)       # 案内の文は受けて捨てる（Windows のコンソールの文字コードで書けない）
         with zipfile.ZipFile(pyz) as archive:
             self.assertEqual(archive.read("changewatch/__init__.py"), module.read_bytes())
         self.assertEqual(module.stat().st_mtime, 0)  # 元のファイルは変更しない
