@@ -1,0 +1,9 @@
+version: 1
+preset: ja
+failOn: error
+evaluators:
+  textlint: true
+  markdownlint: true
+  mermaid: true
+  plantuml: true
+tools: []

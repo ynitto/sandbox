@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "devDependencies": {
+    "textlint": "^15.0.0",
+    "markdownlint": "^0.38.0",
+    "mermaid": "12.2.0",
+    "jsdom": "^26.1.0",
+    "@plantuml/mcp-js": "0.2.2",
+    "@viz-js/viz": "^3.0.0",
+    "textlint-rule-preset-ja-technical-writing": "^12.0.0"
+  }
+}
