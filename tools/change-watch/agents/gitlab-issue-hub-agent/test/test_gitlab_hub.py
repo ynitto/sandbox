@@ -236,6 +236,14 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual((code, out), (gh.USAGE, ""))
         self.assertIn("issue の URL ではありません", err)
 
+    def test_api_url_accepts_only_issue_endpoints(self):
+        issue = "https://gitlab.example.com/gitlab/api/v4/projects/a%2Fb/issues/7"
+        self.assertEqual(run_main("api-url", f"--url={issue}")[:2], (gh.OK, issue + "\n"))
+        for url in (issue + "/notes", "https://gitlab.example.com/api/v4/projects/7",
+                    "https://gitlab.example.com/?next=/api/v4/projects/7/issues/1"):
+            with self.subTest(url=url):
+                self.assertEqual(run_main("api-url", f"--url={url}")[:2], (gh.USAGE, ""))
+
     def test_bad_pairs_are_refused(self):
         self.assertEqual(run_main("fields", "title")[0], gh.USAGE)
         self.assertEqual(run_main("fields", "=x")[0], gh.USAGE)

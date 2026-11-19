@@ -312,10 +312,15 @@ def cmd_check_request(a) -> int:
 def cmd_api_url(a) -> int:
     url = (a.url or "").strip() or os.environ.get("GITLAB_HUB_ISSUE_URL", "")
     try:
-        print(gitlab_issue_api(url))
+        api_url = gitlab_issue_api(url)
+        parts = urllib.parse.urlsplit(api_url)
+        if (parts.scheme not in ("http", "https") or not parts.hostname
+                or not re.fullmatch(r".*/api/v4/projects/[^/]+/issues/[0-9]+", parts.path)):
+            raise ValueError("GitLab の issue の API URL ではありません")
     except ValueError as e:
         print(e, file=sys.stderr)
         return USAGE
+    print(api_url)
     return OK
 
 

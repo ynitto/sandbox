@@ -370,11 +370,15 @@ class OpsTest(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 from changewatch import cli
-                self.assertEqual(cli.main(["--plugin", "mine", "hello"]), 0)
+                self.assertEqual(cli.main(["--plug", "mine", "--plugin=mine.py", "--plugin", str(mine), "hello"]), 0)
             self.assertEqual(out.getvalue(), "hi\n")
             (mine.parent.parent / "other-agent").mkdir()
+            (mine.parent.parent / "other-agent" / "mine.py").mkdir()
+            self.assertEqual(plugins.resolve("mine"), mine)
+            (mine.parent.parent / "other-agent" / "mine.py").rmdir()
             (mine.parent.parent / "other-agent" / "mine.py").write_text("", encoding="utf-8")
-            for bad, word in (("mine", "2 つ以上"), ("nosuch", "見つかりません"), ("sub/gitlab_hub.py", "見つかりません")):
+            for bad, word in (("mine", "2 つ以上"), ("m?ne", "見つかりません"), ("nosuch", "見つかりません"),
+                              ("sub/gitlab_hub.py", "見つかりません")):
                 with self.assertRaises(Exception) as e:
                     plugins.resolve(bad)
                 self.assertIn(word, str(e.exception))
@@ -386,14 +390,14 @@ class OpsTest(unittest.TestCase):
         plugin.write_text("def register(api):\n"
                           "    p = api.add_command('shout', lambda cfg, store, a: print(a.word.upper(), cfg, store) or 0,\n"
                           "                        '大文字にする', needs_config=False)\n"
-                          "    p.add_argument('--word')\n"
+                          "    p.add_argument('--word', '--plugin')\n"
                           "    p.add_argument('rest', nargs='*')\n"
                           "    api.add_command('count', lambda cfg, store, a: print(len(cfg.sources)) or 0, '取得元の数')\n",
                           encoding="utf-8")
         from changewatch import cli
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["--plugin", str(plugin), "--config", str(env.tmp / "nosuch.yaml"), "shout", "--word=a", "--", "--p", "x"])
+            code = cli.main(["--plugin", str(plugin), "--config", str(env.tmp / "nosuch.yaml"), "shout", "--plugin=a", "--", "--p", "x"])
         self.assertEqual((code, out.getvalue()), (0, "A None None\n"), err.getvalue())
         self.assertFalse((env.tmp / "state").exists())
         env.write_config({"items": env.source()})
