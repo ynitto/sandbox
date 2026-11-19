@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 30 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計資料は 40 件（この README を除く Markdown ファイル）。うち 35 件をカテゴリ別に整理し、読む順序を示す。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 29 件）
+## カテゴリ別索引（全 40 件中 35 件を掲載）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -36,6 +36,7 @@
 
 | ファイル | 要旨 |
 |---|---|
+| [`gitlab-ci-triage-agent-design.md`](./gitlab-ci-triage-agent-design.md) | GitLab の失敗したパイプラインを change-watch と Dagu で拾い、マスク済みログを決まったパターンで分類する設計。MR・コミット・ハブの issue の順に投稿先を選び、診断の指紋で二重投稿を防ぐ。 |
 | [`gitlab-issue-agent-design.md`](./gitlab-issue-agent-design.md) | GitLab の issue の変化を拾い、エージェント CLI を同時に 1 セッションだけ流す仕組みの設計。GitLab への問い合わせと前回処理してからの変化は change-watch の `get` / `commit`、条件の分岐・エージェント CLI の実行（`harness.run`）・再試行・排他は Dagu が受け持ち、プログラムは持たない。gitlab-idd スキルとは、ロールごとに受け手を分け、ラベルの条件で選ぶ形で繋ぐ。 |
 | [`gitlab-issue-hub-agent-design.md`](./gitlab-issue-hub-agent-design.md) | URL で決めた 1 つの GitLab の issue を、メールと Power Automate をつなぐハブにする仕組みの設計。エージェントは issue の変化（新しく付いたコメント・issue そのもの）を返すことと、issue を変える（コメント・更新）ことだけを受け持ち、どの変化に反応するか・何を書くかは Dagu のワークフローに、変化を受けて何をするかは Power Automate に置く。メールは GitLab の通知メールに任せる。 |
 | [`gitlab-mr-review-agent-design.md`](./gitlab-mr-review-agent-design.md) | 決めた GitLab のリポジトリの MR を kiro-cli に 1 件ずつレビューさせる仕組みの設計。gitlab-issue-agent と同じく change-watch と Dagu の上に組む。変化を head のコミット・ドラフト・対象ブランチに絞り、レビューし終えたコミットを change-watch の受け手が覚え、差分の指紋と書き込みの印で、同じ MR を重ねてレビューしない。新しいコミットでは自分の未解決のスレッドを確かめ、直っていれば返信して解決にする。 |

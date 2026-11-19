@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "mask": [],
+  "patterns": [
+    {
+      "id": "site-toolchain-missing",
+      "enabled": false,
+      "category": "configuration",
+      "title": "ビルドツールチェーンが見つからない",
+      "priority": 60,
+      "match": {
+        "regex": [
+          "^Toolchain (?P<name>[^ ]+) is unavailable$"
+        ],
+        "stage": "^build$"
+      },
+      "next_action": "{name} がランナーに入っているか確かめてください。"
+    }
+  ]
+}
