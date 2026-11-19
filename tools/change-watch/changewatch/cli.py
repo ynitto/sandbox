@@ -186,17 +186,17 @@ def cmd_call(cfg, store, a) -> int:
     return EXIT_OK
 
 
-def _common(p: argparse.ArgumentParser) -> None:
+def _global_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--plugin", action="append", default=[],
                    help="読み込むプラグイン（入れてあるエージェントのプログラムの名前か、.py のパス。繰り返し可）")
+    p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
+    p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
+    p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
 
 
 def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="change-watch", description="ワークフロー（Dagu）から API を使う口: 取得をまとめ、前回から変わったレコードを返し、書き込みも通す")
-    _common(p)
-    p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
-    p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
-    p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
+    _global_args(p)
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -248,8 +248,11 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
 
 def main(argv: list[str] | None = None) -> int:
     setup_stdio()
-    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)   # サブコマンドの --p… を --plugin と読まない
-    _common(pre)
+    pre = argparse.ArgumentParser(add_help=False)
+    _global_args(pre)
+    pre.add_argument("-h", "--help", action="store_true")
+    pre.add_argument("--version", action="store_true")
+    pre.add_argument("command", nargs=argparse.REMAINDER)  # サブコマンド以降はプラグインを読み込んでから解釈する
     known, _ = pre.parse_known_args(argv)
     hooks.reset_plugins()
     try:

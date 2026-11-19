@@ -57,7 +57,7 @@ def resolve(spec: str) -> Path:
     name = spec if spec.endswith(".py") else spec + ".py"
     dirs = agent_dirs()
     for d in dirs:                                       # 先に見つかった置き場所のものを使う
-        found = sorted(d.glob(f"*/{name}"))
+        found = sorted(path for agent in d.glob("*") if (path := agent / name).is_file())
         if len(found) > 1:
             raise ConfigError(f"プラグイン {spec} が 2 つ以上あります（{'・'.join(str(f) for f in found)}）。パスで書いてください")
         if found:
@@ -66,8 +66,7 @@ def resolve(spec: str) -> Path:
                       "--plugin には、入れてあるエージェントのプログラムの名前か .py のパスを書いてください）")
 
 
-def _import(spec: str) -> ModuleType:
-    path = resolve(spec)
+def _import(path: Path) -> ModuleType:
     modname = f"changewatch_plugin_{re.sub(r'[^A-Za-z0-9_]', '_', path.stem)}"
     mspec = importlib.util.spec_from_file_location(modname, path)
     if mspec is None or mspec.loader is None:
@@ -84,8 +83,13 @@ def _import(spec: str) -> ModuleType:
 
 def load(specs: list[str], add_command: Callable | None) -> list[ModuleType]:
     loaded = []
+    seen: set[Path] = set()
     for spec in dict.fromkeys(specs):
-        mod = _import(str(spec))
+        path = resolve(str(spec))
+        if path in seen:
+            continue
+        seen.add(path)
+        mod = _import(path)
         if not hasattr(mod, "register"):
             raise ConfigError(f"プラグイン {spec} に register(api) がありません")
         mod.register(PluginAPI(spec, add_command))
