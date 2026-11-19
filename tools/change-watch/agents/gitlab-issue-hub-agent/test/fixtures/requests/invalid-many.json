@@ -1,0 +1,43 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "account",
+  "subject": "権限",
+  "fields": {
+    "操作": "停止"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "empty",
+      "field": "対象者",
+      "line": 2,
+      "message": "項目「対象者」の値が空です"
+    },
+    {
+      "code": "bad_line",
+      "field": "3 行目",
+      "line": 3,
+      "message": "3 行目「続き続き続き続き続き続き続き続き続き続き続き続き続き続き続き…」は「項目名: 値」の形ではありません。自由な文は、空行を 1 つ入れたあとに書いてください"
+    },
+    {
+      "code": "bad_value",
+      "field": "操作",
+      "line": 4,
+      "message": "項目「操作」の値「停止」が違います。追加・変更・削除 のどれかを書いてください"
+    },
+    {
+      "code": "duplicate",
+      "field": "操作",
+      "line": 5,
+      "message": "項目「操作」が 2 回あります（4 行目と 5 行目）。1 回だけ書いてください"
+    },
+    {
+      "code": "missing",
+      "field": "期日",
+      "line": 0,
+      "message": "項目「期日」がありません（account には 対象者・操作・期日 が要ります）"
+    }
+  ]
+}

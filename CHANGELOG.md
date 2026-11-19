@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: gitlab-issue-hub-agent に依頼の書式（check-request）と種別で振り分ける例を足す
+
+- `check-request` が `report`・`inquiry`・`account` の依頼の書式を調べ、振り分け先と違反を JSON で出す。種別の追加・置き換えは `--kinds-file` で行う
+- 種別ごとの返信と、書式が違う依頼の差し戻しをするワークフロー例、メールから依頼コメントを作る Power Automate のテンプレートを足す
+
 ### change-watch: エージェントに固有のコマンドも change-watch から呼ぶ（0.9.0）
 
 - `--plugin` に、入れてあるエージェントのプログラムを名前だけで書ける（`--plugin gitlab_hub`）。置き場所は change-watch が探す。`.py` のパスも使える

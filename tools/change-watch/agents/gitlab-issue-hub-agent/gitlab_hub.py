@@ -26,10 +26,13 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
         issue の API の URL を出す（change-watch call の URL に渡す）。ハブでない issue を、ワークフローの引数で指して変えるときに使う。
         --url が無いか空なら、ハブの issue（環境変数 GITLAB_HUB_ISSUE_URL）。
 
+    change-watch --plugin <このファイル> check-request [--kinds-file F] --text "..." | --text-file F | --change JSON | -- <コマンド> [引数...]
+        依頼の書式を調べて、結果を JSON で出す。どの種別で何を動かすかはワークフローの preconditions が決める。
+
     これらのコマンドは設定を読まない（--config・--connections は要らない）。python3 <このファイル> note ... と直接呼んでも同じ。
 
-本文の中身は決めない（ワークフローとそのコマンドが決める）。ここですることは、Dagu の引数に任意の文（改行・引用符）を JSON として
-渡せるようにすることと、書き込む文に混ざった GitLab のクイックアクション（行頭の /close など）を効かなくすることだけ。
+Dagu の引数に任意の文（改行・引用符）を JSON として渡せるようにし、書き込む文に混ざった GitLab のクイックアクション
+（行頭の /close など）を効かなくする。check-request は届いた依頼の書式を調べる。
 どの変化をどう扱うかの条件は持たない（Dagu のワークフローの preconditions に書く）。HTTP は送らない（取得・書き込み・認証・
 要求の間隔は change-watch が受け持つ）。標準ライブラリだけで動く。設計は docs/designs/gitlab-issue-hub-agent-design.md。
 """
@@ -49,6 +52,24 @@ NOT_FOUND = 127
 
 _QUICK_ACTION = re.compile(r"(?m)^(\s*)/")
 _ISSUE_URL = re.compile(r"^(https?://[^/?#]+)/(.+?)(?:/-)?/(?:issues|work_items)/(\d+)/?(?:[?#].*)?$")
+
+_KIND_NAME = r"[a-z][a-z0-9-]{0,31}"
+_REQUEST_HEAD = re.compile(rf"^【依頼】[ \u3000]*\[(?P<kind>{_KIND_NAME})\][ \u3000]*(?P<subject>\S.*)$")
+_FIELD_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]+)?(?P<name>[^:：\s][^:：]{0,39}?)[ \t\u3000]*[:：][ \t\u3000]*(?P<value>.*)$")
+_DATE = r"^\d{4}-\d{2}-\d{2}$"
+COMMON_FIELDS = {"差出人": {}, "受信日時": {}, "受付番号": {}}
+REQUEST_KINDS = {
+    "report": {"title": "集計・報告の作成", "text_required": False, "fields": {
+        "対象": {"required": True}, "期間": {"required": True},
+        "期限": {"pattern": _DATE, "hint": "2026-11-30 のように書いてください"}, "提出先": {}}},
+    "inquiry": {"title": "問い合わせへの回答案", "text_required": True, "fields": {
+        "差出人": {"required": True}, "受信日時": {"required": True},
+        "期限": {"pattern": _DATE, "hint": "2026-11-30 のように書いてください"}}},
+    "account": {"title": "アカウント・権限の申請", "text_required": False, "fields": {
+        "対象者": {"required": True},
+        "操作": {"required": True, "pattern": r"^(追加|変更|削除)$", "hint": "追加・変更・削除 のどれかを書いてください"},
+        "期日": {"required": True, "pattern": _DATE, "hint": "2026-12-01 のように書いてください"}, "権限": {}}},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -98,30 +119,194 @@ def _run(command: list[str]) -> tuple[int, str]:
     return p.returncode, p.stdout
 
 
-def cmd_note(a) -> int:
+def _violation(code: str, field: str, line: int, message: str) -> dict:
+    return {"code": code, "field": field, "line": line, "message": message}
+
+
+def parse_request(text: str) -> dict:
+    """本文の形を読み、項目・行番号を取り出す（レジストリは見ない）。"""
+    text = text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n").strip()
+    first, *lines = text.split("\n")
+    first = first.rstrip()
+    is_request = first.startswith("【依頼】")
+    result = {"is_request": is_request, "kind": "", "subject": "", "head_violation": None,
+              "items": [], "bad_lines": [], "text_line": 0}
+    if not is_request:
+        return result
+    match = _REQUEST_HEAD.fullmatch(first)
+    if match:
+        result.update(kind=match["kind"], subject=match["subject"].rstrip())
+    else:
+        rest = first.removeprefix("【依頼】").lstrip(" \u3000")
+        tag = re.fullmatch(r"\[(" + _KIND_NAME + r")\]", rest)
+        if tag:
+            result["kind"] = tag[1]
+            error = ("no_subject", "1 行目に件名がありません。種別のあとに件名を書いてください")
+        elif rest.startswith(("[", "［")):
+            token = re.match(r"(?:\[[^\]]*\]|［[^］]*］|\S+)", rest)[0]
+            error = ("bad_kind", f"1 行目の種別「{token}」の書き方が違います。"
+                     "半角の小文字・数字・ハイフンを、半角の [ ] で囲んでください")
+        else:
+            error = ("no_kind", "1 行目に種別がありません。「【依頼】[種別] 件名」の形で書いてください")
+        result["head_violation"] = _violation(error[0], "1 行目", 1, error[1])
+        return result
+    for line, content in enumerate(lines, 2):
+        if not content.strip():
+            result["text_line"] = line + 1
+            break
+        field = _FIELD_LINE.fullmatch(content)
+        if field:
+            result["items"].append((line, field["name"].strip(), field["value"].strip()))
+        else:
+            result["bad_lines"].append((line, content))
+    return result
+
+
+def check_request(text: str, kinds: dict | None = None) -> dict:
+    """規約に照らして、振り分け先と違反の一覧を返す。"""
+    kinds = REQUEST_KINDS if kinds is None else kinds
+    parsed = parse_request(text)
+    kind = parsed["kind"]
+    fields, unknown, violations = {}, [], []
+    result = {"ok": False, "route": "none", "kind": kind, "subject": parsed["subject"],
+              "fields": fields, "unknown": unknown, "text_line": 0, "violations": violations}
+    if not parsed["is_request"]:
+        return result
+    result["route"] = "invalid"
+    available = f"（使える種別: {'・'.join(kinds)}）"
+    head_error = parsed["head_violation"]
+    if head_error:
+        if head_error["code"] == "no_kind":
+            head_error["message"] += available
+        violations.append(head_error)
+        return result
+    if kind not in kinds:
+        violations.append(_violation("unknown_kind", "1 行目", 1, f"種別 [{kind}] は決まっていません{available}"))
+        return result
+
+    definition = kinds[kind]
+    rules = {**COMMON_FIELDS, **definition["fields"]}
+    seen = {}
+    for line, name, value in parsed["items"]:
+        if name in seen:
+            first_line, _ = seen[name]
+            violations.append(_violation("duplicate", name, line,
+                                         f"項目「{name}」が 2 回あります（{first_line} 行目と {line} 行目）。1 回だけ書いてください"))
+            continue
+        seen[name] = (line, value)
+        if value:
+            fields[name] = value
+            if name not in rules:
+                unknown.append(name)
+    for line, content in parsed["bad_lines"]:
+        quote = content[:30] + ("…" if len(content) > 30 else "")
+        violations.append(_violation("bad_line", f"{line} 行目", line,
+                                     f"{line} 行目「{quote}」は「項目名: 値」の形ではありません。"
+                                     "自由な文は、空行を 1 つ入れたあとに書いてください"))
+    required = "・".join(name for name, rule in rules.items() if rule.get("required"))
+    for name, rule in rules.items():
+        line, value = seen.get(name, (0, ""))
+        if rule.get("required") and not line:
+            violations.append(_violation("missing", name, 0, f"項目「{name}」がありません（{kind} には {required} が要ります）"))
+        elif rule.get("required") and not value:
+            violations.append(_violation("empty", name, line, f"項目「{name}」の値が空です"))
+        elif value and "pattern" in rule and not re.search(rule["pattern"], value):
+            hint = rule.get("hint", "")
+            message = f"項目「{name}」の値「{value}」が違います" + (f"。{hint}" if hint else "")
+            violations.append(_violation("bad_value", name, line, message))
+    result["text_line"] = parsed["text_line"]
+    if definition["text_required"] and not result["text_line"]:
+        violations.append(_violation("no_text", "本文", 0,
+                                     "自由な文がありません。項目のあとに空行を 1 つ入れて書いてください"))
+    violations.sort(key=lambda v: (v["line"] == 0, v["line"]))
+    if not violations:
+        result.update(ok=True, route=kind)
+    return result
+
+
+def load_kinds(path: str) -> dict:
+    """種別の JSON の形を確かめ、組み込みの種別に重ねる。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            extra = json.load(f)
+    except (OSError, ValueError, RecursionError) as e:
+        raise ValueError(f"種別のファイルを読めません: {e}") from e
+    if not isinstance(extra, dict):
+        raise ValueError("種別のファイルは JSON のオブジェクトで書いてください")
+    for kind, spec in extra.items():
+        if not re.fullmatch(_KIND_NAME, kind) or kind in {"invalid", "none"}:
+            raise ValueError(f"種別名「{kind}」は使えません")
+        if (not isinstance(spec, dict) or set(spec) != {"title", "text_required", "fields"}
+                or not isinstance(spec["title"], str) or not isinstance(spec["text_required"], bool)
+                or not isinstance(spec["fields"], dict)):
+            raise ValueError(f"種別 [{kind}] は title・text_required・fields を正しい形で書いてください")
+        for name, rule in spec["fields"].items():
+            label = f"種別 [{kind}] の項目「{name}」"
+            if (name != name.strip() or not re.fullmatch(r"[^:：\s][^:：\r\n]{0,39}", name)
+                    or not isinstance(rule, dict) or rule.keys() - {"required", "pattern", "hint"}
+                    or not isinstance(rule.get("required", False), bool)
+                    or not isinstance(rule.get("pattern", ""), str)
+                    or not isinstance(rule.get("hint", ""), str)):
+                raise ValueError(f"{label}の名前か定義の形が違います")
+            if "pattern" in rule:
+                try:
+                    re.compile(rule["pattern"])
+                except (re.error, OverflowError, RecursionError) as e:
+                    raise ValueError(f"{label}の pattern が正規表現ではありません: {e}") from e
+    return {**REQUEST_KINDS, **extra}
+
+
+def _read_text(a) -> tuple[int, str]:
     command = list(a.command or [])
     if command[:1] == ["--"]:
         command = command[1:]
-    given = [x for x in (a.text is not None, bool(a.text_file), bool(command)) if x]
-    if len(given) != 1:
-        print("本文は --text・--text-file・-- <コマンド> のどれか 1 つで渡してください", file=sys.stderr)
-        return USAGE
+    change = getattr(a, "change", None)
+    given = (a.text is not None, bool(a.text_file), bool(command), change is not None)
+    if sum(given) != 1:
+        extra = "・--change" if a.cmd == "check-request" else ""
+        print(f"本文は --text・--text-file・-- <コマンド>{extra} のどれか 1 つで渡してください", file=sys.stderr)
+        return USAGE, ""
     if command:
-        code, text = _run(command)
-        if code != 0:
-            return code
-    elif a.text_file:
+        return _run(command)
+    if change is not None:
+        try:
+            text = json.loads(change)["record"]["body"]
+            if not isinstance(text, str):
+                raise TypeError("record.body")
+        except (ValueError, KeyError, TypeError, RecursionError):
+            print("--change は record.body に本文を持つ JSON で渡してください", file=sys.stderr)
+            return USAGE, ""
+        return OK, text
+    if a.text_file:
         try:
             with open(a.text_file, encoding="utf-8-sig") as f:
-                text = f.read()
+                return OK, f.read()
         except (OSError, UnicodeError) as e:
             print(f"本文のファイルを読めません: {e}", file=sys.stderr)
-            return USAGE
-    else:
-        text = a.text
+            return USAGE, ""
+    return OK, a.text
+
+
+def cmd_note(a) -> int:
+    code, text = _read_text(a)
+    if code != OK:
+        return code
     if text.strip():
         print(note_json(text, "description" if a.cmd == "description" else "body"))
     return OK                               # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+
+
+def cmd_check_request(a) -> int:
+    code, text = _read_text(a)
+    if code != OK:
+        return code
+    try:
+        kinds = load_kinds(a.kinds_file) if a.kinds_file is not None else None
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return USAGE
+    print(json.dumps(check_request(text, kinds)))
+    return OK
 
 
 def cmd_api_url(a) -> int:
@@ -149,6 +334,7 @@ def cmd_fields(a) -> int:
     return OK
 
 
+_CHECK = "依頼の書式を調べて、結果を JSON で出す（ワークフローの preconditions で種別ごとに分ける）"
 _NOTE = "コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）"
 _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-watch call PUT の --json に渡す）"
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
@@ -160,6 +346,12 @@ def _text_args(p, cmd: str) -> None:
     p.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
     p.add_argument("--text-file", help="本文のファイル（UTF-8）")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
+
+
+def _check_args(p) -> None:
+    _text_args(p, "check-request")
+    p.add_argument("--change", help="get が出した JSON（record.body を調べる）")
+    p.add_argument("--kinds-file", help="追加・置き換えする種別の JSON ファイル（UTF-8）")
 
 
 def _fields_args(p) -> None:
@@ -175,6 +367,7 @@ def register(api) -> None:
     api.add_filter("gitlab_issue_api", gitlab_issue_api)
     _text_args(api.add_command("note", lambda _cfg, _store, a: cmd_note(a), _NOTE, needs_config=False), "note")
     _text_args(api.add_command("description", lambda _cfg, _store, a: cmd_note(a), _DESCRIPTION, needs_config=False), "description")
+    _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
     _fields_args(api.add_command("fields", lambda _cfg, _store, a: cmd_fields(a), _FIELDS, needs_config=False))
     _api_url_args(api.add_command("api-url", lambda _cfg, _store, a: cmd_api_url(a), _API_URL, needs_config=False))
 
@@ -185,10 +378,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     _text_args(sub.add_parser("note", help=_NOTE), "note")
     _text_args(sub.add_parser("description", help=_DESCRIPTION), "description")
+    _check_args(sub.add_parser("check-request", help=_CHECK))
     _fields_args(sub.add_parser("fields", help=_FIELDS))
     _api_url_args(sub.add_parser("api-url", help=_API_URL))
     a = p.parse_args(argv)
-    return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields}[a.cmd](a)
+    return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
+            "check-request": cmd_check_request}[a.cmd](a)
 
 
 if __name__ == "__main__":

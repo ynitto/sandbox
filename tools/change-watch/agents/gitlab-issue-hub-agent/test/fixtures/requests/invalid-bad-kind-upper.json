@@ -1,0 +1,17 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "",
+  "subject": "",
+  "fields": {},
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "bad_kind",
+      "field": "1 行目",
+      "line": 1,
+      "message": "1 行目の種別「[Report]」の書き方が違います。半角の小文字・数字・ハイフンを、半角の [ ] で囲んでください"
+    }
+  ]
+}

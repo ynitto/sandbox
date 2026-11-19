@@ -1,0 +1,300 @@
+# gitlab-issue-hub-agent の依頼を種別で振り分ける Dagu のワークフロー例。
+# change-watch-issue-hub.yaml の代わりに使う。毎分起動し、1 回に新しいコメントを 1 件見る。
+#   get            新しいコメントを 1 件受け取る（初回は今あるコメントを覚えるだけ）
+#   check          新しく付いた人のコメントを check-request に渡し、書式と振り分け先を調べる
+#   report         集計・報告の依頼を受け付ける
+#   reply_report   集計・報告の返信を書く
+#   inquiry        問い合わせへの回答案の依頼を受け付ける
+#   reply_inquiry  問い合わせの返信を書く
+#   account        アカウント・権限の申請を受け付ける
+#   reply_account  アカウント・権限の返信を書く
+#   invalid        書式が違う依頼の差し戻しを作る
+#   reply_invalid  差し戻しを書く
+#   commit         見終えたと記録する
+# route が none のコメントは返信せず、commit で見終えたと記録する。
+# レジストリに種別を足したら、<種別> と reply_<種別> の 2 ステップを足す。
+# /home/you を自分の場所に直す（exec は ~ を展開しない）。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする。
+description: "GitLab のハブの issue に付いた依頼の書式を調べ、種別ごとに振り分けて返信する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub-route"                  # commit と同じ名前
+        - "--watch"              # 本文が変わったときだけ変化にする（書き直しは依頼として扱わない）
+        - "body"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: check
+    depends: [get]
+    # 書式の判定は、本文の表記をそろえて読む check-request に任せる。
+    preconditions:              # 新しく付いた、人が書いたコメントを通す
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+      - condition: "${CHANGE.record.system}"
+        expected: "false"       # ラベルの変更などの記録（system）は見ない
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "check-request"
+        - "--change=${CHANGE}"
+    timeout_sec: 60
+    output: CHECK
+  - name: report
+    depends: [check]
+    preconditions:
+      - condition: "${CHECK.route}"
+        expected: "report"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--"
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
+        - "/home/you/work/hub/on_report.py"
+        - "${CHECK}"            # 書式を調べた結果
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
+    timeout_sec: 1800
+    output: NOTE_REPORT
+  - name: reply_report
+    depends: [report]
+    preconditions:              # コメントの本文があるときだけ
+      - condition: "${NOTE_REPORT}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE_REPORT}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: inquiry
+    depends: [reply_report]
+    preconditions:
+      - condition: "${CHECK.route}"
+        expected: "inquiry"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--"
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
+        - "/home/you/work/hub/on_inquiry.py"
+        - "${CHECK}"            # 書式を調べた結果
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
+    timeout_sec: 1800
+    output: NOTE_INQUIRY
+  - name: reply_inquiry
+    depends: [inquiry]
+    preconditions:              # コメントの本文があるときだけ
+      - condition: "${NOTE_INQUIRY}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE_INQUIRY}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: account
+    depends: [reply_inquiry]
+    preconditions:
+      - condition: "${CHECK.route}"
+        expected: "account"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--"
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
+        - "/home/you/work/hub/on_account.py"
+        - "${CHECK}"            # 書式を調べた結果
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
+    timeout_sec: 1800
+    output: NOTE_ACCOUNT
+  - name: reply_account
+    depends: [account]
+    preconditions:              # コメントの本文があるときだけ
+      - condition: "${NOTE_ACCOUNT}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE_ACCOUNT}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: invalid
+    depends: [reply_account]
+    preconditions:
+      - condition: "${CHECK.route}"
+        expected: "invalid"
+    continue_on:
+      skipped: true             # 条件に合わなくても commit する
+      failure: true             # コマンドが失敗しても commit する（コメントはしない。Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--"
+        - "python3"             # ↓ 動かすコマンド。標準出力がコメントの本文になる（空ならコメントしない）
+        - "/home/you/work/hub/on_invalid.py"
+        - "${CHECK}"            # 書式を調べた結果
+        - "${CHANGE}"           # 受け取ったコメントの変化（JSON。record が GitLab のコメント）
+    timeout_sec: 60
+    output: NOTE_INVALID
+  - name: reply_invalid
+    depends: [invalid]
+    preconditions:              # コメントの本文があるときだけ
+      - condition: "${NOTE_INVALID}"
+        expected: 're:^\{"body"'
+    continue_on:
+      skipped: true
+      failure: true             # 書き込めなくても commit する（Dagu の履歴に失敗として残る。毎分やり直し続けない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"   # change-watch が issue の URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE_INVALID}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する（call は自分では書き込みを再試行しない）
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [reply_invalid]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub-route"
+        - "${CHANGE.key}"
+    timeout_sec: 600

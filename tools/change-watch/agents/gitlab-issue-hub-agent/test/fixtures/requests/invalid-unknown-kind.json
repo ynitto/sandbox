@@ -1,0 +1,17 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "sales",
+  "subject": "月次集計",
+  "fields": {},
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "unknown_kind",
+      "field": "1 行目",
+      "line": 1,
+      "message": "種別 [sales] は決まっていません（使える種別: report・inquiry・account）"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "route": "report",
+  "kind": "report",
+  "subject": "月次集計",
+  "fields": {
+    "対象": "東日本",
+    "期間": "2026-10",
+    "受信日時": "2026-11-19 09:30"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": []
+}

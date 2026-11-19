@@ -1,0 +1,9 @@
+{
+  "review": {
+    "title": "資料の確認",
+    "text_required": false,
+    "fields": {
+      "資料": {"required": true}
+    }
+  }
+}

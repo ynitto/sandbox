@@ -1,0 +1,17 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "report",
+  "subject": "",
+  "fields": {},
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "no_subject",
+      "field": "1 行目",
+      "line": 1,
+      "message": "1 行目に件名がありません。種別のあとに件名を書いてください"
+    }
+  ]
+}

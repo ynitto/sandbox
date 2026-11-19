@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "route": "account",
+  "kind": "account",
+  "subject": "権限の追加",
+  "fields": {
+    "対象者": "山田",
+    "操作": "追加",
+    "期日": "2026-12-01"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": []
+}
