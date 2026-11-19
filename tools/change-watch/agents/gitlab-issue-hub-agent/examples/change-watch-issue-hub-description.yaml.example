@@ -1,0 +1,74 @@
+# gitlab-issue-hub-agent: 決めた issue の説明（description）を書き換える例。インストーラは置かない。
+# ~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に直す。予定では動かさない。ほかのワークフローやコマンド行から動かす:
+#   dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが終わりました"
+#   dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.example.com/group/project/-/issues/7" DESCRIPTION="…"
+# ISSUE_URL を渡さなければハブの issue（GITLAB_HUB_ISSUE_URL）、渡せばその issue の説明を書き換える（同じ GitLab の、トークンで変えられる issue）。
+# 説明は丸ごと入れ替わる（前の説明に足すなら、前の説明を含めた全文を渡す）。DESCRIPTION が空なら何もしない（説明を消さない）。
+# 何行もある説明をファイルやコマンドの出力から作るなら、compose の --text=… を --text-file=<ファイル> か -- <コマンド> [引数...] にする。
+#
+#   compose  説明を JSON（{"description": …}）にする（change-watch の description。改行・引用符を含む文をそのまま渡せる）
+#   target   書き換える issue の API の URL を決める（change-watch の api-url）
+# description・api-url は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub を付けて呼ぶ。設定は読まない）。
+#   update   issue を更新する（change-watch call PUT）
+description: "決めた GitLab の issue の説明を書き換える（ISSUE_URL を渡さなければハブの issue）"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - ISSUE_URL: ""               # 書き換える issue の URL（ブラウザで開いたときのもの）。空ならハブの issue
+  - DESCRIPTION: ""             # 新しい説明（全文）
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "description"
+        - "--text=${params.DESCRIPTION}"
+    timeout_sec: 60
+    output: UPDATE
+  - name: target
+    depends: [compose]
+    preconditions:              # 説明があるときだけ（DESCRIPTION が空なら書かない）
+      - condition: "${UPDATE}"
+        expected: 're:^\{"description"'
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "api-url"
+        - "--url=${params.ISSUE_URL}"
+    timeout_sec: 60
+    output: ISSUE_API
+  - name: update
+    depends: [target]
+    preconditions:
+      - condition: "${ISSUE_API}"
+        expected: "re:^https?://"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "${ISSUE_API}"
+        - "--source"
+        - "gitlab-hub-issue"     # 接続（トークン）と要求の間隔を借りる取得元
+        - "--json"
+        - "${UPDATE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

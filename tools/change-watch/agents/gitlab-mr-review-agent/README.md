@@ -63,7 +63,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
    ```
 
    ```bash
-   python3 ~/.local/share/change-watch/agents/gitlab-mr-review-agent/gitlab_mr.py prepare
+   change-watch --plugin gitlab_mr mr prepare
    ```
 
 6. Dagu のスケジューラを動かす（`dagu start-all` など）。Dagu の設定（`config.yaml`）に足すものは無い。ワークフローの `get` は `--initial emit` なので、
@@ -144,9 +144,12 @@ kiro-cli が 0 以外で終わる・時間切れになると、Dagu が `retry_p
   `trust_all_tools: true`（`--trust-all-tools`）で確認なしにコマンドを実行させる
 - プロンプトはワークフローの `review` の `prompt`。何を指摘するか・まとめに何を書くかはここで変える。`${CHANGE.record.iid}`・`${CHANGE.record.title}`・
   `${CHANGE.record.web_url}` と、前回レビューしたコミット `${CHANGE.before.sha}`（初めてなら空）が使える
-- GitLab への読み書きは、プロンプトに書いた `gitlab_mr.py` のコマンドだけで行わせる
+- GitLab への読み書きは、プロンプトに書いたコマンド（`.env` の `MR_REVIEW_CLI`）だけで行わせる
 
 ## kiro-cli が使うコマンド（gitlab_mr.py）
+
+コマンドは change-watch から `change-watch --plugin gitlab_mr mr <コマンド> ...` で呼ぶ（`.env` の `MR_REVIEW_CLI` がこの形。
+change-watch の設定は読まないので、`--config`・`--connections` は付けなくてよい）。
 
 GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`GITLAB_TOKEN`・`GITLAB_PROJECT` から、手元のリポジトリとレビュー用の作業フォルダは
 `MR_REVIEW_REPO_DIR`・`MR_REVIEW_WORKTREE` から読む（Dagu が `.env` から渡す）。git で取ってくる先は、既定でリポジトリのリモート `origin`
@@ -162,7 +165,8 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 | `resolve <MR> <スレッド> --body <文>` | 自分が立てたスレッドに返信して解決にする |
 | `summary <MR> --body-file <ファイル>` | 今の差分のレビューのまとめを 1 回だけ書く（差分の中身の指紋を印に残す） |
 
-`--body-file` の代わりに `--body <文>` でもよい。手で試すときは、環境変数を読み込んでから `python3 gitlab_mr.py context 12` のように呼ぶ。
+`--body-file` の代わりに `--body <文>` でもよい。手で試すときは、環境変数を読み込んでから `change-watch --plugin gitlab_mr mr context 12` のように呼ぶ。
+以前の `.env` の `MR_REVIEW_CLI=python3 <gitlab_mr.py>`（直接呼ぶ形）も、そのまま動く。
 
 ## Windows で使うとき
 

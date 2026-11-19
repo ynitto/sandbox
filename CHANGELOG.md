@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: エージェントに固有のコマンドも change-watch から呼ぶ（0.9.0）
+
+- `--plugin` に、入れてあるエージェントのプログラムを名前だけで書ける（`--plugin gitlab_hub`）。置き場所は change-watch が探す。`.py` のパスも使える
+- プラグインが足すコマンドに、設定と状態を読まないもの（`api.add_command(..., needs_config=False)`）を足す。`--config`・`--connections` が要らない
+- gitlab-issue-hub-agent: `note`・`description`・`fields`・`api-url` を `change-watch --plugin gitlab_hub <コマンド>` で呼ぶ。
+  例のワークフローの `python3 gitlab_hub.py …` のステップを、どれも change-watch を呼ぶ形にする
+- gitlab-mr-review-agent: レビューの中で使うコマンドを `change-watch --plugin gitlab_mr mr <コマンド>` で呼ぶ（`.env` の `MR_REVIEW_CLI` の例を直す）
+- どちらも `python3 <.py> <コマンド>` と直接呼ぶ形はそのまま動く（既に置いたワークフローと `.env` は直さなくてよい）。
+  gitlab-issue-agent・redmine-ticket-agent は、もともと change-watch だけを呼んでいるので変わらない
+- インストーラ: Windows で、`.env` の change-watch のコマンドも Python と `change-watch.pyz` に置き換える
+
+### change-watch: gitlab-issue-hub-agent に、決めた issue の説明を書き換えるコマンドと例を足す
+
+- `gitlab_hub.py description` が、文・ファイル・コマンドの出力から issue の説明を書き換える JSON を作る（渡し方と、行頭の `/` を
+  効かなくすること・空なら何も出さないことは `note` と同じ）。`gitlab_hub.py api-url --url=<issue の URL>` が、その issue の API の URL を
+  出す（無ければハブの issue）
+- Dagu の例 `examples/change-watch-issue-hub-description.yaml.example` を足す。`ISSUE_URL`（無ければハブ）と `DESCRIPTION` を渡して呼ぶ
+
 ### copilot-app-jobs: 締め切り間際の結果の取りこぼしと、分かりにくい失敗を直す
 
 - 待つ時間の終わり際に結果が出ると、書き終わりを見届ける前に「終わらなかった」（終了コード 4）と返していたのを直す。

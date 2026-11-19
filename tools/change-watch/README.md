@@ -30,13 +30,16 @@
 
 ### プラグイン
 
-`--plugin <.py のパス>` で読み込むプラグインは、`register(api)` を持つ 1 つの `.py` ファイル。設定のテンプレートで使うフィルタを足す
-（gitlab-issue-hub-agent の `gitlab_issue_api` など）。本体の DB や取得の仕組みには直接触らない。
+`--plugin <名前>` で読み込むプラグインは、`register(api)` を持つ 1 つの `.py` ファイル。インストーラで入れたエージェントのプログラムは
+名前だけで指定でき（`--plugin gitlab_hub`。`.py` は付けても付けなくてもよい）、change-watch が置き場所から探す。ほかの場所のものは `.py` のパスで書く。設定のテンプレートで使うフィルタ
+（gitlab-issue-hub-agent の `gitlab_issue_api` など）と、エージェントに固有のコマンド（同じく `note`、gitlab-mr-review-agent の `mr` など）を足す。
+ワークフローは、エージェントに固有の処理も change-watch を入り口にして呼ぶ。本体の DB や取得の仕組みには直接触らない。
 
 | 口 | 足すもの | 使うところ |
 |---|---|---|
 | `api.add_filter(name, fn)` | テンプレートのフィルタ。`fn(値, 引数)` が値を返す | 設定のどのテンプレートでも、`call` の URL でも `{{ 値 \| name: 引数 }}` |
-| `api.add_command(name, fn, help)` | サブコマンド。`fn(cfg, store, args)` が終了コードを返す | コマンド行 |
+| `api.add_command(name, fn, help)` | サブコマンド。`fn(cfg, store, args)` が終了コードを返す。返る parser に引数を足す | コマンド行（`change-watch --plugin <名前> name ...`） |
+| `api.add_command(name, fn, help, needs_config=False)` | 設定と状態を読まないサブコマンド（書くものを作るだけ、など）。`fn(None, None, args)` で呼ばれ、`--config` が要らない | 同上 |
 
 名前は使う時点で探すので、`--plugin` を付け忘れるとその時点で案内して止まる。
 
@@ -86,7 +89,7 @@
    | `--config <パス>` | 設定ファイル（省略すると `~/.config/change-watch/change-watch.yaml`） |
    | `--connections <パス>` | 接続設定（connections.yaml）。接続設定を使う取得元があれば必須 |
    | `--state-dir <パス>` | 状態の置き場所。設定の `state_dir` より優先する |
-   | `--plugin <.py のパス>` | プラグイン（テンプレートのフィルタを足すもの。エージェントが使う）。繰り返し可 |
+   | `--plugin <名前>` | プラグイン（テンプレートのフィルタとコマンドを足すもの。エージェントが使う）。入れてあるエージェントのプログラムの名前（`gitlab_hub` など）か、`.py` のパス。繰り返し可 |
 
    ```bash
    change-watch --config ~/.config/change-watch/change-watch.yaml --connections ~/.github/connections.yaml check
@@ -416,7 +419,7 @@ change-watch を使う Dagu のワークフローは、`dags/` の例をコピ�
 
 - get は、一時的な失敗（終了コード 3）のときだけ Dagu に再試行させる（`retry_policy.exit_code: [3]`）。設定の誤りや認証の失敗は再試行しない
 - get の `timeout_sec` は、取得元の `jitter_sec`・`busy_wait_sec` を書いたらその分を足す
-- プラグイン（`gitlab_hub.py` など）を使うときは、どのステップにも同じ `--plugin` を足す
+- プラグイン（`gitlab_hub` など）を使うときは、どのステップにも同じ `--plugin` を足す。エージェントに固有のコマンドも、`python3 <.py>` ではなく change-watch から呼ぶ
 - 設定ファイルが既定の `~/.config/change-watch/change-watch.yaml` でなければ、どのステップの `args` の先頭にも `"--config"` と `<パス>` を足す
 - 例は試験で、Dagu と同じ順に本物の change-watch へ流して確かめている（`test/test_dag_examples.py`）
 

@@ -25,7 +25,7 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 |---|---|---|
 | ハブの issue の取得・変化を返す・書き込み | change-watch | 取得元 `gitlab-hub-notes`（`GET <issue の API>/notes`、page のページング）と `gitlab-hub-issue`（`GET <issue の API>`、1 件）、どちらも 5 分ごと。`get --consumer`・`commit`・`call`（POST notes / PUT issue） |
 | 起動・条件の分岐・何を書くか・再試行・履歴 | Dagu | 例の `change-watch-issue-hub`（毎分。get → request → reply → commit）、例の `change-watch-issue-hub-update`（params の COMMENT で呼ばれる。compose → comment）、整理 |
-| GitLab に固有のこと | `gitlab_hub.py` | フィルタ `gitlab_issue_api`（プラグイン）と `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）。条件も本文の形も持たない。HTTP は送らない |
+| GitLab に固有のこと | `gitlab_hub.py`（change-watch のプラグイン。コマンドも `change-watch --plugin gitlab_hub <コマンド>` で呼び、設定は読まない） | フィルタ `gitlab_issue_api` と、コマンド `note`（コメントの本文の JSON を、文・ファイル・コマンドの出力から作る）・`fields`（issue の更新の JSON を `名前=値` から作る）・`description`（説明の JSON を、`note` と同じ渡し方で作る）・`api-url`（issue の URL から API の URL を出す。無ければハブ）。条件も本文の形も持たない。HTTP は送らない |
 
 `note` が要るのは、Dagu の引数に任意の文（改行・引用符を含む）を JSON として埋め込むと壊れるため。認証と要求の間隔は change-watch の
 `call` に一本化する。
@@ -34,10 +34,10 @@ change-watch の上に組み、change-watch には API へのアクセス（`get
 
 ```
 Dagu: change-watch-issue-hub（毎分。例）
-  （change-watch のステップはどれも --plugin gitlab_hub.py。URL は {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}）
+  （change-watch のステップはどれも --plugin gitlab_hub。URL は {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}）
   get      change-watch get --source gitlab-hub-notes --consumer hub --watch body --one              → CHANGE
   request  preconditions（例）: CHANGE.kind = appeared・CHANGE.record.system = false・CHANGE.record.body が ^【依頼】
-           python3 gitlab_hub.py note -- python3 on_request.py "${CHANGE}"                          → NOTE（{"body": …}）
+           change-watch note -- python3 on_request.py "${CHANGE}"                          → NOTE（{"body": …}）
            continue_on: skipped・failure
   reply    preconditions: NOTE が ^{"body"
            change-watch call POST "<issue の API>/notes" --json "${NOTE}"
@@ -45,16 +45,24 @@ Dagu: change-watch-issue-hub（毎分。例）
   commit   preconditions: CHANGE.key があるとき。change-watch commit --consumer hub ${CHANGE.key}
 
 Dagu: change-watch-issue-hub-update（予定なし。dagu start … -- COMMENT=…。例）
-  compose  python3 gitlab_hub.py note --text=${params.COMMENT}                                       → NOTE
+  compose  change-watch note --text=${params.COMMENT}                                       → NOTE
   comment  preconditions: NOTE が ^{"body"。change-watch call POST "<issue の API>/notes" --json "${NOTE}"
-  （issue の更新は、同じ形で gitlab_hub.py fields title=… → call PUT "<issue の API>" --json "${UPDATE}" のステップを書く）
+  （issue の更新は、同じ形で change-watch fields title=… → call PUT "<issue の API>" --json "${UPDATE}" のステップを書く）
 
 examples/change-watch-issue-hub-get-post（インストーラは置かない。get と post の一通りの例）
   get      change-watch get --source gitlab-hub-issue --consumer get-post --watch title --watch labels --watch description --one
   compose → comment   条件（例: ラベル「完了」・題がまだ【完了】で始まらない）で note → call POST …/notes
   fields → retitle    同じ条件で fields title=【完了】… → call PUT <issue の API>
   commit   commit --refresh（取得元 gitlab-hub-issue の item で取り直し、自分の変更を次の変化にしない）
+
+examples/change-watch-issue-hub-description（インストーラは置かない。予定なし。dagu start … -- ISSUE_URL=… DESCRIPTION=…）
+  compose  change-watch description --text=${params.DESCRIPTION}                            → UPDATE（{"description": …}）
+  target   preconditions: UPDATE が ^{"description"。change-watch api-url --url=${params.ISSUE_URL}   → ISSUE_API
+  update   change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"
 ```
+
+ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
+`api-url` が API の URL を先に作って渡す。接続と要求の間隔は取得元 `gitlab-hub-issue` のものを借りる。
 
 ### 3.1 自分の書き込みでループしない
 
@@ -95,8 +103,10 @@ issue が閉じられる。`note` は本文の行頭の `/` を `\/` にする�
 
 ## 4. インストーラ
 
-ほかのエージェントと同じ決まりで置く。ワークフローの中で `gitlab_hub.py` を `command: "python3"` で呼ぶので、Windows では
-`install.py` の `render` がワークフローの `command: "python3"`（と引数の `- "python3"`）をインストーラを動かした Python に置き換える。
+ほかのエージェントと同じ決まりで置く。ワークフローは `gitlab_hub.py` のコマンドも change-watch から呼ぶので、Windows での置き換えは
+ほかのステップと同じ（`command` を Python に、`args` の先頭を `.pyz` に）。`request` が動かすコマンドの `- "python3"` は、
+`install.py` の `render` がインストーラを動かした Python に置き換える。`python3 gitlab_hub.py <コマンド>` と直接呼ぶ口も残す
+（既に置いたワークフローは上書きしないため）。
 
 ## 5. 試験
 
@@ -104,6 +114,7 @@ issue が閉じられる。`note` は本文の行頭の `/` を `\/` にする�
 GET・PUT。プロジェクトは `group/hub` で `%2F` になること）、設定の例とワークフローの例をそのまま本物の change-watch と `test/dagrun.py` で回す。
 
 - `gitlab_issue_api`: issue の URL（下のグループ・`#note_…`・旧形式の `/issues/`・`work_items`）と API の URL、ほかの URL は止める
+- `description`・`api-url`: 説明の JSON（`note` と同じ渡し方・空なら出さない）、指した issue かハブの API の URL、issue でない URL は止める
 - `fields`: `名前=値` を JSON にする（引用符を含む題・`=` を含む値、`description` のクイックアクション）、形の誤りは止める
 - `note`: 本文をそのまま、クイックアクションを効かなくする、`-` で始まる本文・ファイル・コマンドの出力。空なら何も出さない。
   コマンドの失敗は何も出さずに終了コードを返す。本文の渡し方は 1 つだけ

@@ -2,7 +2,7 @@
 # ~/.config/dagu/dags/change-watch-issue-hub-update.yaml に、この PC のパスにして置く）。
 # 予定では動かさない。ほかのワークフローやコマンド行から、足すコメントを COMMENT で渡して動かす:
 #   dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
-# 何を書くかはワークフローが決める。ラベル・説明・状態などを変えるなら、comment と同じ形で call PUT "{{ … | gitlab_issue_api }}" の
+# 何を書くかはワークフローが決める。ラベル・説明・状態などを変えるなら、compose を fields 名前=値（説明は description）にし、comment と同じ形で call PUT "{{ … | gitlab_issue_api }}" の
 # ステップを書く（--json に GitLab の issue の編集の項目: add_labels・remove_labels・description・title・state_event など）。
 # 変わったことは GitLab がこの issue を見ている人へメールで知らせ、それを受けて何をするかは Power Automate が決める。
 # command は install.py install が置いた change-watch。手で置くなら /home/you を自分の場所に直す（exec は ~ を展開しない）。
@@ -18,9 +18,10 @@ steps:
   - name: compose
     action: exec
     with:
-      command: "python3"
+      command: "/home/you/.local/bin/change-watch"
       args:
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "--plugin"
+        - "gitlab_hub"
         - "note"
         - "--text=${params.COMMENT}"
     timeout_sec: 60
@@ -35,7 +36,7 @@ steps:
       command: "/home/you/.local/bin/change-watch"
       args:
         - "--plugin"
-        - "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"
+        - "gitlab_hub"
         - "--config"
         - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
         - "--connections"

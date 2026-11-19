@@ -331,6 +331,20 @@ class RedirectTest(_GitLabBase):
 
 
 class CommandTest(_GitLabBase):
+    def test_commands_run_through_change_watch(self):
+        """change-watch --plugin gitlab_mr.py mr <コマンド> で、直接呼ぶのと同じに動く（change-watch の設定は読まない）。"""
+        def cw(*args):
+            return subprocess.run([sys.executable, str(CHANGE_WATCH), "--plugin", str(PLUGIN), "mr", *args], capture_output=True,
+                                  text=True, encoding="utf-8", env={**os.environ, **self.env})
+        p = cw("context", "!1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, self.cli("context", 1)[1])
+        p = cw("summary", "1", "--body=まとめ")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.cli("summary", 1, "--body=まとめ")[0], gm.OK)      # 2 回目は書かない
+        self.assertEqual(len([n for n in self.gl.notes["1"] if "まとめ" in n["body"]]), 1)
+        self.assertEqual(cw("context", "x1").returncode, gm.USAGE)
+
     def setUp(self):
         super().setUp()
         self.gl.put(make_mr(1))

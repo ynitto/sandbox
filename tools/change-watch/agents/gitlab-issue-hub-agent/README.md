@@ -95,7 +95,7 @@
 自分のものに直す。issue そのものの変化を見るなら、`get` を `--source gitlab-hub-issue` にしたワークフローを別に置く
 （consumer の名前は `commit` と同じにし、ほかのワークフローと分ける）。
 
-動かすコマンドは `gitlab_hub.py note --` のあとに書く。引数に `${CHANGE}`（受け取った変化の JSON）を渡し、**標準出力に書いたものが
+動かすコマンドは、`request` の `note` の `--` のあとに書く。引数に `${CHANGE}`（受け取った変化の JSON）を渡し、**標準出力に書いたものが
 コメントの本文になる**。例の `examples/on_request.py` は「【返信】件名」で始まる本文を出す。
 
 - 何も出力しなければコメントしない
@@ -111,7 +111,7 @@
 dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
 ```
 
-ラベル・題・説明・状態などを変えるなら、ワークフローに `gitlab_hub.py fields`（更新の JSON を `名前=値` から作る）と
+ラベル・題・説明・状態などを変えるなら、ワークフローに `change-watch --plugin gitlab_hub fields`（更新の JSON を `名前=値` から作る）と
 `change-watch call PUT` のステップを書く（項目は GitLab の issue の編集のもの: `title`・`add_labels`・`remove_labels`・`description`・`state_event` など）。
 何を書くかはワークフローで決める。
 
@@ -123,14 +123,36 @@ Dagu のワークフローから change-watch の CLI を呼んで、ハブの i
 | ステップ | 呼ぶもの | すること |
 |---|---|---|
 | `get` | `change-watch get --source gitlab-hub-issue --consumer get-post --watch title --watch labels --watch description --one` | issue の変化と中身を 1 件受け取る（`${CHANGE.record.*}`・`${CHANGE.before.*}`） |
-| `compose` → `comment` | `gitlab_hub.py note --text=…` → `change-watch call POST "<issue の API>/notes" --json "${NOTE}"` | 条件（例: ラベル「完了」が付き、題がまだ【完了】で始まらない）に合えばコメントを足す |
-| `fields` → `retitle` | `gitlab_hub.py fields "title=【完了】${CHANGE.record.title}"` → `change-watch call PUT "<issue の API>" --json "${UPDATE}"` | 同じ条件で題を変える |
+| `compose` → `comment` | `change-watch note --text=…` → `change-watch call POST "<issue の API>/notes" --json "${NOTE}"` | 条件（例: ラベル「完了」が付き、題がまだ【完了】で始まらない）に合えばコメントを足す |
+| `fields` → `retitle` | `change-watch fields "title=【完了】${CHANGE.record.title}"` → `change-watch call PUT "<issue の API>" --json "${UPDATE}"` | 同じ条件で題を変える |
 | `commit` | `change-watch commit --source gitlab-hub-issue --consumer get-post --refresh ${CHANGE.key}` | 見終えたと記録する。自分が変えたあとの姿を基準にするので、自分の変更では次に起きない |
 
-change-watch のステップには、どれも `--plugin <gitlab_hub.py>` を付ける（`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
+どのステップも change-watch を `--plugin gitlab_hub` を付けて呼ぶ（下の「このエージェントが足すコマンド」。`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
 change-watch が issue の URL から作る）。コメントを見るなら `get` を `--source gitlab-hub-notes` にする。
 
 変わったことは GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める。
+
+## 決めた issue の説明を書き換える例（`examples/change-watch-issue-hub-description.yaml.example`）
+
+issue の説明を、渡した文に丸ごと入れ替える。インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
+`ISSUE_URL` を渡さなければハブの issue、渡せばその issue（同じ GitLab の、トークンで変えられるもの）を書き換える。`DESCRIPTION` が空なら何もしない。
+
+```bash
+dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが終わりました"
+```
+
+```bash
+dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.example.com/group/project/-/issues/7" DESCRIPTION="夜間バッチが終わりました"
+```
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `compose` | `change-watch description --text=…` | 説明を `call` に渡す形にする。何行もある説明は `--text-file=<ファイル>` か `-- <コマンド> [引数...]`（標準出力が説明になる）で渡す |
+| `target` | `change-watch api-url --url=…` | 書き換える issue を決める（URL が空ならハブの issue） |
+| `update` | `change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"` | issue を更新する |
+
+前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
+書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
 
 ## Power Automate とつなぐ
 
@@ -143,6 +165,24 @@ change-watch が issue の URL から作る）。コメントを見るなら `ge
 
 **ハブの issue → メール（頼む）**。GitLab がこの issue を見ている人へ、コメント・ラベル・状態などの変化をメールで知らせる。
 Power Automate のフローをそのメールボックスの「新しいメールが届いたとき」で始め、件名・本文で何をするかを分ける。
+
+## このエージェントが足すコマンド
+
+書くものを作るコマンドも、取得・書き込みと同じ change-watch から呼ぶ（`--plugin gitlab_hub`。インストーラが置いたプログラムを
+change-watch が探すので、パスは書かなくてよい）。設定は読まないので、`--config`・`--connections` は付けなくてよい。
+
+```bash
+change-watch --plugin gitlab_hub note --text="夜間バッチが終わりました"
+```
+
+| コマンド | 出すもの | 渡す先 |
+|---|---|---|
+| `note --text=<文>`・`note --text-file=<ファイル>`・`note -- <コマンド> [引数...]` | コメントの本文 | `call POST "<issue の API>/notes" --json` |
+| `description`（渡し方は `note` と同じ） | issue の説明 | `call PUT "<issue の API>" --json` |
+| `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
+| `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
+
+`note`・`description` は、本文が空なら何も出さず、`--` のあとのコマンドが失敗したらその終了コードで終わる。
 
 ## 決めること
 

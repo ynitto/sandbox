@@ -1,22 +1,32 @@
 """gitlab-issue-hub-agent — 決めた 1 つの GitLab の issue（ハブ）のための change-watch のプラグインと、コメントの本文を作るコマンド。
 
-1 つのファイルを 2 つの使い方で使う:
+change-watch のプラグイン（register(api)）として、フィルタとコマンドを足す:
 
-    change-watch --plugin <このファイル> ...      プラグインとして読み込む（register(api)）
+    change-watch --plugin gitlab_hub ...        （入れてあれば名前で。ほかの場所ならこのファイルのパス）
         フィルタ gitlab_issue_api      {{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}
                                        issue の URL（https://gitlab.example.com/group/project/-/issues/42）を、その issue の
                                        API の URL（https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/42）にする。
                                        設定の取得元と、ワークフローの call の URL に書く（ハブは issue の URL 1 つで決める）
 
-    python3 <このファイル> note --text "..."               本文をそのまま
-    python3 <このファイル> note --text-file F              ファイルの中身
-    python3 <このファイル> note -- <コマンド> [引数...]     コマンドの標準出力
+    change-watch --plugin <このファイル> note --text "..."               本文をそのまま
+    change-watch --plugin <このファイル> note --text-file F              ファイルの中身
+    change-watch --plugin <このファイル> note -- <コマンド> [引数...]     コマンドの標準出力
         issue に足すコメントの本文を {"body": "..."} の JSON で出す（change-watch call の --json に渡す）。
         本文が空なら何も出さない。コマンドが失敗したら何も出さず、その終了コードで終わる。
 
-    python3 <このファイル> fields title="【完了】${CHANGE.record.title}" add_labels=完了
+    change-watch --plugin <このファイル> fields title="【完了】${CHANGE.record.title}" add_labels=完了
         issue の更新の JSON（{"title": "...", "add_labels": "..."}）を出す（change-watch call PUT の --json に渡す）。
         値はすべて文字列。Dagu の引数に、引用符を含む題などをそのまま渡せる。
+
+    change-watch --plugin <このファイル> description --text "..." | --text-file F | -- <コマンド> [引数...]
+        issue の説明を書き換える JSON（{"description": "..."}）を出す（change-watch call PUT の --json に渡す）。
+        本文の渡し方と、空・失敗のときの扱いは note と同じ（ファイルやコマンドの出力から、何行もある説明を渡せる）。
+
+    change-watch --plugin <このファイル> api-url [--url=<issue の URL>]
+        issue の API の URL を出す（change-watch call の URL に渡す）。ハブでない issue を、ワークフローの引数で指して変えるときに使う。
+        --url が無いか空なら、ハブの issue（環境変数 GITLAB_HUB_ISSUE_URL）。
+
+    これらのコマンドは設定を読まない（--config・--connections は要らない）。python3 <このファイル> note ... と直接呼んでも同じ。
 
 本文の中身は決めない（ワークフローとそのコマンドが決める）。ここですることは、Dagu の引数に任意の文（改行・引用符）を JSON として
 渡せるようにすることと、書き込む文に混ざった GitLab のクイックアクション（行頭の /close など）を効かなくすることだけ。
@@ -60,12 +70,8 @@ def gitlab_issue_api(url, _arg=None) -> str:
     return f"{base}/api/v4/projects/{urllib.parse.quote(project, safe='')}/issues/{iid}"
 
 
-def register(api) -> None:
-    api.add_filter("gitlab_issue_api", gitlab_issue_api)
-
-
 # ---------------------------------------------------------------------------
-# コメントの本文（Dagu のワークフローから呼ぶ）
+# コメントの本文・説明・更新の項目（Dagu のワークフローから、change-watch のコマンドとして呼ぶ）
 # ---------------------------------------------------------------------------
 
 def disarm(text: str) -> str:
@@ -74,8 +80,8 @@ def disarm(text: str) -> str:
     return _QUICK_ACTION.sub(lambda m: m.group(1) + "\\/", text)
 
 
-def note_json(text: str) -> str:
-    return json.dumps({"body": disarm(text.strip())})        # ASCII だけで出す（Windows のコンソールの文字コードに依らない）
+def note_json(text: str, field: str = "body") -> str:
+    return json.dumps({field: disarm(text.strip())})         # ASCII だけで出す（Windows のコンソールの文字コードに依らない）
 
 
 def _run(command: list[str]) -> tuple[int, str]:
@@ -114,8 +120,18 @@ def cmd_note(a) -> int:
     else:
         text = a.text
     if text.strip():
-        print(note_json(text))
+        print(note_json(text, "description" if a.cmd == "description" else "body"))
     return OK                               # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+
+
+def cmd_api_url(a) -> int:
+    url = (a.url or "").strip() or os.environ.get("GITLAB_HUB_ISSUE_URL", "")
+    try:
+        print(gitlab_issue_api(url))
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return USAGE
+    return OK
 
 
 def cmd_fields(a) -> int:
@@ -133,17 +149,46 @@ def cmd_fields(a) -> int:
     return OK
 
 
+_NOTE = "コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）"
+_DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-watch call PUT の --json に渡す）"
+_FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
+_API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
+
+
+def _text_args(p, cmd: str) -> None:
+    p.set_defaults(cmd=cmd)
+    p.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
+    p.add_argument("--text-file", help="本文のファイル（UTF-8）")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
+
+
+def _fields_args(p) -> None:
+    p.add_argument("pairs", nargs="+", metavar="名前=値", help="title=...・add_labels=...・description=...・state_event=close など")
+
+
+def _api_url_args(p) -> None:
+    p.add_argument("--url", default="", help="issue の URL（無いか空なら、環境変数 GITLAB_HUB_ISSUE_URL のハブの issue）")
+
+
+def register(api) -> None:
+    """フィルタと、ワークフローが呼ぶコマンド（change-watch --plugin <このファイル> note ... など。設定は読まない）。"""
+    api.add_filter("gitlab_issue_api", gitlab_issue_api)
+    _text_args(api.add_command("note", lambda _cfg, _store, a: cmd_note(a), _NOTE, needs_config=False), "note")
+    _text_args(api.add_command("description", lambda _cfg, _store, a: cmd_note(a), _DESCRIPTION, needs_config=False), "description")
+    _fields_args(api.add_command("fields", lambda _cfg, _store, a: cmd_fields(a), _FIELDS, needs_config=False))
+    _api_url_args(api.add_command("api-url", lambda _cfg, _store, a: cmd_api_url(a), _API_URL, needs_config=False))
+
+
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="gitlab_hub.py", description="ハブの issue に書くもの（コメントの本文・更新の項目）を JSON で出す")
+    """python3 <このファイル> ... で直接呼ぶ口（change-watch を通すのと同じコマンド）。"""
+    p = argparse.ArgumentParser(prog="gitlab_hub.py", description="issue に書くもの（コメントの本文・説明・更新の項目）を JSON で出す")
     sub = p.add_subparsers(dest="cmd", required=True)
-    n = sub.add_parser("note", help="コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）")
-    n.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
-    n.add_argument("--text-file", help="本文のファイル（UTF-8）")
-    n.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
-    f = sub.add_parser("fields", help="issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）")
-    f.add_argument("pairs", nargs="+", metavar="名前=値", help="title=...・add_labels=...・description=...・state_event=close など")
+    _text_args(sub.add_parser("note", help=_NOTE), "note")
+    _text_args(sub.add_parser("description", help=_DESCRIPTION), "description")
+    _fields_args(sub.add_parser("fields", help=_FIELDS))
+    _api_url_args(sub.add_parser("api-url", help=_API_URL))
     a = p.parse_args(argv)
-    return cmd_note(a) if a.cmd == "note" else cmd_fields(a)
+    return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields}[a.cmd](a)
 
 
 if __name__ == "__main__":

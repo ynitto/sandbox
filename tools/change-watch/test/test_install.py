@@ -1,7 +1,9 @@
 """インストーラのテスト: 1 つの実行可能な zip（.pyz）を作り、そのファイルだけで取得から受け渡しまで動くこと。"""
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -33,8 +35,8 @@ class InstallTest(unittest.TestCase):
         installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installer)
         pyz = env.tmp / "change-watch.pyz"
-        with patch.object(installer, "HERE", source):
-            installer.build(pyz, None, False)
+        with patch.object(installer, "HERE", source), contextlib.redirect_stdout(io.StringIO()):
+            installer.build(pyz, None, False)       # 案内の文は受けて捨てる（Windows のコンソールの文字コードで書けない）
         with zipfile.ZipFile(pyz) as archive:
             self.assertEqual(archive.read("changewatch/__init__.py"), module.read_bytes())
         self.assertEqual(module.stat().st_mtime, 0)  # 元のファイルは変更しない
@@ -208,13 +210,16 @@ class AgentInstallTest(unittest.TestCase):
                       '        - "--config"\n        - "C:/Users/me/.config/change-watch/redmine-ticket-agent/change-watch.yaml"', dag)
         env = install.render((install.AGENTS / "gitlab-mr-review-agent" / "gitlab-mr-review-agent.env.example")
                              .read_text(encoding="utf-8"), is_dag=False, **kw)
-        self.assertIn("MR_REVIEW_CLI=C:/Python311/python.exe C:/Users/me/AppData/Local/Programs/change-watch/agents/"
-                      "gitlab-mr-review-agent/gitlab_mr.py", env)
+        self.assertIn("MR_REVIEW_CLI=C:/Python311/python.exe C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz "
+                      "--plugin gitlab_mr mr\n", env)
         hub = install.render((install.AGENTS / "gitlab-issue-hub-agent" / "change-watch-issue-hub.yaml.example")
                              .read_text(encoding="utf-8"), is_dag=True, **kw)
-        self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'
-                      '        - "C:/Users/me/AppData/Local/Programs/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py"', hub)
+        self.assertIn('command: "C:/Python311/python.exe"\n      args:\n'            # エージェントのコマンドも change-watch を通す
+                      '        - "C:/Users/me/AppData/Local/Programs/change-watch/change-watch.pyz"\n        - "--plugin"\n'
+                      '        - "gitlab_hub"\n'                                   # プラグインは名前で（置き場所は change-watch が探す）
+                      '        - "note"\n        - "--"\n        - "C:/Python311/python.exe"', hub)
         self.assertNotIn('"python3"', hub)                              # ワークフローの中の Python も、この PC の Python に
+        self.assertNotIn("/home/you/.local/bin", hub)
 
 
 if __name__ == "__main__":

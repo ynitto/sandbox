@@ -2,12 +2,18 @@
 設定と接続設定の読み方を確かめる。"""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from helpers import ROOT, TOKEN, Env
 
@@ -345,6 +351,55 @@ class OpsTest(unittest.TestCase):
         code, out = env.run("status")
         self.assertEqual(code, 1)
         self.assertIn("nosuch.py", out)
+
+    def test_plugin_by_name(self):
+        """--plugin は、入れてあるエージェントのプログラムの名前（gitlab_hub・gitlab_hub.py）でもよい。パスがあればパスを使う。"""
+        from changewatch import plugins
+        home = Path(tempfile.mkdtemp(prefix="changewatch-home-")).resolve()      # Windows の短い名前（RUNNER~1）を長い名前に
+        self.addCleanup(shutil.rmtree, home, True)
+        hub = ROOT / "agents" / "gitlab-issue-hub-agent" / "gitlab_hub.py"
+        with patch.object(Path, "home", lambda: home):
+            self.assertEqual(plugins.resolve("gitlab_hub"), hub)                      # change-watch のとなりの agents/
+            self.assertEqual(plugins.resolve("gitlab_hub.py"), hub)
+            mine = home / ".local" / "share" / "change-watch" / "agents" / "my-agent" / "mine.py"
+            mine.parent.mkdir(parents=True)
+            mine.write_text("def register(api):\n    api.add_command('hello', lambda c, s, a: print('hi') or 0, 'x', needs_config=False)\n",
+                            encoding="utf-8")
+            self.assertEqual(plugins.resolve("mine"), mine)                           # ~/.local/share/change-watch/agents/
+            self.assertEqual(plugins.resolve(str(mine)), mine)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                from changewatch import cli
+                self.assertEqual(cli.main(["--plugin", "mine", "hello"]), 0)
+            self.assertEqual(out.getvalue(), "hi\n")
+            (mine.parent.parent / "other-agent").mkdir()
+            (mine.parent.parent / "other-agent" / "mine.py").write_text("", encoding="utf-8")
+            for bad, word in (("mine", "2 つ以上"), ("nosuch", "見つかりません"), ("sub/gitlab_hub.py", "見つかりません")):
+                with self.assertRaises(Exception) as e:
+                    plugins.resolve(bad)
+                self.assertIn(word, str(e.exception))
+
+    def test_plugin_command_without_config(self):
+        """needs_config=False のコマンドは、設定も状態も読まずに動く（--config が無くても、設定が壊れていても）。"""
+        env = Env(self)
+        plugin = env.tmp / "p.py"
+        plugin.write_text("def register(api):\n"
+                          "    p = api.add_command('shout', lambda cfg, store, a: print(a.word.upper(), cfg, store) or 0,\n"
+                          "                        '大文字にする', needs_config=False)\n"
+                          "    p.add_argument('--word')\n"
+                          "    p.add_argument('rest', nargs='*')\n"
+                          "    api.add_command('count', lambda cfg, store, a: print(len(cfg.sources)) or 0, '取得元の数')\n",
+                          encoding="utf-8")
+        from changewatch import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--plugin", str(plugin), "--config", str(env.tmp / "nosuch.yaml"), "shout", "--word=a", "--", "--p", "x"])
+        self.assertEqual((code, out.getvalue()), (0, "A None None\n"), err.getvalue())
+        self.assertFalse((env.tmp / "state").exists())
+        env.write_config({"items": env.source()})
+        env.plugins = [str(plugin)]
+        env.ok(self, "count")                                            # 既定（needs_config=True）は設定を読んで渡す
+        self.assertEqual(env.stdout, "1\n")
 
     def test_connections_only_from_cli_path(self):
         try:
