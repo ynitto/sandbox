@@ -1,0 +1,72 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "パイプラインが失敗しました",
+      "weight": "Bolder",
+      "size": "Small",
+      "wrap": true,
+      "color": "Attention"
+    },
+    {
+      "type": "TextBlock",
+      "text": "Failed pipeline for main",
+      "weight": "Bolder",
+      "size": "Medium",
+      "wrap": true,
+      "markdown": false
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        {
+          "title": "プロジェクト",
+          "value": "platform/order-service",
+          "markdown": false
+        },
+        {
+          "title": "パイプライン",
+          "value": "#30417",
+          "markdown": false
+        },
+        {
+          "title": "ブランチ",
+          "value": "main",
+          "markdown": false
+        },
+        {
+          "title": "状態",
+          "value": "failed",
+          "markdown": false
+        },
+        {
+          "title": "操作した人",
+          "value": "Ichiro Suzuki",
+          "markdown": false
+        },
+        {
+          "title": "受信",
+          "value": "2026-11-19T02:41:09+00:00",
+          "markdown": false
+        }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "在庫引当のタイムアウトを 3 秒にする / 失敗したジョブ: test/unit-test, test/integration-test",
+      "wrap": true,
+      "spacing": "Medium",
+      "markdown": false
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "GitLab で開く",
+      "url": "https://gitlab.example.co.jp/platform/order-service/-/pipelines/30417"
+    }
+  ]
+}

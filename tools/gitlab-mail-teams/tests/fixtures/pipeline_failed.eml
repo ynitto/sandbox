@@ -1,0 +1,96 @@
+Return-Path: <gitlab@gitlab.example.co.jp>
+Received: from gitlab.example.co.jp (gitlab.internal [10.20.0.15])
+ by mx.example.co.jp with ESMTPS id 9ZxC8v7B6n
+ for <ichiro.suzuki@example.co.jp>; Thu, 19 Nov 2026 02:41:10 +0000 (UTC)
+Date: Thu, 19 Nov 2026 02:41:09 +0000
+From: GitLab <gitlab@gitlab.example.co.jp>
+Reply-To: GitLab <noreply@gitlab.example.co.jp>
+To: ichiro.suzuki@example.co.jp
+Message-ID: <691d2c15a7e41_3f1a8b2c6d90455@gitlab.example.co.jp>
+Subject: order-service | Failed pipeline for main | 9f2c41d7
+Mime-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="--==_mimepart_691d2c15a6b03_3f1a8b2c6d90391";
+ charset=UTF-8
+Content-Transfer-Encoding: 8bit
+X-GitLab-Project: order-service
+X-GitLab-Project-Id: 42
+X-GitLab-Project-Path: platform/order-service
+List-Id: platform/order-service <42.order-service.platform.gitlab.example.co.jp>
+X-GitLab-Pipeline-Id: 30417
+X-GitLab-Pipeline-Ref: main
+X-GitLab-Pipeline-Status: failed
+X-GitLab-NotificationReason: own_activity
+Auto-Submitted: auto-generated
+X-Auto-Response-Suppress: All
+
+
+----==_mimepart_691d2c15a6b03_3f1a8b2c6d90391
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pipeline #30417 has failed!
+
+Project: order-service ( https://gitlab.example.co.jp/platform/order-service )
+Branch: main ( https://gitlab.example.co.jp/platform/order-service/-/commits/main )
+
+Commit: 9f2c41d7 ( https://gitlab.example.co.jp/platform/order-service/-/commit/9f2c41d7a8b35e60c1d24f7a9b8e3c5d6f0a1b2c )
+Commit Message: 在庫引当のタイムアウトを 3 秒にする
+
+See merge request platform/order-service!57
+Commit Author: Ichiro Suzuki ( https://gitlab.example.co.jp/i-suzuki )
+
+Pipeline #30417 ( https://gitlab.example.co.jp/platform/order-service/-/pipelines/30417 ) triggered by Ichiro Suzuki ( https://gitlab.example.co.jp/i-suzuki )
+had 2 failed jobs.
+
+Job #184302 ( https://gitlab.example.co.jp/platform/order-service/-/jobs/184302/raw )
+
+Stage: test
+Name: unit-test
+Job #184305 ( https://gitlab.example.co.jp/platform/order-service/-/jobs/184305/raw )
+
+Stage: test
+Name: integration-test
+
+--
+You're receiving this email because of your account on gitlab.example.co.jp.
+
+----==_mimepart_691d2c15a6b03_3f1a8b2c6d90391
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html lang="en">
+<head>
+<meta content="text/html; charset=UTF-8" http-equiv="Content-Type">
+<meta content="width=device-width, initial-scale=1" name="viewport">
+<title>order-service | Failed pipeline for main | 9f2c41d7</title>
+<style>body { background-color: #fafafa; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }</style>
+</head>
+<body>
+<table class="wrapper" border="0" cellpadding="0" cellspacing="0">
+<tr><td class="alert" style="background-color: #d22852; color: #ffffff;">Pipeline #30417 has failed!</td></tr>
+<tr><td>
+<table class="table-info" border="0" cellpadding="0" cellspacing="0">
+<tr><td>Project</td><td><a href="https://gitlab.example.co.jp/platform/order-service">platform / order-service</a></td></tr>
+<tr><td>Branch</td><td><a href="https://gitlab.example.co.jp/platform/order-service/-/commits/main">main</a></td></tr>
+<tr><td>Commit</td><td><a href="https://gitlab.example.co.jp/platform/order-service/-/commit/9f2c41d7a8b35e60c1d24f7a9b8e3c5d6f0a1b2c">9f2c41d7</a><div class="commit">在庫引当のタイムアウトを 3 秒にする</div></td></tr>
+<tr><td>Commit Author</td><td><a href="https://gitlab.example.co.jp/i-suzuki">Ichiro Suzuki</a></td></tr>
+</table>
+</td></tr>
+<tr><td>
+Pipeline <a href="https://gitlab.example.co.jp/platform/order-service/-/pipelines/30417">#30417</a>
+triggered by <a href="https://gitlab.example.co.jp/i-suzuki">Ichiro Suzuki</a>
+had 2 failed jobs.
+</td></tr>
+<tr><td>
+<table class="builds" border="0" cellpadding="0" cellspacing="0">
+<tr><td>test</td><td><a href="https://gitlab.example.co.jp/platform/order-service/-/jobs/184302">unit-test</a></td></tr>
+<tr><td>test</td><td><a href="https://gitlab.example.co.jp/platform/order-service/-/jobs/184305">integration-test</a></td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+
+----==_mimepart_691d2c15a6b03_3f1a8b2c6d90391--

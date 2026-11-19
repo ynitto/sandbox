@@ -1,0 +1,62 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Issue が作成されました",
+      "weight": "Bolder",
+      "size": "Small",
+      "wrap": true,
+      "isSubtle": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Stock reservation times out on order confirmation (#128)",
+      "weight": "Bolder",
+      "size": "Medium",
+      "wrap": true,
+      "markdown": false
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        {
+          "title": "プロジェクト",
+          "value": "platform/order-service",
+          "markdown": false
+        },
+        {
+          "title": "状態",
+          "value": "opened",
+          "markdown": false
+        },
+        {
+          "title": "操作した人",
+          "value": "Taro Yamada",
+          "markdown": false
+        },
+        {
+          "title": "受信",
+          "value": "2026-11-18T09:12:45+09:00",
+          "markdown": false
+        }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "夕方のピーク時間帯に、注文確定 API が在庫引当の呼び出しで 30 秒待ったあと 504 を返すことがあります。 ## 再現手順 1. ステージングで同時 200 件の注文を流す 2. 在庫サービスの応答が 5 秒を超えたあたりから失敗が出始める ## 期待する動き 引当を 3 秒で打ち切り、注文を「引当待ち」として受け付ける。",
+      "wrap": true,
+      "spacing": "Medium",
+      "markdown": false
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "GitLab で開く",
+      "url": "https://gitlab.example.co.jp/platform/order-service/-/issues/128"
+    }
+  ]
+}
