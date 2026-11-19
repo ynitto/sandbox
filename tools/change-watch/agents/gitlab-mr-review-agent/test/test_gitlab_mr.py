@@ -253,6 +253,7 @@ class UnitTest(unittest.TestCase):
         t = threads[0]
         self.assertEqual((t["id"], t["key"], t["path"], t["line"], t["body"], t["resolved"]),
                          ("d1", "k1", "app.py", "3", "直して", False))
+        self.assertEqual(t["evidence"], "")
         self.assertEqual(t["replies"], [{"author": "alice", "body": "意図どおりです"}])
 
     def test_mark_survives_awkward_paths(self):
@@ -358,6 +359,58 @@ class CommandTest(_GitLabBase):
         code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
         self.assertIn("同じ指摘が既にあります", out)
         self.assertEqual(len(self.gl.discussions["1"]), 1)            # やり直しても重ならない
+
+    def test_comment_with_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp) / "evidence.md"
+            evidence.write_text("終了コード: 1", encoding="utf-8")
+            code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "None で落ちます",
+                                 "--evidence-file", evidence)
+        self.assertEqual(code, gm.OK, out)
+        posted = self.gl.writes[-1][2]["body"]
+        self.assertIn("None で落ちます\n\n### 証拠\n\n終了コード: 1", posted)
+        self.assertEqual(gm.parse_finding(posted)["evidence"], "verified")
+        self.assertIn("〔検証済み〕", self.cli("context", 1)[1])
+        code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "None で落ちます",
+                             "--evidence", "別の実行結果")
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn("同じ指摘が既にあります", out)
+
+    def test_comment_without_evidence(self):
+        body = "None で落ちます"
+        code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", body)
+        self.assertEqual(code, gm.OK, out)
+        posted = self.gl.writes[-1][2]["body"]
+        self.assertTrue(posted.startswith(f"〔仮説（未検証）〕 {gm.HYPOTHESIS_NOTE}\n\n{body}"))
+        self.assertEqual(gm.parse_finding(posted)["evidence"], "hypothesis")
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn(f"〔仮説（未検証）〕\n{body}\n", out)
+        self.assertNotIn(gm.HYPOTHESIS_NOTE, out)
+
+    def test_legacy_finding_is_hypothesis_and_can_be_resolved(self):
+        body = "None で落ちます"
+        mark = gm.finding_mark(gm.finding_key("app.py", body), "app.py", 2)
+        self.gl.discussions["1"] = [{"id": "legacy", "notes": [
+            {"body": f"{body}\n\n{mark}", "resolvable": True, "resolved": False}
+        ]}]
+        self.assertEqual(gm.own_threads(self.gl.discussions["1"])[0]["evidence"], "")
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn(f"〔仮説（未検証）〕\n{body}\n", out)
+
+        code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "言い直した指摘")
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn("未解決の指摘", out)
+        self.assertEqual(self.gl.writes, [])
+
+        code, out = self.cli("resolve", 1, "legacy", "--body", "修正を確認しました")
+        self.assertEqual(code, gm.OK, out)
+        self.assertTrue(gm.own_threads(self.gl.discussions["1"])[0]["resolved"])
+        code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", body)
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn("同じ指摘が既にあります（スレッド legacy・解決済み）", out)
+        self.assertEqual([w[0] for w in self.gl.writes], ["reply", "resolve"])
 
     def test_reworded_finding_on_same_line_is_not_added(self):
         self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
@@ -506,6 +559,65 @@ class LocalRepoTest(_GitLabBase):
         self.assertNotIn(TOKEN, (self.work / ".git" / "config").read_text(encoding="utf-8"))
         self.assertEqual(git(self.work, "for-each-ref", "--format=%(refname)", "refs/mr-review"),
                          f"refs/mr-review/heads/main\nrefs/mr-review/mr/1")
+
+    def test_verify_without_allowlist(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("MR_REVIEW_VERIFY_ALLOW", None)
+            with mock.patch.object(gm.subprocess, "run") as run, redirect_stderr(io.StringIO()) as err:
+                code, out = self.cli("verify", 1, "--", sys.executable, "-c", "print('実行')")
+        self.assertEqual((code, out), (gm.FAILED, ""))
+        self.assertIn("検証は設定されていません", err.getvalue())
+        run.assert_not_called()
+
+    def test_verify_rejects_command_outside_allowlist(self):
+        self.env["MR_REVIEW_VERIFY_ALLOW"] = json.dumps([[sys.executable, "-m", "unittest"]])
+        with mock.patch.object(gm.subprocess, "run") as run, redirect_stderr(io.StringIO()) as err:
+            code, out = self.cli("verify", 1, "--", sys.executable, "-c", "print('実行')")
+        self.assertEqual((code, out), (gm.FAILED, ""))
+        self.assertIn("許可リストにない", err.getvalue())
+        run.assert_not_called()
+
+    def test_verify_accepts_extra_args_and_runs_in_worktree_with_minimal_env(self):
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, gm.OK, out)
+        self.api()
+        self.env.update(MR_REVIEW_VERIFY_ALLOW=json.dumps([[sys.executable]]),
+                        MR_REVIEW_VERIFY_TEST_SECRET="private-test-value")
+        code, out = self.cli("verify", "!1", "--", sys.executable, "-c",
+                             "import os, sys; print(os.getcwd()); print(os.getenv('GITLAB_TOKEN')); "
+                             "print(os.getenv('MR_REVIEW_VERIFY_TEST_SECRET')); "
+                             "print(sys.argv[1], file=sys.stderr); sys.exit(7)", TOKEN)
+        self.assertEqual(code, gm.OK, out)
+        self.assertIn("- コマンド:", out)
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn("private-test-value", out)
+        self.assertIn(f"- 終了コード: 7\n- 出力:\n```\n{self.review.resolve()}\nNone\nNone\n***\n```", out)
+        self.assertEqual(self.api(), [])
+
+    def test_verify_timeout_discards_partial_output(self):
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, gm.OK, out)
+        self.env.update(MR_REVIEW_VERIFY_ALLOW=json.dumps([[sys.executable, "-c"]]),
+                        MR_REVIEW_VERIFY_TIMEOUT_SEC="1")
+        with redirect_stderr(io.StringIO()) as err:
+            code, out = self.cli("verify", 1, "--", sys.executable, "-c",
+                                 "import time; print('partial output', flush=True); time.sleep(10)")
+        self.assertEqual((code, out), (gm.FAILED, ""))
+        self.assertIn("制限時間（1 秒）を超えたので未検証として扱います", err.getvalue())
+
+    def test_verify_requires_current_worktree(self):
+        self.env["MR_REVIEW_VERIFY_ALLOW"] = json.dumps([[sys.executable, "-c"]])
+        with redirect_stderr(io.StringIO()) as err:
+            code, out = self.cli("verify", 1, "--", sys.executable, "-c", "print('実行')")
+        self.assertEqual((code, out), (gm.FAILED, ""))
+        self.assertIn("先に context を実行してください", err.getvalue())
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, gm.OK, out)
+        git(self.review, "checkout", "--detach", self.base)
+        with redirect_stderr(io.StringIO()) as err:
+            code, out = self.cli("verify", 1, "--", sys.executable, "-c", "print('実行')")
+        self.assertEqual((code, out), (gm.FAILED, ""))
+        self.assertIn("先に context を実行してください", err.getvalue())
 
     def test_show_comment_summary_reuse_local_and_cache(self):
         self.cli("context", 1)

@@ -72,6 +72,10 @@ steps:
         まず `${MR_REVIEW_CLI} context ${CHANGE.record.iid} --since=${CHANGE.before.sha}` で概要・前回までの指摘・差分を見て、
         「レビューし終えています」と出たら何もせずに終えてください。前回までの未解決の指摘が直っていれば resolve で閉じ、
         新しく見つけた問題だけを comment で指摘し（ファイルは show で読む）、最後に summary を 1 回だけ書いてください。
+        指摘はできる限り検証してから書いてください。再現手順を本文に具体的に書いて証拠としても添えるか、
+        `${MR_REVIEW_CLI} verify ${CHANGE.record.iid} -- <コマンド>` で検証し、出力を一時ファイルに保存して comment の --evidence-file で渡してください。
+        verify が 0 以外で終わったときは（制限時間切れ・許可リスト外・設定が無いなど）、証拠なしで comment してもかまいませんが、本文に検証できなかった理由を書いてください。
+        証拠の無い指摘は自動で「仮説（未検証）」と表示されます。summary には検証済みの指摘と仮説の指摘の件数を分けて書いてください。
         本文は日本語の Markdown で、--body-file に渡すファイルは一時フォルダに書いてください。
       trust_all_tools: true                  # gitlab_mr.py を確認なしで実行させる（無人で動かすため）
   - name: commit
