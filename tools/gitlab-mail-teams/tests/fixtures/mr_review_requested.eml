@@ -1,0 +1,40 @@
+Return-Path: <gitlab@gitlab.example.co.jp>
+Received: from gitlab.example.co.jp (gitlab.internal [10.20.0.15])
+ by mx.example.co.jp with ESMTPS id 7QwE4r5T6y
+ for <hanako.sato@example.co.jp>; Wed, 18 Nov 2026 14:03:28 +0900 (JST)
+Date: Wed, 18 Nov 2026 14:03:27 +0900
+From: "Ichiro Suzuki (@i-suzuki)" <gitlab@gitlab.example.co.jp>
+Reply-To: platform / order-service <gitlab-incoming+1b7e44c0d2aa5f6e7d8c9b0a1f2e3d4c@gitlab.example.co.jp>
+To: hanako.sato@example.co.jp
+Message-ID: <merge_request_9034@gitlab.example.co.jp>
+Subject: order-service | Add timeout and retry to stock reservation (!57)
+Mime-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+X-GitLab-Project: order-service
+X-GitLab-Project-Id: 42
+X-GitLab-Project-Path: platform/order-service
+List-Id: platform/order-service <42.order-service.platform.gitlab.example.co.jp>
+List-Unsubscribe: <https://gitlab.example.co.jp/-/sent_notifications/1b7e44c0d2aa5f6e7d8c9b0a1f2e3d4c/unsubscribe>
+X-GitLab-MergeRequest-ID: 9034
+X-GitLab-MergeRequest-IID: 57
+X-GitLab-NotificationReason: review_requested
+X-GitLab-Reply-Key: 1b7e44c0d2aa5f6e7d8c9b0a1f2e3d4c
+Auto-Submitted: auto-generated
+X-Auto-Response-Suppress: All
+
+Ichiro Suzuki requested a new review on https://gitlab.example.co.jp/platform/order-service/-/merge_requests/57
+
+Branches: feature/stock-reserve-timeout to main
+Author: Ichiro Suzuki
+Assignee: Ichiro Suzuki
+Reviewer: Hanako Sato
+
+在庫引当の呼び出しに 3 秒のタイムアウトを入れ、失敗したときは間隔を空けて 2 回まで再試行します。
+それでも取れなければ、注文を「引当待ち」で受け付けます。
+
+Closes #128
+
+--
+View it on GitLab: https://gitlab.example.co.jp/platform/order-service/-/merge_requests/57
+You're receiving this email because your review was requested. Unsubscribe from this thread: https://gitlab.example.co.jp/-/sent_notifications/1b7e44c0d2aa5f6e7d8c9b0a1f2e3d4c/unsubscribe | Manage all notifications: https://gitlab.example.co.jp/-/profile/notifications | Help: https://gitlab.example.co.jp/help
