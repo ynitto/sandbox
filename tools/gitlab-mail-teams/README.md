@@ -1,53 +1,28 @@
 # gitlab-mail-teams — GitLab の通知メールを Teams のカードに変換する
 
-GitLab が送ってくる通知メール（`.eml`）を読み、何の通知かと要点を取り出して、Microsoft Teams に
-投稿できる Adaptive Card の JSON にする変換器。Python の標準ライブラリだけで動く。
+本番では Outlook が受信した GitLab 通知メールを Power Automate がパースし、Adaptive Card を組み立てて Teams に投稿する。受信から投稿までは MS365 内で完結する。
 
-## 目的
+## 本番フロー
 
-社内の GitLab は Teams から見えず、GitLab から Teams へ直接通知を送る経路もない。一方で
-**GitLab の通知メールは Outlook に届く**。このメールを「Issue ができた」「レビューを頼まれた」
-「パイプラインが落ちた」という形の整ったデータに直せば、Power Automate で Teams のチャネルへ
-カードとして流せる。
+1. Outlook の新着メールをトリガーにし、GitLab の通知を差出人などで絞り込む。
+2. Power Automate で件名・本文から通知の種類や項目を抽出し、Adaptive Card を組み立てる。
+3. 同じフローから Teams のチャットまたはチャネルにカードを投稿する。投稿先の振り分けや `unknown` の扱いは `kind` を使った条件で設定できる。
 
-このツールが受け持つのは**メール 1 通 → JSON 1 つ**の変換だけ。GitLab にも Teams にも接続しない。
-メールを受け取るところと Teams に投稿するところは Power Automate が受け持つ。
+設定手順は [Power Automate レシピ](power-automate/flow.md)、抽出式は [式の具体例](power-automate/expressions.md) を参照。
 
-## 社内での組み立て方
+## 上流の仕組み ― ハブissue方式
 
-```
-GitLab ──通知メール──▶ Outlook
-                         │  ① Power Automate「新しいメールが届いたとき」
-                         │     （差出人が GitLab のものだけ）→ メールを .eml で書き出し、
-                         ▼     OneDrive の inbox フォルダに保存
-                   inbox/*.eml        ← OneDrive の同期で手元の PC にも現れる
-                         │  ② 手元の PC で Dagu が 5 分おきに変換（dags/gitlab-mail-teams.yaml）
-                         ▼
-                   cards/*.json       ← OneDrive の同期でクラウドへ戻る
-                         │  ③ Power Automate「ファイルが作成されたとき」
-                         ▼     → ファイルの内容を「チャットまたはチャネルにカードを投稿する」に渡す
-                      Teams のチャネル
-```
+対象には、[gitlab-issue-hub-agent](../change-watch/agents/gitlab-issue-hub-agent/README.md) が使うハブ issue へのコメント通知メールも含まれ得る。1 つの GitLab issue を介し、メール・Power Automate とローカル側がやりとりするハブissue方式が、ローカルと MS365 をつなぐ標準の橋となる。コメントのみの通知は通常 `unknown` として扱う。
 
-1. **メールを `.eml` にする（Power Automate）** — 「新しいメールが届いたとき」をトリガーにし、差出人を
-   GitLab の通知アドレスに絞る。「メールのエクスポート」で得た内容を、OneDrive の受信用フォルダに
-   `<メッセージ ID>.eml` として保存する。
-2. **変換する（手元の PC）** — [`dags/gitlab-mail-teams.yaml`](dags/gitlab-mail-teams.yaml) を Dagu に置く。
-   受信用フォルダの `.eml` を 1 通ずつ変換し、カードの JSON を出力用フォルダに書く。変換できたメールは
-   `done`、読めなかったメールは `failed` に移すので、同じメールを二度投稿しない。
-3. **Teams に投稿する（Power Automate）** — 出力用フォルダの「ファイルが作成されたとき」をトリガーにし、
-   ファイルの内容をそのまま「チャットまたはチャネルにカードを投稿する」のカード欄に渡す。
+## ローカル CLI の使い方
 
-通知の種類で投稿先を分けたいときは、`--format json` の出力も一緒に書き出し、Power Automate の条件で
-`kind` を見て分ける。
-
-## 使い方
+CLI はパース規則とカード設計をオフラインで試作・検証する道具。Python の標準ライブラリだけで動き、手元の `.eml` から生成したカード JSON をフローの投稿アクションに貼って試せる。[Dagu DAG 例](dags/gitlab-mail-teams.yaml) も、複数のメールでパース規則を試作・検証するためのローカル実行例。本番の変換・投稿は Power Automate が担う。
 
 ```sh
 # 何の通知かを JSON で見る（既定）
 python3 gitlab_mail_teams.py mail.eml
 
-# Teams に投稿するカードの JSON にする
+# フローで試す Adaptive Card の JSON を生成する
 python3 gitlab_mail_teams.py mail.eml --format card
 
 # 標準入力から読む（パスを省略するか - を書く）
@@ -122,10 +97,6 @@ python3 -m unittest discover -s tests
   社内の GitLab が実際に送ったメールではない。使い始める前に実物の `.eml` を数通通して確かめる。
 - 分類するのは上の 3 種類だけ。それ以外はすべて `unknown`（カードにはなるので、投稿するかどうかは
   Power Automate の側で `kind` を見て決める）。
-- メールを取りに行かないし、Teams にも投稿しない。同じメールを二度渡せば同じカードが二度出る
-  （重複を防ぐのは、処理済みのメールを移すワークフローの役目）。
-- 出すのはカードそのもの。Teams の Webhook に直接送る場合は、送り先が求める外側の包み
-  （`attachments` の配列など）を送る側で足す。
 - 要点は本文の頭 280 文字で、Markdown の記号はそのまま残る。添付ファイルは見ない。
 
 ## 既存ツールとの違い
@@ -136,5 +107,4 @@ python3 -m unittest discover -s tests
 | `copilot365-bridge` | 手元からの問いかけ | MS365 Copilot の回答 | MS365 Copilot を呼び出す |
 | **`gitlab-mail-teams`** | GitLab の通知メール（`.eml`） | Teams のカードの JSON | メールの変換だけ。どこにも接続しない |
 
-`issue-mailbox` は GitLab の API に届く場所（開発側）で人やエージェントに知らせる。このツールは
-GitLab の API に届かない Teams の側へ、メールという既にある経路を使って知らせる。
+`issue-mailbox` は開発側で GitLab の API を使って人やエージェントに知らせる。本番フローは GitLab の通知メールを使って MS365 側の Teams に知らせる。

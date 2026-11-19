@@ -1,0 +1,67 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "レビューの依頼",
+      "weight": "Bolder",
+      "size": "Small",
+      "wrap": true,
+      "isSubtle": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Add timeout and retry to stock reservation (!57)",
+      "weight": "Bolder",
+      "size": "Medium",
+      "wrap": true,
+      "markdown": false
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        {
+          "title": "プロジェクト",
+          "value": "platform/order-service",
+          "markdown": false
+        },
+        {
+          "title": "ブランチ",
+          "value": "feature/stock-reserve-timeout",
+          "markdown": false
+        },
+        {
+          "title": "状態",
+          "value": "review_requested",
+          "markdown": false
+        },
+        {
+          "title": "操作した人",
+          "value": "Ichiro Suzuki",
+          "markdown": false
+        },
+        {
+          "title": "受信",
+          "value": "2026-11-18T14:03:27+09:00",
+          "markdown": false
+        }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "在庫引当の呼び出しに 3 秒のタイムアウトを入れ、失敗したときは間隔を空けて 2 回まで再試行します。 それでも取れなければ、注文を「引当待ち」で受け付けます。 Closes #128",
+      "wrap": true,
+      "spacing": "Medium",
+      "markdown": false
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "GitLab で開く",
+      "url": "https://gitlab.example.co.jp/platform/order-service/-/merge_requests/57"
+    }
+  ]
+}

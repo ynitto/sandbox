@@ -1,9 +1,9 @@
+# パース規則の試作・検証用。本番経路は Power Automate レシピ（../power-automate/）を参照。
 # gitlab-mail-teams を Dagu で回す例（~/.config/dagu/dags/gitlab-mail-teams.yaml にコピーして使う）。
 # 受信フォルダに置かれた GitLab の通知メール（.eml）を 1 通ずつ Teams の Adaptive Card の JSON に変換する。
 #   convert  inbox の *.eml を順に変換し、<同じ名前>.json を cards に書く。
 #            変換できたメールは done へ、読めなかったメール（終了コード 2）は failed へ移す。
 #            1 通でも読めなければステップは失敗になり、Dagu の履歴に残る（残りのメールは最後まで処理する）。
-# .eml を inbox に置くところと、cards の JSON を Teams に投稿するところは Power Automate の側で組む（README の「社内での組み立て方」）。
 # スクリプト先頭の 5 つのパス（tool・inbox・cards・processed・failed）を自分の環境に直す。~ は使わず絶対パスで書く。
 # 前の回がまだ終わっていないときは、flock で重なりを避けて何もせずに正常終了する（同じメールを二重に処理しない）。
 # flock が無い環境（macOS など）では、lock の 3 行を外すか別の排他の手段に置き換える。
