@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "report",
+  "subject": "月次集計",
+  "fields": {
+    "対象": "東日本",
+    "期間": "2026-10"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "duplicate",
+      "field": "期間",
+      "line": 4,
+      "message": "項目「期間」が 2 回あります（3 行目と 4 行目）。1 回だけ書いてください"
+    }
+  ]
+}

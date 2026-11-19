@@ -103,6 +103,75 @@
 - コマンドの出力が条件に当たると、次の起動で自分のコメントにもう一度反応する。例では、出力を【依頼】で始めなければ当たらない
 - 書き込む文の行頭の `/`（`/close` などのクイックアクション）は `\/` にして効かなくする。表示は `/` のまま
 
+## 依頼の書き方
+
+種別で振り分けるときは、1 つのコメントに 1 つの依頼を書く。
+
+```text
+【依頼】[report] 10 月の売上の集計
+対象: 東日本の売上
+期間: 2026-10
+期限: 2026-11-30
+
+先月と同じ形でお願いします。
+```
+
+- 1 行目は `【依頼】[種別] 件名`。先頭に空行・空白・挨拶は置かない。種別タグは `【依頼】` の直後に 1 つ書く。
+  合図とタグの間には半角・全角の空白を置ける。種別は半角の小文字で始め、小文字・数字・ハイフンで 32 文字まで。件名は必ず書く。
+- 2 行目からは `項目名: 値` を 1 行に 1 つずつ書く。区切りは `:` でも `：` でもよく、行頭に `- ` や `* ` を付けてもよい。
+  同じ項目は 1 回だけ書く。必須の項目には値を入れる。表に無い独自の項目も書ける。
+- 項目のあとに空行を 1 つ入れると、そのあとを自由な文として読める。項目が無ければ 2 行目を空ける。
+
+| 種別 | 用途 | 必須の項目 | 任意の項目 | 自由な文 |
+|---|---|---|---|---|
+| `report` | 集計・報告の作成 | 対象・期間 | 期限（`2026-11-30` の形）・提出先 | 任意 |
+| `inquiry` | 問い合わせへの回答案 | 差出人・受信日時 | 期限（`2026-11-30` の形） | 必須 |
+| `account` | アカウント・権限の申請 | 対象者・操作（追加・変更・削除のどれか）・期日（`2026-12-01` の形） | 権限 | 任意 |
+
+差出人・受信日時・受付番号はどの種別にも書ける。受付番号は返信にも写る。
+
+```text
+【返信】[report] 10 月の売上の集計
+元の依頼: note_1003（alice さん）
+受付番号: M20261119093000
+
+集計・報告の依頼を受け付けました。
+```
+
+書式が違う依頼には `【差し戻し】[種別] 件名` で始まるコメントが付き、空行のあとに直すところが並ぶ。種別が読めなければタグは付かない。
+種別タグの無い `【依頼】件名` も、振り分け例では差し戻す。既存の `change-watch-issue-hub.yaml` では今までどおり受け付ける。
+
+- 依頼を直すときは、新しいコメントに書き直す。元のコメントを編集しても新しい依頼にはならない。
+- GitLab に直接書くときは行頭に `/` を書かない。`/close` などが操作として効く。メールを写すフローでは行頭の `/` を `\/` にしてから送る。
+- メールを写すときは、GitLab の通知を避けるため、本文に `@名前` を書かない。
+- 返信など、依頼でないコメントを `【依頼】` で始めない。
+
+## 種別で振り分ける例（`examples/change-watch-issue-hub-route.yaml.example`）
+
+`change-watch-issue-hub.yaml` の代わりに使う。二重に返信しないよう、切り替えるときは元のワークフローを止める。
+`examples/change-watch-issue-hub-route.yaml.example` を `~/.config/dagu/dags/change-watch-issue-hub-route.yaml` にコピーし、`/home/you` を自分の場所に直す。
+`examples/` の `hub_reply.py`・`on_report.py`・`on_inquiry.py`・`on_account.py`・`on_invalid.py` はすべて同じ作業フォルダに置く。
+これらの例と Power Automate のテンプレートは手でコピーする。
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `get` | `change-watch get --source gitlab-hub-notes --consumer hub-route --watch body --one` | コメントの変化を 1 件受け取る。初回は今あるコメントを覚える |
+| `check` | `change-watch check-request --change=${CHANGE}` | 新しく付いた（`appeared`）、人が書いた（`system=false`）コメントを調べ、`route` に振り分け先を出す |
+| `report` → `reply_report` | `note` と `call POST` | 集計・報告の依頼への返信を作って書く |
+| `inquiry` → `reply_inquiry` | `note` と `call POST` | 問い合わせへの返信を作って書く |
+| `account` → `reply_account` | `note` と `call POST` | アカウント・権限の申請への返信を作って書く |
+| `invalid` → `reply_invalid` | `note` と `call POST` | 書式が違う依頼への差し戻しを作って書く |
+| `commit` | `change-watch commit --source gitlab-hub-notes --consumer hub-route ${CHANGE.key}` | 見終えたと記録する |
+
+各分岐の条件は `${CHECK.route}` と行き先の完全一致。分岐のスクリプトは同じ種別の依頼を受け付けたと返す例なので、自分の処理に替えて使う。
+何も出さなければコメントせず、スクリプトが失敗したときは Dagu の履歴に残して見終えたと記録する。
+
+種別を足すときは、`examples/hub-request-kinds.json.example` をコピーして直し、`check` に `--kinds-file=<ファイル>` を渡す。
+同じ名前の種別は定義ごと置き換わる。`invalid` と `none` は判定結果のために予約している。
+種別を足したら、条件とコマンドを書くステップと、その出力をコメントするステップの 2 つをワークフローにも足す。
+分岐を足すまでは、追加した種別の依頼が書式チェックを通っても返信せずに見終えたと記録する。
+
+
 ## 頼む: issue を変える
 
 例の `change-watch-issue-hub-update` は、渡した `COMMENT` をコメントとして足す。ほかのワークフローからは、そのステップでこのコマンドを動かす。
@@ -163,6 +232,8 @@ dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.examp
   ヘッダーに `PRIVATE-TOKEN: <トークン>`、本文に `{"body": "【依頼】<件名>\n<本文>"}`（例のワークフローの条件に合わせた形）
 - GitLab で「メールで返信」が使えるなら、ハブの issue の通知メールの返信先（Reply-To）へメールを送る（本文がコメントになる）
 
+種別で振り分けるときは「依頼の書き方」の形にし、[Power Automate の組み方](power-automate/README.md) に沿って本文を作る。
+
 **ハブの issue → メール（頼む）**。GitLab がこの issue を見ている人へ、コメント・ラベル・状態などの変化をメールで知らせる。
 Power Automate のフローをそのメールボックスの「新しいメールが届いたとき」で始め、件名・本文で何をするかを分ける。
 
@@ -180,9 +251,12 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `note --text=<文>`・`note --text-file=<ファイル>`・`note -- <コマンド> [引数...]` | コメントの本文 | `call POST "<issue の API>/notes" --json` |
 | `description`（渡し方は `note` と同じ） | issue の説明 | `call PUT "<issue の API>" --json` |
 | `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
+| `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
 
 `note`・`description` は、本文が空なら何も出さず、`--` のあとのコマンドが失敗したらその終了コードで終わる。
+
+`check-request` は、調べられれば違反があっても JSON を 1 行出して 0 で終わる。渡し方やファイルの誤りは 2、本文を作るコマンドの失敗はその終了コードで終わる。
 
 ## 決めること
 
@@ -191,6 +265,8 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | ハブの issue | `gitlab-issue-hub-agent.env` の `GITLAB_HUB_ISSUE_URL` | `https://gitlab.example.com/group/project/-/issues/42` |
 | どの変化に反応するか | `change-watch-issue-hub.yaml` の `request` の `preconditions` | `expected: "re:^【依頼】"` |
 | 反応して動かすコマンド | `change-watch-issue-hub.yaml` の `request` の `--` のあと | `python3`・`/home/you/work/hub/on_request.py`・`${CHANGE}` |
+| どの種別をどのコマンドに渡すか | 振り分け例の分岐 | `report` なら `on_report.py` |
+| 種別を足す | 振り分け例の `check` と追加する分岐 | `--kinds-file=kinds.json` |
 | 何を書くか | 書き込むワークフロー（`change-watch-issue-hub-update.yaml` など）の `call` | `COMMENT`・`--json '{"add_labels": "…"}'` |
 | 問い合わせの間隔 | `change-watch.yaml` の取得元の `schedule` | `*/5 * * * *` |
 

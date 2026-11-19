@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "report",
+  "subject": "月次集計",
+  "fields": {
+    "対象": "東日本",
+    "期間": "2026-10"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "bad_line",
+      "field": "4 行目",
+      "line": 4,
+      "message": "4 行目「先月分をお願いします」は「項目名: 値」の形ではありません。自由な文は、空行を 1 つ入れたあとに書いてください"
+    }
+  ]
+}

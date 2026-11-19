@@ -1,0 +1,19 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "report",
+  "subject": "月次集計",
+  "fields": {
+    "対象": "東日本"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "empty",
+      "field": "期間",
+      "line": 3,
+      "message": "項目「期間」の値が空です"
+    }
+  ]
+}

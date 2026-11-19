@@ -1,0 +1,17 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "",
+  "subject": "",
+  "fields": {},
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "no_kind",
+      "field": "1 行目",
+      "line": 1,
+      "message": "1 行目に種別がありません。「【依頼】[種別] 件名」の形で書いてください（使える種別: report・inquiry・account）"
+    }
+  ]
+}

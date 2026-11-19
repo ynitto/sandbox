@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "route": "inquiry",
+  "kind": "inquiry",
+  "subject": "納期の問い合わせ",
+  "fields": {
+    "差出人": "山田",
+    "受信日時": "2026-11-19 09:30",
+    "受付番号": "M20261119093000"
+  },
+  "unknown": [],
+  "text_line": 6,
+  "violations": []
+}

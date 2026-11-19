@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "report",
+  "subject": "月次集計",
+  "fields": {
+    "対象": "東日本",
+    "期間": "2026-10",
+    "期限": "来週"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "bad_value",
+      "field": "期限",
+      "line": 4,
+      "message": "項目「期限」の値「来週」が違います。2026-11-30 のように書いてください"
+    }
+  ]
+}

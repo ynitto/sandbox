@@ -241,6 +241,110 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(run_main("fields", "=x")[0], gh.USAGE)
 
 
+REQUEST_FIXTURES = HERE / "fixtures" / "requests"
+
+
+def request_fixture(name: str) -> str:
+    return (REQUEST_FIXTURES / f"{name}.txt").read_bytes().decode("utf-8")
+
+
+class CheckRequestTest(unittest.TestCase):
+    def test_all_text_inputs_return_the_same_ascii_json_line(self):
+        body = request_fixture("ok-report")
+        for args in (
+            ["--text", body],
+            ["--text-file", str(REQUEST_FIXTURES / "ok-report.txt")],
+            ["--", sys.executable, "-c", f"print({body!r}, end='')"],
+            ["--change", json.dumps({"record": {"body": body}})],
+        ):
+            with self.subTest(args=args):
+                code, out, err = run_main("check-request", *args)
+                self.assertEqual((code, err), (0, ""))
+                self.assertTrue(out.isascii())
+                self.assertEqual(out.count("\n"), 1)
+                self.assertEqual(json.loads(out), gh.check_request(body))
+
+    def test_invalid_and_empty_requests_still_return_json(self):
+        for body, route in (("【依頼】集計", "invalid"), ("", "none")):
+            with self.subTest(route=route):
+                code, out, err = run_main("check-request", "--text", body)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(json.loads(out)["route"], route)
+
+    def test_wrong_input_is_a_usage_error(self):
+        for args in ([], ["--text=x", "--change={}"], ["--change=broken"], ["--change={}"],
+                     ['--change={"record":{"body":1}}']):
+            with self.subTest(args=args):
+                code, out, err = run_main("check-request", *args)
+                self.assertEqual((code, out), (gh.USAGE, ""))
+                self.assertIn("--change", err)
+
+    def test_command_failure_keeps_the_exit_code_without_output(self):
+        code, out, err = run_main("check-request", "--", sys.executable, "-c", "print('途中'); raise SystemExit(5)")
+        self.assertEqual((code, out), (5, ""))
+        self.assertIn("終了コード 5", err)
+
+    def test_request_fixtures(self):
+        self.assertEqual({p.stem for p in REQUEST_FIXTURES.glob("*.txt")},
+                         {p.stem for p in REQUEST_FIXTURES.glob("*.json")})
+        for expected in sorted(REQUEST_FIXTURES.glob("*.json")):
+            with self.subTest(name=expected.stem):
+                body = request_fixture(expected.stem)
+                result = json.loads(expected.read_text(encoding="utf-8"))
+                self.assertEqual(gh.check_request(body), result)
+                if result["route"] != "none":
+                    # BOM・先頭の空行を含む検証用の本文は、ハブへ書くときの形にそろえる。
+                    self.assertRegex(body.removeprefix("\ufeff").lstrip(), "^【依頼】")
+
+    def test_free_text_uses_the_same_normalized_line_numbers(self):
+        helper = AGENT / "examples" / "hub_reply.py"
+        spec = importlib.util.spec_from_file_location("hub_reply", helper)
+        hub_reply = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hub_reply)
+        for name, expected in (
+            ("ok-text-line", "\n先月と同じ形でお願いします。\n\n補足です。"),
+            ("ok-report", ""),
+        ):
+            with self.subTest(name=name):
+                body = request_fixture(name)
+                self.assertEqual(hub_reply.free_text(gh.check_request(body), {"record": {"body": body}}), expected)
+
+
+class KindsFileTest(unittest.TestCase):
+    def test_new_kind_is_added(self):
+        path = AGENT / "examples" / "hub-request-kinds.json.example"
+        code, out, err = run_main("check-request", f"--kinds-file={path}", "--text=【依頼】[review] 確認\n資料: 月報")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["route"], "review")
+        self.assertEqual(set(gh.load_kinds(str(path))), {"report", "inquiry", "account", "review"})
+
+    def test_existing_kind_is_replaced(self):
+        replacement = {"title": "別の集計", "text_required": False, "fields": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kinds.json"
+            path.write_text(json.dumps({"report": replacement}), encoding="utf-8")
+            kinds = gh.load_kinds(str(path))
+        self.assertEqual(kinds["report"], replacement)
+        self.assertTrue(gh.check_request("【依頼】[report] 集計", kinds)["ok"])
+        self.assertFalse(gh.check_request("【依頼】[report] 集計")["ok"])
+
+    def test_invalid_file_is_a_usage_error(self):
+        definition = {"title": "確認", "text_required": False, "fields": {}}
+        bad_files = ["{", "[]", json.dumps({"Report": definition}), json.dumps({"invalid": definition}),
+                     json.dumps({"none": definition}), json.dumps({"review": {**definition, "fields": []}}),
+                     json.dumps({"review": {**definition, "fields": {"資料": {"pattern": "["}}}}),
+                     json.dumps({"review": {**definition, "fields": {"資料": {"required": 1}}}})]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kinds.json"
+            for raw in [None, *bad_files]:
+                with self.subTest(raw=raw):
+                    if raw is not None:
+                        path.write_text(raw, encoding="utf-8")
+                    code, out, err = run_main("check-request", f"--kinds-file={path}", "--text=ふつうのコメント")
+                    self.assertEqual((code, out), (gh.USAGE, ""))
+                    self.assertTrue(err)
+
+
 class ExampleFlowTest(unittest.TestCase):
     def setUp(self):
         if yaml is None:
@@ -330,7 +434,69 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(json.loads(p.stdout), {"title": "【完了】題", "add_labels": "完了"})
         p = cw("api-url")
         self.assertEqual(p.stdout.strip(), f"{self.gl.url}/api/v4/projects/group%2Fhub/issues/{ISSUE}")
+        p = cw("check-request", "--text=【依頼】[report] 月次集計\n対象: 東日本\n期間: 2026-10")
+        self.assertEqual((p.returncode, json.loads(p.stdout)["route"]), (0, "report"), p.stderr)
         self.assertFalse((self.tmp / "state").exists())
+
+    def test_route_example(self):
+        dag = "examples/change-watch-issue-hub-route.yaml.example"
+        example = yaml.safe_load((AGENT / dag).read_text(encoding="utf-8"))
+        routes = {"report", "inquiry", "account", "invalid"}
+        configured_routes = {p["expected"] for step in example["steps"]
+                             for p in step.get("preconditions", []) if p["condition"] == "${CHECK.route}"}
+        self.assertLessEqual(set(gh.REQUEST_KINDS), configured_routes)
+        self.assertEqual(configured_routes, routes)
+        for route in routes:
+            script = f"on_{route}.py"
+            self.paths[f"/home/you/work/hub/{script}"] = str(AGENT / "examples" / script)
+
+        idle = dict.fromkeys(["check", "commit", *routes, *(f"reply_{route}" for route in routes)])
+        idle["get"] = 0
+        self.gl.add("【依頼】以前の依頼")
+        self.assertEqual(self.run_dag(dag), idle)
+        self.assertEqual(self.gl.posted, [])
+
+        cases = (
+            ("report", "ok-report", ""),
+            ("report", "ok-report", "\ufeff"),
+            ("inquiry", "ok-inquiry", ""),
+            ("account", "ok-account", ""),
+            ("invalid", "invalid-no-kind", ""),
+        )
+        for route, name, prefix in cases:
+            with self.subTest(route=route, prefix=prefix):
+                record = self.gl.add(prefix + request_fixture(name))
+                self.assertEqual(self.run_dag(dag), {**idle, "check": 0, "commit": 0, route: 0,
+                                                     f"reply_{route}": 0})
+                posted = self.gl.posted[-1].split("\n")
+                self.assertEqual(posted[1], f"元の依頼: note_{record['id']}（alice さん）")
+                if route == "invalid":
+                    self.assertEqual(posted[0], "【差し戻し】売上の集計")
+                    self.assertIn("1 行目に種別がありません", self.gl.posted[-1])
+                else:
+                    subject = gh.check_request(record["body"])["subject"]
+                    self.assertEqual(posted[0], f"【返信】[{route}] {subject}")
+                if route == "inquiry":
+                    self.assertEqual(posted[2], "受付番号: M20261119093000")
+                    self.assertIn("2 行", self.gl.posted[-1])
+                # 自分の返信・差し戻しも書式を調べ、返信せずに見終えたと記録する。
+                self.assertEqual(self.run_dag(dag), {**idle, "check": 0, "commit": 0})
+
+        self.gl.add("ふつうのコメント")
+        self.assertEqual(self.run_dag(dag), {**idle, "check": 0, "commit": 0})
+        self.gl.add(request_fixture("ok-report"), system=True)
+        self.assertEqual(self.run_dag(dag), {**idle, "commit": 0})
+        self.assertEqual(self.run_dag(dag), idle)
+        self.assertEqual(len(self.gl.posted), len(cases))
+
+        bad = self.tmp / "bad.py"
+        bad.write_text("print('途中'); raise SystemExit(5)\n", encoding="utf-8")
+        self.paths["/home/you/work/hub/on_report.py"] = str(bad)
+        self.gl.add(request_fixture("ok-report"))
+        self.assertEqual(self.run_dag(dag), {**idle, "check": 0, "report": 5, "commit": 0})
+        self.assertEqual(self.run_dag(dag), idle)
+        self.assertEqual(len(self.gl.posted), len(cases))
+
 
     def test_issue_itself_changes_are_detected_and_it_can_be_edited(self):
         def cw(*args):

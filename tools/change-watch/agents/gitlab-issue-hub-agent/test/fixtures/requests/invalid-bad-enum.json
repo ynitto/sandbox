@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "route": "invalid",
+  "kind": "account",
+  "subject": "権限の追加",
+  "fields": {
+    "対象者": "山田",
+    "操作": "停止",
+    "期日": "2026-12-01"
+  },
+  "unknown": [],
+  "text_line": 0,
+  "violations": [
+    {
+      "code": "bad_value",
+      "field": "操作",
+      "line": 3,
+      "message": "項目「操作」の値「停止」が違います。追加・変更・削除 のどれかを書いてください"
+    }
+  ]
+}
