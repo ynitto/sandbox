@@ -10,6 +10,7 @@
                                       今の差分を既にレビューし終えていれば、そう出して終わる
         show IID PATH [--from N --to M]
                                       head の時点のファイルを行番号つきで出す（指摘が直ったかを確かめる）
+        verify IID -- <コマンド>    作業フォルダで許可された検証コマンドを実行し、終了コードと出力を証拠として出す
         comment IID --path P --line N (--body B | --body-file F)
                                       差分の行に指摘のスレッドを立てる。同じ指摘が既にあれば書かない。
                                       差分に無い行なら、場所を本文に書いた MR 全体のスレッドにする
@@ -35,6 +36,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -47,6 +49,9 @@ OK = 0
 FAILED = 1
 USAGE = 2
 
+HYPOTHESIS_NOTE = "証拠（再現手順・実行結果）が付いていません"
+HYPOTHESIS_LABEL = "〔仮説（未検証）〕"
+HYPOTHESIS_NOTICE = f"{HYPOTHESIS_LABEL} {HYPOTHESIS_NOTE}"
 MARK = "mr-review-agent"
 FINDING_RE = re.compile(r"<!--\s*" + MARK + r":finding\s+([^>]*?)\s*-->")
 SUMMARY_RE = re.compile(r"<!--\s*" + MARK + r":summary\s+sha=([0-9a-f]+)(?:\s+diff=([0-9a-f]+))?\s*-->")
@@ -55,6 +60,11 @@ ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 MAX_DIFF_CHARS = 150_000     # context が出す差分の上限（超えたファイルは名前だけを出し、show で見てもらう）
 MAX_SHOW_LINES = 2000
 GIT_TIMEOUT = 900            # 1 回の git の上限（初めて取ってくるときは長い）
+
+VERIFY_DEFAULT_TIMEOUT = 120
+VERIFY_MAX_TIMEOUT = 600
+VERIFY_MAX_LINES = 40
+VERIFY_MAX_CHARS = 4000
 
 
 # ---------------------------------------------------------------------------
@@ -428,15 +438,16 @@ def mark_path(path: str) -> str:
     return re.sub(r'[">]', "", path)
 
 
-def finding_mark(key: str, path: str, line: int) -> str:
-    return f'<!-- {MARK}:finding key="{key}" path="{mark_path(path)}" line="{line}" -->'
+def finding_mark(key: str, path: str, line: int, evidence: str = "") -> str:
+    attr = f' evidence="{evidence}"' if evidence else ""
+    return f'<!-- {MARK}:finding key="{key}" path="{mark_path(path)}" line="{line}"{attr} -->'
 
 
 def parse_finding(body: str) -> dict | None:
-    m = FINDING_RE.search(body or "")
-    if not m:
+    marks = FINDING_RE.findall(body or "")
+    if not marks:
         return None
-    return dict(ATTR_RE.findall(m.group(1)))
+    return dict(ATTR_RE.findall(marks[-1]))
 
 
 def strip_marks(body: str) -> str:
@@ -444,20 +455,26 @@ def strip_marks(body: str) -> str:
 
 
 def own_threads(discussions: list[dict]) -> list[dict]:
-    """このツールが立てた指摘のスレッド。{id, resolved, key, path, line, body, replies}。"""
+    """このツールが立てた指摘のスレッド。{id, resolved, key, path, line, evidence, body, replies}。"""
     out = []
     for d in discussions or []:
         notes = [n for n in d.get("notes") or [] if isinstance(n, dict)]
         if not notes:
             continue
-        attrs = parse_finding(str(notes[0].get("body") or ""))
+        first = str(notes[0].get("body") or "")
+        attrs = parse_finding(first)
         if attrs is None:
             continue
         resolvable = [n for n in notes if n.get("resolvable")]
         resolved = bool(resolvable) and all(n.get("resolved") for n in resolvable)
+        evidence = attrs.get("evidence", "")
+        body = strip_marks(first)
+        if evidence == "hypothesis":
+            body = re.sub(r"^(?:" + re.escape(HYPOTHESIS_LABEL + " ") + ")?"
+                          + re.escape(HYPOTHESIS_NOTE) + r"\r?\n\r?\n", "", body)
         out.append({"id": d.get("id"), "resolved": resolved, "key": attrs.get("key", ""),
                     "path": attrs.get("path", ""), "line": attrs.get("line", ""),
-                    "body": strip_marks(str(notes[0].get("body") or "")),
+                    "evidence": evidence, "body": body,
                     "replies": [{"author": (n.get("author") or {}).get("username") or "?",
                                  "body": strip_marks(str(n.get("body") or ""))}
                                 for n in notes[1:] if not n.get("system")]})
@@ -629,7 +646,8 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print, repo: LocalRepo | N
     if not open_threads:
         out("（未解決の指摘なし）")
     for t in open_threads:
-        out(f"### スレッド {t['id']}  {t['path']}:{t['line']}")
+        label = "〔検証済み〕" if t["evidence"] == "verified" else HYPOTHESIS_LABEL
+        out(f"### スレッド {t['id']}  {t['path']}:{t['line']} {label}")
         out(_excerpt(t["body"]))
         for r in t["replies"]:
             out(f"> 返信（{r['author']}）: {_excerpt(r['body'], 300)}")
@@ -715,8 +733,87 @@ def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, o
     return OK
 
 
+def cmd_verify(iid: str, argv: list[str], out=print, err=None) -> int:
+    err = err or (lambda m: print(m, file=sys.stderr))
+    if argv[:1] == ["--"]:
+        argv = argv[1:]
+    if not argv:
+        err("検証コマンドが空です")
+        return USAGE
+
+    try:
+        allowed = json.loads(os.environ.get("MR_REVIEW_VERIFY_ALLOW", ""))
+    except ValueError:
+        allowed = None
+    if not isinstance(allowed, list) or not allowed or not all(
+            isinstance(prefix, list) and prefix and all(isinstance(arg, str) for arg in prefix)
+            for prefix in allowed):
+        err("検証は設定されていません")
+        return FAILED
+    if not any(argv[:len(prefix)] == prefix for prefix in allowed):
+        err("許可リストにない検証コマンドです")
+        return FAILED
+
+    needs_context = f"作業フォルダが MR!{iid} の今のコミットになっていません。先に context を実行してください"
+    path = os.environ.get("MR_REVIEW_REPO_DIR", "").strip()
+    if not path:
+        err(needs_context)
+        return FAILED
+    repo = LocalRepo(path, "", worktree=os.environ.get("MR_REVIEW_WORKTREE", "").strip())
+    try:
+        head = repo.rev(f"refs/mr-review/mr/{iid}") if repo.path.is_dir() and repo.worktree.is_dir() else ""
+        if not head or repo.wt("rev-parse", "--verify", "HEAD").stdout.strip() != head:
+            raise GitError("作業フォルダの HEAD を確認できません")
+    except (GitError, OSError, subprocess.TimeoutExpired):
+        err(needs_context)
+        return FAILED
+
+    try:
+        timeout = int(os.environ.get("MR_REVIEW_VERIFY_TIMEOUT_SEC", ""))
+    except ValueError:
+        timeout = VERIFY_DEFAULT_TIMEOUT
+    timeout = max(1, min(VERIFY_MAX_TIMEOUT, timeout))
+    env_names = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP",
+                 "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "USER", "LOGNAME")
+    env = {name: os.environ[name] for name in env_names if name in os.environ}
+    try:
+        result = subprocess.run(argv, shell=False, cwd=repo.worktree, env=env, timeout=timeout,
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        err(f"制限時間（{timeout} 秒）を超えたので未検証として扱います")
+        return FAILED
+    except (OSError, ValueError) as e:
+        err(f"検証コマンドを起動できませんでした: {e}")
+        return FAILED
+
+    stdout, stderr = result.stdout, result.stderr
+    if stdout and stderr and not stdout.endswith("\n"):
+        stdout += "\n"
+    output = stdout + stderr
+    token = os.environ.get("GITLAB_TOKEN")
+    if token:
+        output = output.replace(token, "***")
+        command = shlex.join([arg.replace(token, "***") for arg in argv]).replace(token, "***")
+    else:
+        command = shlex.join(argv)
+    lines = output.splitlines()
+    output = "\n".join(lines[-VERIFY_MAX_LINES:])
+    tail = output[-VERIFY_MAX_CHARS:]
+    # 出力にバッククォートがあっても、証拠のコードブロックを閉じない。
+    fence = "`" * max(3, 1 + max(map(len, re.findall(r"`+", tail)), default=0))
+    ticks = "`" * (1 + max(map(len, re.findall(r"`+", command)), default=0))
+    out(f"- コマンド: {ticks} {command} {ticks}" if len(ticks) > 1 else f"- コマンド: `{command}`")
+    out(f"- 終了コード: {result.returncode}")
+    out("- 出力:")
+    out(f"{fence}\n{tail}\n{fence}")
+    if len(lines) > VERIFY_MAX_LINES or len(output) > VERIFY_MAX_CHARS:
+        out(f"（長いので最後の {VERIFY_MAX_LINES} 行・{VERIFY_MAX_CHARS} 字までです）")
+    return OK
+
+
 def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print,
-                repo: LocalRepo | None = None) -> int:
+                repo: LocalRepo | None = None, evidence: str = "") -> int:
     key = finding_key(path, body)
     for t in own_threads(gl.discussions(iid)):
         if t["key"] == key:
@@ -728,10 +825,15 @@ def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print
             return OK
     mr = gl.mr(iid)
     pos = position_for(mr, mr_diffs_cached(gl, repo, iid, mr), path, line)
-    mark = finding_mark(key, path, line)
+    evidence = evidence.strip()
+    mark = finding_mark(key, path, line, "verified" if evidence else "hypothesis")
+    content = body.strip()
+    if evidence:
+        content += f"\n\n### 証拠\n\n{evidence}"
+    prefix = "" if evidence else f"{HYPOTHESIS_NOTICE}\n\n"
     if pos is not None:
         try:
-            d, _ = gl.call("POST", f"/merge_requests/{iid}/discussions", body={"body": f"{body.strip()}\n\n{mark}",
+            d, _ = gl.call("POST", f"/merge_requests/{iid}/discussions", body={"body": f"{prefix}{content}\n\n{mark}",
                                                                               "position": pos})
             out(f"{path}:{line} に指摘しました（スレッド {(d or {}).get('id')}）")
             return OK
@@ -739,7 +841,7 @@ def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print
             if e.status not in (400, 422):
                 raise
             out(f"{path}:{line} に行のコメントを付けられなかったので（{e}）、MR 全体のスレッドにします")
-    text = f"**`{path}:{line}`**\n\n{body.strip()}\n\n{mark}"
+    text = f"{prefix}**`{path}:{line}`**\n\n{content}\n\n{mark}"
     d, _ = gl.call("POST", f"/merge_requests/{iid}/discussions", body={"body": text})
     out(f"{path}:{line} は差分に無い行なので、MR 全体のスレッドとして指摘しました（スレッド {(d or {}).get('id')}）")
     return OK
@@ -805,6 +907,13 @@ def _body(args) -> str:
     return str(getattr(args, "body", "") or "").strip()
 
 
+def _evidence(args) -> str:
+    if args.evidence_file:
+        with open(args.evidence_file, encoding="utf-8") as f:
+            return f.read().strip()
+    return (args.evidence or "").strip()
+
+
 def _add_body(p) -> None:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--body", help="本文（Markdown）")
@@ -820,6 +929,9 @@ def _add_arguments(p) -> None:
     c = sub.add_parser("context", help="MR の概要・前回までの指摘・差分を出す")
     c.add_argument("iid", type=_iid)
     c.add_argument("--since", default="", help="前回レビューしたコミット（あれば、そこからの差分を出す）")
+    v = sub.add_parser("verify", help="作業フォルダで検証コマンドを実行し、証拠を出す")
+    v.add_argument("iid", type=_iid)
+    v.add_argument("argv", nargs=argparse.REMAINDER)
     s = sub.add_parser("show", help="今のコミットのファイルを行番号つきで出す")
     s.add_argument("iid", type=_iid)
     s.add_argument("path")
@@ -830,6 +942,9 @@ def _add_arguments(p) -> None:
     m.add_argument("--path", required=True, help="ファイルのパス（新しい側）")
     m.add_argument("--line", required=True, type=int, help="新しい側の行番号")
     _add_body(m)
+    g = m.add_mutually_exclusive_group()
+    g.add_argument("--evidence", help="証拠（Markdown）")
+    g.add_argument("--evidence-file", help="証拠のファイル（UTF-8）")
     r = sub.add_parser("resolve", help="指摘のスレッドに返信して解決にする")
     r.add_argument("iid", type=_iid)
     r.add_argument("discussion", help="スレッドの ID（context の「スレッド」の横）")
@@ -840,6 +955,8 @@ def _add_arguments(p) -> None:
 
 
 def run(args) -> int:
+    if args.cmd == "verify":
+        return cmd_verify(args.iid, args.argv)
     url, token = os.environ.get("GITLAB_URL", ""), os.environ.get("GITLAB_TOKEN", "")
     if not url or not token or not args.project:
         print("環境変数 GITLAB_URL・GITLAB_TOKEN・GITLAB_PROJECT を設定してください", file=sys.stderr)
@@ -858,7 +975,7 @@ def run(args) -> int:
             print("本文が空です", file=sys.stderr)
             return USAGE
         if args.cmd == "comment":
-            return cmd_comment(gl, args.iid, args.path, args.line, body, repo=repo)
+            return cmd_comment(gl, args.iid, args.path, args.line, body, repo=repo, evidence=_evidence(args))
         if args.cmd == "resolve":
             return cmd_resolve(gl, args.iid, args.discussion, body)
         return cmd_summary(gl, args.iid, body, repo=repo)
