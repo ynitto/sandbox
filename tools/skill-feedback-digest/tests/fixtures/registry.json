@@ -1,0 +1,46 @@
+{
+  "version": 9,
+  "installed_skills": [
+    {
+      "name": "unstable",
+      "source_repo": "workspace",
+      "feedback_history": [
+        {"timestamp": "2026-01-04T10:00:00+09:00", "verdict": "broken", "note": "変換が停止\nログを確認"},
+        {"timestamp": "2026-01-01T00:00:00Z", "verdict": "broken", "note": "過去の停止", "refined": true},
+        {"timestamp": "2026-01-04T02:00:00Z", "verdict": "ok", "refined": false},
+        {"timestamp": "2026-01-02T00:00:00Z", "verdict": "needs-improvement", "refined": true}
+      ]
+    },
+    {
+      "name": "streak",
+      "source_repo": "local",
+      "feedback_history": [
+        {"timestamp": "2026-01-01T00:00:00Z", "verdict": "ok"},
+        {"timestamp": "2026-01-02T00:00:00Z", "verdict": "needs-improvement", "note": "手順が長い"},
+        {"timestamp": "2026-01-03T00:00:00Z", "verdict": "needs-improvement", "note": "設定例が不足"}
+      ]
+    },
+    {
+      "name": "pending-only",
+      "pending_refinement": true,
+      "refine_threshold": 5,
+      "feedback_history": [
+        {"timestamp": "2026-01-01T00:00:00Z", "verdict": "needs-improvement", "note": "出力の説明が不足"}
+      ]
+    },
+    {
+      "name": "recovered",
+      "feedback_history": [
+        {"timestamp": "2026-01-01T00:00:00Z", "verdict": "broken", "note": "改良前の停止", "refined": true},
+        {"timestamp": "2026-01-02T00:00:00Z", "verdict": "needs-improvement", "refined": true},
+        {"timestamp": "2026-01-03T00:00:00Z", "verdict": "needs-improvement", "refined": true},
+        {"timestamp": "2026-01-04T00:00:00Z", "verdict": "ok"}
+      ]
+    },
+    {
+      "name": "unused",
+      "enabled": false,
+      "installed_at": "2026-01-04T00:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# ~/.config/dagu/dags/ にコピーし、/home/you のパスを実環境に合わせる。
+description: "スキルのフィードバックを週次集計し、改良提案の下書きを作る"
+schedule: "0 9 * * 1"
+type: graph
+hist_retention_days: 14
+# 実投稿に使う GitLab の環境変数が必要な場合は、以下を有効にする。
+# dotenv:
+#   - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: digest
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/work/repo/tools/skill-feedback-digest/skill_feedback_digest.py"
+        - "--config"
+        - "/home/you/.config/skill-feedback-digest/config.json"
+    timeout_sec: 300
