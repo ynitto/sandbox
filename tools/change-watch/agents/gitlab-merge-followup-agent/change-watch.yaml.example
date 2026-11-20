@@ -1,0 +1,23 @@
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-merge-followup-agent
+
+sources:
+  gitlab-merged-mrs:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/merge_requests"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: merged, scope: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    incremental:
+      type: max_value
+      field: updated_at
+      param: updated_after
+      initial: "2026-01-01T00:00:00Z"   # 運用開始時刻に直す。初回もこの時刻以降に更新されたマージ済み MR を処理する
+    schedule: "*/5 * * * *"
+    jitter_sec: 60
+    busy_wait_sec: 300
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
