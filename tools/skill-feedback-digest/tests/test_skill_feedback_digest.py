@@ -124,6 +124,14 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(Path(digest.default_registry_path()), base / ".copilot/skill-registry.json")
                 self.assertTrue(self.run_cli(["--config", str(config)])[1].startswith("<!--"))
 
+    def test_default_registry_import_error_is_reported_as_config_error(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            digest, "default_registry_path", side_effect=ImportError("registry unavailable")
+        ):
+            code, _, err = self.run_cli([])
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "設定エラー（registry unavailable）\n")
+
 
 class PostingTest(unittest.TestCase):
     marker = "<!-- skill-feedback-digest:2026-01-05 -->"

@@ -245,7 +245,7 @@ def main(argv=None):
         if not registry_path:
             registry_path = config.get("registry_path") or default_registry_path()
         path = Path(registry_path).expanduser()
-    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+    except (OSError, ValueError, TypeError, RuntimeError, ImportError) as exc:
         print(f"設定エラー（{exc}）", file=sys.stderr)
         return 1
 
