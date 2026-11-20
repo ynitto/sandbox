@@ -502,6 +502,9 @@ python3 tools/codd-agent/init.py ~/work/my-app --format "ruff format {files}" --
 
 ### ケースと個別テストを対応付ける（任意）
 
+導入の流れは [テスト自動保守セットアップガイド](../../docs/guides/test-maintenance-setup.md) を参照する。
+[割引計算の実働サンプル](samples/test-maintenance/) に対応表と実行スクリプトの雛形がある。
+
 `test_bindings` に JSON の対応表を指定すると、ファイル名や文字列が似ていなくても、ケースとテストを双方向に影響範囲へ加える。
 エージェントは計画に従ってケース・単体・API・E2E のテストを追加・更新する。層の選び方はプロジェクトの方針に従い、
 リファクタでは期待結果を維持する。背景でファイルを監視して変更する機能ではない。

@@ -1,0 +1,8 @@
+cases: [tests/cases]
+bindings: test-bindings.json
+evidence: results/case-check.json
+run:
+  unit:
+    command: [python3, run_unit.py]
+# 関数を直接呼ぶケースには、操作を始める場所の点検を適用しない。
+rules: { X03: off }

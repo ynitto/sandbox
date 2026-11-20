@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - リクエスターは差し戻しの原因を記録し、ワーカーは採用した記憶に承認・差し戻しの結果を返す。要修正の評価には原因分類と差し戻しコメントからの引用が必要
 - 差し戻し・確認待ち・非収束の振り返りを保存し、学習ループの失敗をイシューと完了報告に残す
 
+### change-watch: gitlab-ci-triage-agent を足す
+
+- 失敗した GitLab パイプラインのログをマスクしてから保存し、決まったパターンで分類する。現場のパターンは JSON で足せる
+- MR・コミット・ハブの issue の順で投稿先を選び、再実行でも診断の指紋が同じなら重ねて書かない
+- Dagu の診断・整理のワークフロー例を同梱する。初期設定は dry-run
+
 ### change-watch: gitlab-issue-hub-agent に依頼の書式（check-request）と種別で振り分ける例を足す
 
 - `check-request` が `report`・`inquiry`・`account` の依頼の書式を調べ、振り分け先と違反を JSON で出す。種別の追加・置き換えは `--kinds-file` で行う

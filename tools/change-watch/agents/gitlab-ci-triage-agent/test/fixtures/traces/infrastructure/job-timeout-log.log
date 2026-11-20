@@ -1,0 +1,24 @@
+Running with gitlab-runner 17.8.3 (1234abcd)
+  on example-shared-runner abc123, system ID: s_0123456789ab
+[0Ksection_start:1744956000:prepare_executor[0KPreparing the Docker executor[0m
+Using Docker executor with image example.org/ci/build:stable ...
+Authenticating with credentials from job payload
+Pulling docker image example.org/ci/build:stable ...
+Using docker image sha256:ae64f203be7d21529de1e73fa305d4408698ed744fbb2402204b84965960a4ad
+section_end:1744956001:prepare_executor[0K
+section_start:1744956001:get_sources[0KGetting source from Git repository
+Fetching changes with git depth set to 20...
+Initialized empty Git repository in /builds/example/cart/.git/
+Created fresh repository.
+Checking out 2f21a70f as detached HEAD (ref is feature/cart)...
+Skipping Git submodules setup
+section_end:1744956002:get_sources[0K
+section_start:1744956002:step_script[0KExecuting "step_script" stage of the job script
+$ ./ci/integration.sh
+Starting integration tests
+Waiting for health check on port 9000
+ERROR: Job failed: execution took longer than 10m0s seconds
+section_end:1744956009:step_script[0K
+section_start:1744956009:cleanup_file_variables[0KCleaning up project directory and file based variables
+section_end:1744956010:cleanup_file_variables[0K
+ERROR: Job failed: exit code 1

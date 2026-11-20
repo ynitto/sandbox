@@ -405,6 +405,9 @@ python3 tools/codd-agent/init.py ~/work/my-app --test "testcase-lint run" \
 
 ケース一覧（`results/cases.json`）は `testcase-lint -f json -o results/cases.json` で作る。
 
+点検から実行確認までの設定は [テスト自動保守セットアップガイド](../../docs/guides/test-maintenance-setup.md) を参照する。
+[割引計算の実働サンプル](../codd-agent/samples/test-maintenance/) で一連の手順を試せる。
+
 ## テストコードの静的検査
 
 JavaScript / TypeScript（JSX / TSX を含む）と Python のテストを AST で比較する。
