@@ -1,0 +1,54 @@
+# ~/.config/dagu/dags/webui-nightly-regression.yaml にコピーする。
+# /home/you 以下のパスを環境に合わせる。evidence のパスは webui-test の設定とそろえる。
+# webui-test が Dagu の PATH にない場合は command に絶対パスを書く。
+description: "Web UI の回帰を毎晩調べて、前回からの変化を残す"
+schedule: "0 3 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: snapshot
+    action: exec
+    with:
+      command: sh
+      args:
+        - "-ec"
+        - |
+          mkdir -p "$2"
+          rm -f "$2/prev.json" "$2/diff.json" "$2/diff.md"
+          if [ -e "$1" ]; then
+            cp "$1" "$2/prev.json"
+          fi
+        - snapshot
+        - /home/you/work/my-app/results/webui-test-evidence.json
+        - /home/you/.local/state/webui-nightly-regression
+    timeout_sec: 60
+  - name: check
+    depends: [snapshot]
+    action: exec
+    working_dir: /home/you/work/my-app
+    with:
+      command: webui-test
+      args: ["check"]
+    continue_on:
+      failure: true             # ケース失敗（終了コード 1）でも evidence を比較する
+    timeout_sec: 3600
+  - name: diff
+    depends: [check]
+    action: exec
+    with:
+      command: sh
+      args:
+        - "-ec"
+        - |
+          # check が evidence を更新できなければ、古い結果を今回分として集約しない。
+          if [ -f "$1/prev.json" ] && cmp -s "$1/prev.json" "$2"; then
+            echo '今回の evidence が更新されていません' >&2
+            exit 2
+          fi
+          exec python3 "$3" --before "$1/prev.json" --after "$2" \
+            --output "$1/diff.json" --md-out "$1/diff.md"
+        - diff
+        - /home/you/.local/state/webui-nightly-regression
+        - /home/you/work/my-app/results/webui-test-evidence.json
+        - /home/you/work/repo/tools/webui-test/scripts/evidence_diff.py
+    timeout_sec: 60
