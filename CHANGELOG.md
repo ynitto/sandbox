@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### copilot-app-jobs: 夜間依頼を定型メニューにする
+
+- ドキュメント追随、テスト保守、CHANGELOG 下書き、乖離点検の依頼を生成・投入する CLI、Dagu の夜間実行例、朝の検収手順を追加する。
+
 ### change-watch: GitLab Issue の変化を通知する
 
 - gitlab-notify-agent を追加。issue-mailbox 互換の文言を tmux・prompt・ログ・ハブ Issue に配信し、失敗した通知を SQLite の台帳から再送する。
