@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### cloud-waste-inventory の週次棚卸しを追加
+
+- 読み取り専用の Azure CLI で停止中 VM・未接続ディスク・過大 SKU を検出し、設定単価から月額削減見込みを算出する。GitLab ハブ issue への投稿は既定で dry-run とし、実投稿時は同日の重複を抑制する。週次の Dagu 例を同梱する。
+
 ### change-watch: GitLab Issue の変化を通知する
 
 - gitlab-notify-agent を追加。issue-mailbox 互換の文言を tmux・prompt・ログ・ハブ Issue に配信し、失敗した通知を SQLite の台帳から再送する。

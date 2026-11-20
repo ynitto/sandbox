@@ -1,0 +1,16 @@
+# パスと実行時刻を環境に合わせる。実投稿時は dotenv に GitLab の接続情報を設定する。
+description: "クラウドリソースを棚卸しし、GitLab ハブ issue に週次報告する"
+schedule: "0 9 * * 1"
+type: graph
+dotenv:
+  - "/home/you/.config/cloud-waste-inventory/gitlab.env"
+steps:
+  - name: inventory-and-post
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/work/repo/tools/cloud-waste-inventory/cloud_waste_inventory.py"
+        - "--config"
+        - "/home/you/.config/cloud-waste-inventory/config.json"
+    timeout_sec: 300
