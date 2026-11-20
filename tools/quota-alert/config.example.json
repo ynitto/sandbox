@@ -1,0 +1,10 @@
+{
+  "ledger_dir": "~/.agents/budget/ledger",
+  "state_file": "~/.config/quota-alert/state.json",
+  "min_span_hours": 3,
+  "critical_remaining_percent": 10,
+  "warn_remaining_percent": 30,
+  "warn_days": 3,
+  "cooldown_hours": 24,
+  "dry_run": true
+}

@@ -1,0 +1,54 @@
+# ~/.config/dagu/dags/quota-alert.yaml にコピーする。
+# /home/you から始まるパスは、ツール・設定と hub agent を置いた場所に直す。
+# config.example.json をコピーし、dry_run: true で通知文を確認してから false にする。
+description: "エージェント CLI の quota 枯渇を予測し、GitLab のハブ issue にコメントする"
+schedule: "15 * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--"
+        - "python3"
+        - "/home/you/work/repo/tools/quota-alert/quota_alert.py"
+        - "--config"
+        - "/home/you/.config/quota-alert/config.json"
+        - "--output"
+        - "/home/you/.config/quota-alert/forecast.json"
+    timeout_sec: 60
+    output: NOTE
+  - name: comment
+    depends: [compose]
+    preconditions:              # 本文の JSON があるときだけ投稿する
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json"
+        - "${NOTE}"
+    timeout_sec: 120
+    retry_policy:               # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

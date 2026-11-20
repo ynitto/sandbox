@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### quota-alert: エージェント CLI の quota 枯渇を通知する
+
+- agent-audit の台帳から枯渇を予測し、警告を GitLab ハブ issue に投稿する毎時実行の Dagu 例を追加する。初期設定は dry-run で、同じ通知はクールダウン期間中に抑制する。
 
 ### doc-drift-detector: 夜間点検と朝の集約につなぐ
 
