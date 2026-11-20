@@ -1,0 +1,17 @@
+{
+  "outbox": "~/.local/state/change-watch/gitlab-notify-agent/outbox.db",
+  "repos": {
+    "my-api": {
+      "watch": { "new_issues": true, "state_changes": true, "title_changes": false,
+                 "label_changes": false, "assignee_changes": true },
+      "removed_as_closed": true
+    }
+  },
+  "channels": [
+    { "id": "log",  "type": "log",    "path": "~/.issue-mailbox/notifications.log" },
+    { "id": "pane", "type": "tmux",   "target": "main:mailbox" },
+    { "id": "kiro", "type": "prompt", "target": "main:kiro.0", "template": "{line}",
+      "repos": ["my-api"], "events": ["new", "state"], "enabled": false },
+    { "id": "hub",  "type": "hub",    "enabled": false }
+  ]
+}
