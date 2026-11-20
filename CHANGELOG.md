@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### efficiency-report: エージェント活用の効果を月次で共有する
+
+- GitLab の集計済みメトリクスから削減見積もりと改善の示唆をまとめ、ハブ issue に月 1 件投稿できる Dagu 例を追加する。初期設定は dry-run。
+
 ### copilot-app-jobs: 夜間依頼を定型メニューにする
 
 - ドキュメント追随、テスト保守、CHANGELOG 下書き、乖離点検の依頼を生成・投入する CLI、Dagu の夜間実行例、朝の検収手順を追加する。
