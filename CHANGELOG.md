@@ -28,6 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - マージ済み GitLab MR から関連 Issue のクローズ確認コメントと CHANGELOG の追記案を生成する
 - 下書きは設定で指定したハブ Issue に投稿できる。既定ではファイルに保存して投稿を見送る
 
+### gitlab-idd: 依頼メモから分割案を下書きする（4.6.0）
+
+- 子イシュー案と受け入れ条件を生成し、生成できない場合は依頼メモと TODO を含む下書きを出力する
+- ハブへの下書きコメントは既定で dry-run。子イシューは人の承認後に既存の投稿手順で作成する
+
 ### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
 
 - 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す
