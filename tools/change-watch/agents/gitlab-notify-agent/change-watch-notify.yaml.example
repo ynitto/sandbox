@@ -1,0 +1,80 @@
+description: "GitLab Issue の変化を記録して設定したチャネルに通知する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-notify-agent/gitlab-notify-agent.env"
+steps:
+  - name: get                       # 変わった issue を 1 件（取得するかは取得元の schedule で change-watch が決める）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-notify-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "notify"
+        - "--watch"
+        - "title"
+        - "--watch"
+        - "state"
+        - "--watch"
+        - "labels"
+        - "--watch"
+        - "assignee.username"
+        - "--one"
+    retry_policy: { limit: 3, interval_sec: 60, exit_code: [3] }
+    output: CHANGE
+  - name: retry                     # たまった未送信を先に送る（古いものから届く）
+    depends: [get]
+    continue_on: { failure: true }  # 送れないものが残っても、新しい変化の記録と commit は止めない
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_notify"
+        - "retry"
+    timeout_sec: 300
+  - name: notify                    # 整形 → 振り分け → 台帳に記録 → 配信
+    depends: [retry]
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    continue_on: { skipped: true }  # 変化が無い回。failure は付けない（記録できなければ commit しない）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_notify"
+        - "notify"
+        - "--repo"
+        - "my-api"
+        - "${CHANGE}"
+    timeout_sec: 300
+  - name: commit                    # notify が 0 で終わったときだけ。removed も同じステップ（取り直さないので分けない）
+    depends: [notify]
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-notify-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "notify"
+        - "${CHANGE.key}"
+    retry_policy: { limit: 3, interval_sec: 60, exit_code: [3] }

@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### change-watch: GitLab Issue の変化を通知する
+
+- gitlab-notify-agent を追加。issue-mailbox 互換の文言を tmux・prompt・ログ・ハブ Issue に配信し、失敗した通知を SQLite の台帳から再送する。
+
 ### quota-alert: エージェント CLI の quota 枯渇を通知する
 
 - agent-audit の台帳から枯渇を予測し、警告を GitLab ハブ issue に投稿する毎時実行の Dagu 例を追加する。初期設定は dry-run で、同じ通知はクールダウン期間中に抑制する。
