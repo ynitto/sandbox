@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### change-watch: チケット対応の完了報告にスモークテストの証拠を必須化する例を追加
+
+- 共通ヘルパー `ticket_verify.py` が許可済みコマンドを実行し、証拠 JSON と成功時の証拠 Markdown を生成する。
+- GitLab と Redmine の検証付き Dagu 例で、証拠が揃った場合は完了文に検証証拠を添え、揃わない場合は差し戻しコメントを投稿する。
+
 ### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
 
 - 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す

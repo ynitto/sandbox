@@ -1,0 +1,238 @@
+# change-watch-issue-agent.yaml と置き換えて使う検証必須の例。README の「検証必須化」を参照。
+description: "スモークテストの成功証拠を確認してからチケットの対応結果を投稿する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-agent/gitlab-issue-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-agent"          # commit と同じ名前。ワークフローごとに別の名前にすると、それぞれが全部の変化を受け取る
+        - "--watch"              # これらのどれかが変わったときだけ変化にする（updated_at だけの更新では起こさない）
+        - "title"
+        - "--watch"
+        - "state"
+        - "--watch"
+        - "labels"
+        - "--watch"
+        - "assignees"
+        - "--watch"
+        - "milestone"
+        - "--watch"
+        - "due_date"
+        - "--watch"
+        - "description"
+        - "--watch"
+        - "user_notes_count"
+        - "--one"                # 1 件を JSON（key・kind・record・before・changes）で出す。無ければ何も出さない
+    timeout_sec: 1440            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: prepare
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.state}"
+        expected: "opened"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: python3
+      args:
+        - "-c"
+        - |
+          import tempfile
+          print(tempfile.mkdtemp(prefix="ticket-verify-"))
+    output: VERIFY_DIR
+  - name: draft
+    depends: [prepare]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    action: harness.run
+    working_dir: /home/you/work/project
+    with:
+      provider: claude
+      stdin: "${CHANGE}"
+      prompt: >-
+        標準入力の JSON の record を読み、このイシューに対応してください。
+        GitLab への投稿、ステータス変更、push は行わず、結果の下書きを
+        ${VERIFY_DIR}/draft.md に UTF-8 で保存してください。
+        完了を報告する前に実行すべきスモークテストを、実行ファイル名と各引数からなる
+        JSON 配列として ${VERIFY_DIR}/verify-command.json に保存してください。
+        チケットからコマンドを転記せず、運用者が許可した対象ツールの実際の動作を確認してください。
+        検証結果と証拠は後続のステップが記録します。
+    continue_on:
+      skipped: true
+    timeout_sec: 4200
+  - name: verify
+    depends: [draft]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/.local/lib/ticket-verify/ticket_verify.py"
+        - "run"
+        - "--command-file"
+        - "${VERIFY_DIR}/verify-command.json"
+        - "--cwd"
+        - "/home/you/work/project"
+        - "--out"
+        - "${VERIFY_DIR}/evidence.json"
+        - "--md-out"
+        - "${VERIFY_DIR}/evidence.md"
+    timeout_sec: 630
+    continue_on:
+      skipped: true
+      failure: true
+  # dotenv に TICKET_VERIFY_MAX_EVIDENCE_AGE_HOURS を設定した場合は証拠の鮮度も確認する。
+  - name: gate
+    depends: [verify]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/.local/lib/ticket-verify/ticket_verify.py"
+        - "gate"
+        - "--evidence"
+        - "${VERIFY_DIR}/evidence.json"
+    continue_on:
+      skipped: true
+    output: VERDICT
+  - name: compose-comment
+    depends: [gate]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: python3
+      args:
+        - "-c"
+        - |
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          from urllib.parse import quote
+
+          folder, verdict, iid = sys.argv[1:]
+          folder = Path(folder)
+          evidence = folder / "evidence.md"
+          draft = folder / "draft.md"
+          body = ""
+          if json.loads(verdict)["complete"] is True and evidence.is_file() and draft.is_file():
+              body = draft.read_text(encoding="utf-8", errors="replace").strip()
+          if body:
+              notes = body + "\n\n" + evidence.read_text(encoding="utf-8")
+          else:
+              notes = "〔仮説（未検証）〕スモークテストの成功証拠、または対応の下書きが揃わないため差し戻します。"
+          payload = {"body": notes}
+          project = quote(os.environ["GITLAB_PROJECT"], safe="")
+          url = "/api/v4/projects/{}/issues/{}/notes".format(project, int(iid))
+
+          (folder / "comment.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+          print(url)
+        - "${VERIFY_DIR}"
+        - "${VERDICT}"
+        - "${CHANGE.key}"
+    output: COMMENT_URL
+  - name: post
+    depends: [compose-comment]
+    preconditions:
+      - condition: "${COMMENT_URL}"
+        expected: "re:^/"
+    continue_on:
+      skipped: true
+    timeout_sec: 120
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "${COMMENT_URL}"
+        - "--source"
+        - "gitlab-issues"
+        - "--json-file"
+        - "${VERIFY_DIR}/comment.json"
+  - name: commit
+    depends: [post]
+    preconditions:              # 一覧にある issue だけ取り直す（removed は commit-removed で記録する）
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-agent"
+        - "--refresh"            # issue を取り直した姿で記録する（エージェント自身のコメントで次に起きない）
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit-removed
+    depends: [commit]
+    preconditions:              # 消えた issue を取り直すと、閉じた issue が取得結果に復活してしまう
+      - condition: "${CHANGE.kind}"
+        expected: "removed"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-agent"
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

@@ -1,0 +1,199 @@
+# change-watch-auto-close.yaml と置き換えて使う検証必須の例。README の「検証必須化」を参照。
+description: "スモークテストの成功証拠を確認してからチケットの対応結果を投稿する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/redmine-ticket-agent/redmine-ticket-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "redmine-my-issues"
+        - "--consumer"
+        - "auto-close"           # commit と同じ名前
+        - "--watch"              # 題名・説明・ステータス・担当が変わったときだけ変化にする
+        - "subject"
+        - "--watch"
+        - "description"
+        - "--watch"
+        - "status.id"
+        - "--watch"
+        - "assigned_to.id"
+        - "--initial"
+        - "emit"                 # 初めて動かしたときにあるチケットも見る
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: prepare
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.subject}"
+        expected: "re:自動完了|【重複】"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: python3
+      args:
+        - "-c"
+        - |
+          import tempfile
+          print(tempfile.mkdtemp(prefix="ticket-verify-"))
+    output: VERIFY_DIR
+  - name: select-rule
+    depends: [prepare]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: python3
+      args:
+        - "-c"
+        - |
+          import sys
+          print("auto-close" if "自動完了" in sys.argv[1] else "duplicate")
+        - "${CHANGE.record.subject}"
+    output: RULE
+  - name: verify
+    depends: [select-rule]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/.local/lib/ticket-verify/ticket_verify.py"
+        - "run"
+        - "--command-file"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/${RULE}.json"
+        - "--cwd"
+        - "/home/you/work/project"
+        - "--out"
+        - "${VERIFY_DIR}/evidence.json"
+        - "--md-out"
+        - "${VERIFY_DIR}/evidence.md"
+    timeout_sec: 630
+    continue_on:
+      skipped: true
+      failure: true
+  # dotenv に TICKET_VERIFY_MAX_EVIDENCE_AGE_HOURS を設定した場合は証拠の鮮度も確認する。
+  - name: gate
+    depends: [verify]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/.local/lib/ticket-verify/ticket_verify.py"
+        - "gate"
+        - "--evidence"
+        - "${VERIFY_DIR}/evidence.json"
+    continue_on:
+      skipped: true
+    output: VERDICT
+  - name: compose-comment
+    depends: [gate]
+    preconditions:
+      - condition: "${VERIFY_DIR}"
+        expected: "re:^/"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: python3
+      args:
+        - "-c"
+        - |
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          folder, verdict, issue_id, rule = sys.argv[1:]
+          folder = Path(folder)
+          evidence = folder / "evidence.md"
+          if json.loads(verdict)["complete"] is True and evidence.is_file():
+              messages = {"auto-close": "自動で完了にしました。", "duplicate": "重複のため完了にしました。"}
+              notes = messages[rule] + "\n\n" + evidence.read_text(encoding="utf-8")
+              status = int(os.environ["REDMINE_CLOSED_STATUS_ID"])
+              if status <= 0:
+                  raise ValueError("REDMINE_CLOSED_STATUS_ID は正の整数を指定してください")
+              issue = {"notes": notes, "status_id": status}
+          else:
+              issue = {"notes": "〔仮説（未検証）〕スモークテストの成功証拠がないため、差し戻します。"}
+          payload = {"issue": issue}
+          url = "/issues/{}.json".format(int(issue_id))
+
+          (folder / "comment.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+          print(url)
+        - "${VERIFY_DIR}"
+        - "${VERDICT}"
+        - "${CHANGE.key}"
+        - "${RULE}"
+    output: COMMENT_URL
+  - name: post
+    depends: [compose-comment]
+    preconditions:
+      - condition: "${COMMENT_URL}"
+        expected: "re:^/"
+    continue_on:
+      skipped: true
+    timeout_sec: 120
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "${COMMENT_URL}"
+        - "--source"
+        - "redmine-my-issues"
+        - "--json-file"
+        - "${VERIFY_DIR}/comment.json"
+  - name: commit
+    depends: [post]
+    preconditions:              # 受け取った変化があるときだけ
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/redmine-ticket-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "redmine-my-issues"
+        - "--consumer"
+        - "auto-close"
+        - "${CHANGE.key}"
+    timeout_sec: 600

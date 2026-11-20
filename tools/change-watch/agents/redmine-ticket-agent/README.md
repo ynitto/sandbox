@@ -111,6 +111,16 @@ Redmine に書き込めない一時的な失敗（終了コード 3）は、Dagu
 | `~/.config/change-watch/redmine-ticket-agent/change-watch.yaml` | 対象のチケットの絞り込み（`query`）・問い合わせの間隔 |
 | `~/.config/dagu/dags/change-watch-auto-close.yaml` | 見る項目（`--watch`）・条件とコメントの対・再試行 |
 
+## 検証必須化
+
+[検証付き Dagu 例](examples/change-watch-auto-close-verify.yaml.example) を既存の `change-watch-auto-close.yaml` と置き換えて使えます。[共通ヘルパー](../ticket-verify/README.md) を配置し、DAG のパスと検証する作業ディレクトリを設定します。`redmine-ticket-agent.env` に `TICKET_VERIFY_ALLOW`、`REDMINE_CLOSED_STATUS_ID`、必要なら `TICKET_VERIFY_TIMEOUT_SEC` を設定します。
+
+条件とコメントの対ごとに、運用者が確認した検証コマンドを argv の JSON 配列で `~/.config/change-watch/redmine-ticket-agent/` に置きます。「自動完了」には `auto-close.json`、「【重複】」には `duplicate.json` を用意します。両方に該当する場合、この例では「自動完了」の対を使います。各コマンドは対象ツールを実際に動かして、該当する対の条件を確認できるものを指定してください。
+
+`gate` が完了可と判定して証拠 Markdown が揃った場合に、対の完了文と「検証証拠（スモークテスト）」をステータス更新と同じ API 要求で送ります。証拠が揃わない場合は「〔仮説（未検証）〕」の差し戻しコメントだけを付け、チケットは開いたままにします。一時ディレクトリのパスは Dagu の `prepare` の出力で確認でき、確認が済んだものは削除できます。
+
+証拠の信頼境界は、ワークフローの一時ディレクトリと Dagu の実行ユーザーです。`gate` は証拠 JSON の形式と整合性を確認します。改ざんや使い回しの検知は対象外です。使い回しを防ぐため、`run` は開始時に既存の証拠 JSON と Markdown を削除します。必要に応じてエージェントの環境ファイルに `TICKET_VERIFY_MAX_EVIDENCE_AGE_HOURS` を設定すると、`gate` は `ran_at` からの経過時間が上限を超えた証拠を完了不可と判定します。
+
 ## テスト
 
 ```bash
