@@ -242,6 +242,16 @@ change-watch --config ~/.config/change-watch/gitlab-issue-agent/change-watch.yam
 | `~/.config/change-watch/gitlab-issue-agent/change-watch.yaml` | 取得する issue の絞り込み（`query`）・取得の予定・ずらし・問い合わせの間隔 |
 | `~/.config/dagu/dags/change-watch-issue-agent.yaml` | 見る項目（`--watch`）・条件（`preconditions`）・プロンプト・エージェント CLI の種類・フラグ・作業フォルダ・再試行 |
 
+## 検証必須化
+
+[検証付き Dagu 例](examples/change-watch-issue-agent-verify.yaml.example) を既存の `change-watch-issue-agent.yaml` と置き換えて使えます。[共通ヘルパー](../ticket-verify/README.md) を配置し、DAG のパス・エージェント CLI のプロバイダー・作業コピーを設定します。`gitlab-issue-agent.env` に `TICKET_VERIFY_ALLOW`（必要なら `TICKET_VERIFY_TIMEOUT_SEC` も）を設定し、投稿ステップの GitLab 接続に issue コメントの作成権限を付けます。
+
+開いている新規・更新イシューについて、エージェント CLI が実行ごとの一時ディレクトリに `draft.md` と `verify-command.json` を保存します。エージェント CLI に渡す権限は作業コピーと下書きの作成に合わせ、GitLab への書き込みは Dagu の投稿ステップが受け持ちます。ヘルパーが作業コピーで検証を実行し、`gate` が完了可と判定して下書きと証拠 Markdown が揃った場合にだけ、下書きに「検証証拠（スモークテスト）」を付けて投稿します。証拠または下書きが不足する場合は「〔仮説（未検証）〕」の差し戻しコメントを投稿します。エージェント CLI 自体が失敗した場合は DAG を失敗させます。
+
+一時ディレクトリのパスは Dagu の `prepare` の出力で確認でき、確認が済んだものは削除できます。置き換え前と同じ consumer を使い、投稿後に `commit --refresh` でそのコメントも含めた状態を記録します。
+
+証拠の信頼境界は、ワークフローの一時ディレクトリと Dagu の実行ユーザーです。`gate` は証拠 JSON の形式と整合性を確認します。改ざんや使い回しの検知は対象外です。使い回しを防ぐため、`run` は開始時に既存の証拠 JSON と Markdown を削除します。必要に応じてエージェントの環境ファイルに `TICKET_VERIFY_MAX_EVIDENCE_AGE_HOURS` を設定すると、`gate` は `ran_at` からの経過時間が上限を超えた証拠を完了不可と判定します。
+
 ## テスト
 
 ```bash
