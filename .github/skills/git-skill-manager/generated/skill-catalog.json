@@ -617,7 +617,7 @@
         "freshness"
       ],
       "triggers": [],
-      "has_scripts": false,
+      "has_scripts": true,
       "has_references": false
     },
     {

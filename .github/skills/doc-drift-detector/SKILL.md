@@ -124,3 +124,7 @@ drifted となった claim を以下に分類する:
 ## 再開プロトコル
 
 「ドリフト検出を再開して」と言われたら `.drift-work/claims.json` の検証済み claim をスキップし、未検証分から続行する。
+
+## 夜間点検
+
+定期実行では、点検後に [JSON 変換スクリプト](scripts/drift_report_to_json.py) で `.drift-work/drift-report.md` を朝の集約に渡す。[Dagu と集約の設定例](../../../tools/nightly-check-digest/README.md#doc-drift-detector-の定期実行) を参照する。

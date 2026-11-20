@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### doc-drift-detector: 夜間点検と朝の集約につなぐ
+
+- Dagu の夜間実行例と、ドリフトレポートを朝の集約用 JSON に変換するスクリプトを足す
+
 ### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
 
 - 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す
