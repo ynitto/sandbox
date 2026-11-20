@@ -1,0 +1,18 @@
+feature: 商品合計に応じた割引
+cases:
+  - id: DISC-01
+    title: 商品合計10000円で割引額が1000円になる
+    requirement: REQ-DISC-01
+    conditions: { 商品合計: 10000円 }
+    steps:
+      - 商品合計「10000」円を渡して割引額を計算する
+    expected:
+      - 返される割引額は1000円になる
+  - id: DISC-02
+    title: 商品合計9999円で割引額が0円になる
+    requirement: REQ-DISC-01
+    conditions: { 商品合計: 9999円 }
+    steps:
+      - 商品合計「9999」円を渡して割引額を計算する
+    expected:
+      - 返される割引額は0円になる

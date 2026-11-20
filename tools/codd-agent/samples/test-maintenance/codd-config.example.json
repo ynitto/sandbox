@@ -1,0 +1,8 @@
+{
+  "side": "impl",
+  "refs": [],
+  "test_bindings": ["test-bindings.json"],
+  "test_catalogs": ["results/cases.json"],
+  "test": ["python3", "verify-tests.py"],
+  "evidence": ["results/*.json"]
+}
