@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル。glab 不要。「GitLab イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「GitLab MR をマージして」などで発動。GitLab イシュー・MR の操作が含まれる場合に優先して選択する。
 metadata:
-  version: 4.5.0
+  version: 4.6.0
   tier: stable
   category: collaboration
   tags:
@@ -23,6 +23,7 @@ GitLab イシューを **非同期タスクキュー** として使い、複数�
 
 | 役割 | 発動フレーズ | やること |
 |------|------------|---------|
+| **リクエスター — 分割案の下書き** | 「依頼メモから分割案を下書きして」 | 子イシュー案と受け入れ条件をハブへ返し、人の承認を待つ |
 | **リクエスター — 投稿** | 「イシューを立てて」「タスクを依頼して」 | イシュー作成・受け入れ条件定義 |
 | **レビュアー** | 「イシューをレビューして」「受け入れ条件を確認して」「マージして」「リオープンして」「統合ブランチの最終 MR を作成して」「曖昧なイシューを詳細化して」「イシューを明確化して」 | 自分発行イシュー → 受け入れ評価・マージ依頼 or リオープン；他者発行イシュー → 助言コメントのみ（マージ・クローズ不可）。どちらもある場合は自分発行を優先 |
 | **ワーカー** | 「イシューを拾って」「担当タスクを実行して」「オープンイシューをこなして」 | イシュー取得 → 説明の明確性確認 → 実行 → ブランチ＋コメントで報告 |
@@ -118,6 +119,8 @@ export GITLAB_IDD_LOCAL_REPO=~/work/project
 
 タスクを GitLab イシューとして投稿し、ワーカーへの実行を委譲する。
 既存イシューへの参照がある場合は **派生イシュー投稿モード** に自動切り替えする。
+
+**依頼メモから下書きを作る場合** → [references/request-draft.md](references/request-draft.md)。承認前は子イシューを作成しない。
 
 **詳細手順** → [references/requester-post.md](references/requester-post.md)
 **デフォルト design doc テンプレート**（プロジェクト固有の issue template が無い場合に使用） → [references/design-doc-template.md](references/design-doc-template.md)
@@ -300,3 +303,4 @@ python scripts/gl.py project-info
 
 - **Allowed**: `scripts/gl.py` の実行（Python）、ブランチの作成・push、イシューコメント投稿・ラベル更新（`status:blocked` → `status:open` の解除を含む）、MR の作成（リクエスターのみ）、助言コメント投稿（非リクエスターレビュアー）
 - **Denied**: イシューの削除、force push、ユーザー確認なき既存 MR のクローズ、LLM セッション内でのポーリングループ実装、**merge-mr（マージは必ず人間が行う・全ロール禁止）**、非リクエスターレビュアーによる update-issue --state-event close
+  - 下書き支援フローで、人の明示的な承認を受ける前にイシューを作成すること（`create-issue` / `POST /issues`）。
