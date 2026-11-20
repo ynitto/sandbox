@@ -1,0 +1,93 @@
+# 毎分起動し、get → draft → post → commit の順で 1 件処理する。
+# post は dry-run が既定。MERGE_FOLLOWUP_DRY_RUN=0 を設定した場合だけハブに投稿する。
+description: "マージ済み GitLab MR の付随作業の下書きを作る"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-merge-followup-agent/env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-merge-followup-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-merged-mrs"
+        - "--consumer"
+        - "merge-followup"
+        - "--watch"
+        - "state"
+        - "--initial"
+        - "emit"
+        - "--one"
+    timeout_sec: 480
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: draft
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.state}"
+        expected: "merged"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_merge_followup"
+        - "draft"
+        - "${CHANGE}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-merge-followup-agent/drafts/mr-${CHANGE.record.iid}.md"
+        - "--json-out"
+        - "/home/you/.config/change-watch/gitlab-merge-followup-agent/drafts/mr-${CHANGE.record.iid}.json"
+    timeout_sec: 300
+    output: DRAFT
+  - name: post
+    depends: [draft]
+    preconditions:
+      - condition: "${DRAFT.mr_iid}"
+        expected: "re:^[1-9][0-9]*$"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_merge_followup"
+        - "post"
+        - "/home/you/.config/change-watch/gitlab-merge-followup-agent/drafts/mr-${DRAFT.mr_iid}.md"
+    timeout_sec: 120
+  - name: commit
+    depends: [post]
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-merge-followup-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-merged-mrs"
+        - "--consumer"
+        - "merge-followup"
+        - "${CHANGE.key}"
+    timeout_sec: 120
