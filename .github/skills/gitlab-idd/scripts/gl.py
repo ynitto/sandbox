@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +52,8 @@ from typing import Optional
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
+import ltm_bridge
+
 try:
     from config_loader import get_connection, get_yaml_write_path  # type: ignore[import]
     _HAS_CONFIG_LOADER = True
@@ -1210,6 +1212,127 @@ def cmd_get_issue_template(args, host, project, token):
 # Argument parser
 # ---------------------------------------------------------------------------
 
+def _ltm_issue_path(project, issue_id):
+    return f"/projects/{encode_project(project)}/issues/{issue_id}"
+
+
+def _ltm_history(host, token, path, node, state="opened"):
+    notes = api_list(host, token, f"{path}/notes",
+                     params={"sort": "asc", "order_by": "created_at"})
+    return ltm_bridge.History(notes, node, state)
+
+
+def _ltm_write(operation, args, host, project, token, *, read_state=False):
+    def read_history():
+        if args.dry_run:
+            history = ltm_bridge.History([], os.environ.get("GITLAB_NODE_ID", "—"))
+            history.cycle = None
+            return history
+        path = _ltm_issue_path(project, args.issue_id)
+        state = api(host, token, "GET", path)["state"] if read_state else "opened"
+        return _ltm_history(host, token, path, get_node_id(), state)
+
+    try:
+        result = operation(args, read_history)
+        if args.dry_run:
+            for body in result.comments:
+                print(body)
+            return 0
+        path = _ltm_issue_path(project, args.issue_id)
+        comments = (*result.comments, result.failure) if result.failure else result.comments
+        for body in comments:
+            try:
+                api(host, token, "POST", f"{path}/notes", data={"body": body})
+            except (SystemExit, OSError) as exc:
+                if not result.failure:
+                    raise
+                print(exc, file=sys.stderr)
+                for pending_body in comments:
+                    print(pending_body, file=sys.stderr)
+                if result.output is not None:
+                    out(result.output, getattr(args, "get", None))
+                return 4
+        if result.output is not None:
+            out(result.output, getattr(args, "get", None))
+        return 3 if result.failure else 0
+    except ltm_bridge.InvalidInput as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_ltm_recall(args, host, project, token):
+    return _ltm_write(ltm_bridge.recall, args, host, project, token)
+
+
+def cmd_ltm_log(args, host, project, token):
+    return _ltm_write(ltm_bridge.log, args, host, project, token)
+
+
+def cmd_ltm_save(args, host, project, token):
+    return _ltm_write(ltm_bridge.save, args, host, project, token)
+
+
+def cmd_ltm_rate(args, host, project, token):
+    return _ltm_write(ltm_bridge.rate, args, host, project, token, read_state=True)
+
+
+def cmd_ltm_trail(args, host, project, token):
+    path = _ltm_issue_path(project, args.issue_id)
+    try:
+        issue = api(host, token, "GET", path)
+        history = _ltm_history(host, token, path, get_node_id(), issue["state"])
+        result = history.trail(args.issue_id)
+        if args.retro_check:
+            done = api_list(host, token, f"/projects/{encode_project(project)}/issues",
+                            params={"state": "closed", "labels": "status:done"})
+            result["retro_check"] = history.retro_check(len(done))
+        out(result, args.get)
+    except OSError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_ltm_pending(args, host, project, token):
+    if args.max_issues < 0 or args.days < 0:
+        print("--max-issues と --days には 0 以上を指定してください", file=sys.stderr)
+        return 2
+    path = f"/projects/{encode_project(project)}/issues"
+    since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    filters = {"scope": "assigned_to_me", "order_by": "updated_at", "sort": "desc"}
+    node = get_node_id()
+    result = dict(rate_pending=[], open_failures=[], scanned=0)
+    try:
+        opened = api_list(host, token, path, params={**filters, "state": "opened"})
+        closed = api_list(host, token, path, params={
+            **filters, "state": "closed", "updated_after": since.isoformat(),
+        })
+        candidates = [
+            issue for issue in opened
+            if {"status:approved", "status:needs-rework"}.intersection(issue.get("labels", []))
+        ] + closed
+        candidates.sort(key=lambda issue: _parse_iso8601_utc(issue.get("updated_at"))
+                        or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        for issue in candidates[:args.max_issues]:
+            iid = issue["iid"]
+            history = _ltm_history(host, token, f"{path}/{iid}", node, issue["state"])
+            trail = history.trail(iid)
+            result["rate_pending"].extend(dict(issue_id=iid, **row) for row in trail["pending"]["rate"])
+            result["open_failures"].extend(
+                dict(issue_id=iid, step=row["step"], cycle=row["cycle"])
+                for row in trail["open_failures"]
+            )
+            result["scanned"] += 1
+        out(result)
+    except OSError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="GitLab REST API client for issue-driven development.",
@@ -1426,6 +1549,48 @@ def build_parser():
     p = sub.add_parser("workspace-remove", help="workspace-create で作ったフォルダを消す")
     p.add_argument("path")
 
+    p = sub.add_parser("ltm-recall", help="イシュー着手前に記憶と wiki を検索して記録する")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--query", action="append", required=True)
+    p.add_argument("--context")
+    p.add_argument("--wiki-query", action="append", default=[])
+    p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--get", default=argparse.SUPPRESS)
+
+    p = sub.add_parser("ltm-log", help="記憶の使い方または学習ループの失敗を記録する")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--event", choices=("usage", "failure"), required=True)
+    p.add_argument("--data-file")
+    p.add_argument("--step", choices=ltm_bridge.STEPS)
+    p.add_argument("--reason")
+    p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("ltm-save", help="実行知見または振り返りを保存する")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--kind", choices=("execution", "retro"), required=True)
+    p.add_argument("--trigger", choices=("rework", "clarification", "non-convergence"))
+    p.add_argument("--args-file", required=True)
+    p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("ltm-rate", help="イシューで採用した記憶に評価を返す")
+    p.add_argument("issue_id", type=int)
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan-file")
+    mode.add_argument("--auto", action="store_true")
+    p.add_argument("--outcome", choices=("approved",))
+    p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("ltm-trail", help="イシューの学習ループを集計する")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--retro-check", action="store_true")
+    p.add_argument("--get", default=argparse.SUPPRESS)
+
+    p = sub.add_parser("ltm-pending", help="自分の担当イシューから未精算の評価を探す")
+    p.add_argument("--max-issues", type=int, default=20)
+    p.add_argument("--days", type=int, default=30)
+
     return parser
 
 
@@ -1519,6 +1684,12 @@ def cmd_workspace_remove(args, host, project, token):
 # ---------------------------------------------------------------------------
 
 COMMANDS = {
+    "ltm-recall":           cmd_ltm_recall,
+    "ltm-log":              cmd_ltm_log,
+    "ltm-save":             cmd_ltm_save,
+    "ltm-rate":             cmd_ltm_rate,
+    "ltm-trail":            cmd_ltm_trail,
+    "ltm-pending":          cmd_ltm_pending,
     "configure":              cmd_configure,
     "project-info":           cmd_project_info,
     "get-default-branch":  cmd_get_default_branch,
@@ -1572,10 +1743,16 @@ def main():
     if args.command in _OFFLINE_COMMANDS:
         COMMANDS[args.command](args, None, None, None)
         return
+    if getattr(args, "dry_run", False) and args.command in {
+        "ltm-recall", "ltm-log", "ltm-save", "ltm-rate",
+    }:
+        return COMMANDS[args.command](args, None, None, None)
     host, project = get_project_info(label)
     token = get_token(label)
-    COMMANDS[args.command](args, host, project, token)
+    result = COMMANDS[args.command](args, host, project, token)
+    if args.command.startswith("ltm-"):
+        return result
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

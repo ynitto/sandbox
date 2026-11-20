@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル。glab 不要。「GitLab イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「GitLab MR をマージして」などで発動。GitLab イシュー・MR の操作が含まれる場合に優先して選択する。
 metadata:
-  version: 4.4.0
+  version: 4.5.0
   tier: stable
   category: collaboration
   tags:
@@ -163,7 +163,7 @@ export GITLAB_IDD_LOCAL_REPO=~/work/project
 ```
 0. MY_USER=$(python scripts/gl.py current-user --get username)
 0a. 【クリーンアップ】自分発行のオープンイシューで MR がマージ/クローズ済みのものを検出してクローズする
-1. (任意) status:needs-clarification のイシューがあれば詳細化して status:open,assignee:any に戻す
+1. (任意) status:needs-clarification のイシューがあれば詳細化して status:open,assignee:any に戻し、振り返りを保存する
 2. list-issues --label "status:review-ready" で全件取得（--author フィルタなし）
 3. 取得したイシューを author.username で分類:
    - author.username == MY_USER → リクエスターレビューキュー（優先処理）
@@ -176,7 +176,7 @@ export GITLAB_IDD_LOCAL_REPO=~/work/project
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
    - 全観点 LGTM → add-comment（**@{作成者username} さん、マージをお願いします 🙏** + <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカー付与）+ update-issue（status:approved ラベルに変更）（マージは人間が行う）
-   - Request Changes → add-comment（差し戻しコメント）+ reopen → 再提出後に再レビュー（最大 5 回）
+   - Request Changes → add-comment（差し戻しコメント + 原因分類マーカー）+ reopen → 再提出後に再レビュー（最大 5 回）
    - (任意) スコープ外タスクを発見した場合は派生/新規イシューとして起票
 6. 非リクエスターレビューキューを処理（非リクエスターとして振る舞う）:
    - 残り枠（MAX - リクエスターキューで処理した件数）を上限として選択
@@ -195,19 +195,21 @@ export GITLAB_IDD_LOCAL_REPO=~/work/project
 オープンイシューを取得して実装し、結果をブランチとコメントで返す。
 
 **詳細手順** → [references/worker-role.md](references/worker-role.md)
+**学習ループの記録形式と評価の判定基準** → [references/learning-loop.md](references/learning-loop.md)
 **プロジェクト横断 Done の定義**（リポジトリ側に用意されていれば MR 提出前に照合する） → [references/project-dod.md](references/project-dod.md)
 
 ### フロー概要
 
 ```
-1. list-issues でオープン・clarification 待ちイシューを取得
+1. ltm-pending で未精算の評価を返す → list-issues でオープン・clarification 待ちイシューを取得
 2. self-defer / 放置アサイン / 依存 / 明確性を順に確認して 1 件選択
    → 曖昧な場合   → 推測解釈付きコメント + status:needs-clarification。24h 後に再着手
    → アプローチ分岐 → 提案コメント。24h 後に推奨案で着手
+   → 差し戻し再着手なら振り返り → 過去知見の参照（必須）
 3. assign・作業用フォルダ（`workspace-create`）・スカウトマップ投稿・Draft MR 作成
 4. 実装ループ（最大 5 回）: skill-selector → 実装 → supporting_skills → agent-reviewer → 修正
-5. push・MR 本文更新・Draft 解除・status:review-ready 更新
-6. project-dod チェック → 依存自動解除 → 完了報告 → LTM 保存 → レトロスペクティブトリガー
+5. push・MR 本文更新・Draft 解除・記憶の使い方を記録・status:review-ready 更新
+6. project-dod チェック → 依存自動解除 → 完了報告 → 実行知見の保存 → レトロスペクティブ（10 件ごと、または差し戻し 2 回以上・確認待ち経由）
 ```
 
 ---
@@ -266,6 +268,8 @@ python scripts/gl.py project-info
 | 依存イシューが未完了 | イシューにコメントを投稿して次の候補へ（全候補ブロック中なら終了） |
 | worker-node-id がないレビュー待ちイシュー | 誰でもレビュー可（self-defer しない） |
 | レビュー対象が 0 件（または全件スキップ） | 「レビュー待ちイシューはありません」と報告して終了 |
+| 記憶の検索・保存・評価返しが失敗した | イシューに「⚠️ 学習ループの失敗」コメントが自動で残る。作業は止めず、完了報告に件数を書く |
+| `ltm-use` が未導入 | 着手時の「📚 参照した知見」コメントに未導入と記録して先へ進む |
 
 ---
 
@@ -282,7 +286,7 @@ python scripts/gl.py project-info
 9. **放置アサイン遵守**: `worker-node-id` が別ノードのものでロック期間内（デフォルト 24 時間）はそのイシューを引き受けない
 10. **依存遵守**: ワーカーは `## 依存イシュー` に記載されたイシューが完了するまで着手しない。完了報告時（ステップ 5-4a）に当該イシューを依存として持つ `status:blocked` イシューを自動で `status:open` に解除する
 11. **自動タスク分解**: リクエスターはユーザーへの質問なしにリポジトリを探索してタスクを自動整理し、できるだけ細かく分割する。各タスクの修正量（変更ファイル数・行数）を見積もり、L（6〜10 ファイル / 201〜500 行）以上のタスクは必ず再分割する
-12. **スキル優先活用**: スキル選定は `skill-selector` に委ねる。`ltm-use` が利用可能な場合は過去イシューの実行知見（カテゴリ `gitlab-idd-execution`）をスキル選定の参考として参照する
+12. **スキル優先活用と知見参照**: スキル選定は `skill-selector` に委ねる。ワーカーは着手前に必ず過去の記憶と wiki を検索し（ステップ 2-6b）、結果をコメントに記録したうえで `skill-selector` に構造化して渡す。採用した記憶には、承認・差し戻しの結果が出た時点で評価を返す
 13. **GitLab Markdown 統一**: イシューコメント・MR 本文のテンプレートに流し込む文字列は必ず GitLab Markdown 形式で記述する。`##` 見出し・`**太字**`・`- 箇条書き`・` ``` コードブロック ``` `・`- [x] チェックボックス`・`` `インラインコード` `` を用い、プレーンテキストのまま流し込まない
 14. **着手前明確性確認**: ワーカーはイシュー説明が実装に足りる詳細さかを必ず確認する。曖昧な場合は推測解釈を添えてコメントで質問し、`status:needs-clarification` に更新して終了する。24 時間以内に回答があれば回答に従い、なければ推測解釈で実装を開始する
 15. **曖昧イシュー詳細化**: リクエスターは `status:needs-clarification` イシューを発見または指示された場合、ワーカーの指摘に答えてイシュー本文・受け入れ条件を詳細化し `status:open,assignee:any` に戻す
