@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 30 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 31 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 29 件）
+## カテゴリ別索引（全 30 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -39,6 +39,7 @@
 | [`gitlab-issue-agent-design.md`](./gitlab-issue-agent-design.md) | GitLab の issue の変化を拾い、エージェント CLI を同時に 1 セッションだけ流す仕組みの設計。GitLab への問い合わせと前回処理してからの変化は change-watch の `get` / `commit`、条件の分岐・エージェント CLI の実行（`harness.run`）・再試行・排他は Dagu が受け持ち、プログラムは持たない。gitlab-idd スキルとは、ロールごとに受け手を分け、ラベルの条件で選ぶ形で繋ぐ。 |
 | [`gitlab-issue-hub-agent-design.md`](./gitlab-issue-hub-agent-design.md) | URL で決めた 1 つの GitLab の issue を、メールと Power Automate をつなぐハブにする仕組みの設計。エージェントは issue の変化（新しく付いたコメント・issue そのもの）を返すことと、issue を変える（コメント・更新）ことだけを受け持ち、どの変化に反応するか・何を書くかは Dagu のワークフローに、変化を受けて何をするかは Power Automate に置く。メールは GitLab の通知メールに任せる。 |
 | [`gitlab-mr-review-agent-design.md`](./gitlab-mr-review-agent-design.md) | 決めた GitLab のリポジトリの MR を kiro-cli に 1 件ずつレビューさせる仕組みの設計。gitlab-issue-agent と同じく change-watch と Dagu の上に組む。変化を head のコミット・ドラフト・対象ブランチに絞り、レビューし終えたコミットを change-watch の受け手が覚え、差分の指紋と書き込みの印で、同じ MR を重ねてレビューしない。新しいコミットでは自分の未解決のスレッドを確かめ、直っていれば返信して解決にする。 |
+| [`gitlab-proof-agent-design.md`](./gitlab-proof-agent-design.md) | GitLab の MR の指摘を別セッションで検証する `proof` プラグインの設計。入力の分離、判定と証拠規約、任意の Dagu ワークフローを扱う。 |
 | [`redmine-ticket-agent-design.md`](./redmine-ticket-agent-design.md) | Redmine の自分が担当する未完了のチケットのうち、決めた条件に当たるものに、その条件と対にした文をコメントして完了にする仕組みの設計（対は複数。対ごとに Dagu のステップを 1 つ書く）。変化は change-watch の `get` / `commit`、条件は Dagu の `preconditions`、書き込みは `change-watch call` の 1 回の PUT で行い、プログラムは持たない。 |
 | [`dagu-workflow-builder-design.md`](./dagu-workflow-builder-design.md) | 各環境に入っているスキルのスクリプトを、スキル側の宣言（`chain.json`）の入出力の型でつなぎ、LLM を使わずに Dagu v2 の DAG を組み立てる仕組みの設計。入出力を `--help` から推測せず宣言で持つ・型は名前の完全一致だけでつなぐ・経路は有向超グラフの最小コストを名前順の同点解決で決定的に選ぶ・書き出しは v2.25 の `action: exec` と実行ごとの作業フォルダに合わせる、の 4 点が骨格。 |
 | [`change-watch-design.md`](./change-watch-design.md) | ワークフロー（Dagu）から Web API・フォルダを使う口の設計。取得（ページ単位で進めて途中から再開・予定・ずらし・要求の間隔と失敗の待ちの共有）と、ワークフローごとの受け手が前回 commit してからの変化を受け取る `get` / `commit`、書き込みの `call` を持つ。条件と処理は Dagu に書く（0.8.0 でルールと受け渡しをなくした経緯も）。 |

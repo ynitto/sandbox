@@ -148,7 +148,7 @@ kiro-cli が 0 以外で終わる・時間切れになると、Dagu が `retry_p
 - GitLab への読み書きは、プロンプトに書いたコマンド（`.env` の `MR_REVIEW_CLI`）だけで行わせる
 - 指摘の検証と証拠の添付は「指摘と証拠の規約」に従い、まとめには検証済みと仮説の件数を分けて書かせる
 
-## kiro-cli が使うコマンド（gitlab_mr.py）
+## kiro-cli が使うコマンド
 
 コマンドは change-watch から `change-watch --plugin gitlab_mr mr <コマンド> ...` で呼ぶ（`.env` の `MR_REVIEW_CLI` がこの形。
 change-watch の設定は読まないので、`--config`・`--connections` は付けなくてよい）。
@@ -164,6 +164,7 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 | `context <MR> [--since <コミット>]` | 作業フォルダを MR の今のコミットにし、MR の概要・自分が立てた未解決のスレッド（返信つき）と解決済みの指摘・差分を出す。`--since` があればそこからの差分（この MR が触っているファイルだけ）。差分の中身をレビューし終えていればそう出す |
 | `show <MR> <パス> [--from N --to M]` | 今のコミットのファイルを行番号つきで出す（作業フォルダから） |
 | `verify <MR> -- <コマンド...>` | 作業フォルダで許可された検証コマンドを実行し、コマンド・終了コード・出力の末尾を証拠用の Markdown で出す |
+| `change-watch --plugin gitlab_proof proof <MR> --findings <ファイルまたは -> [--evidence-dir <フォルダ>]` | 新しい指摘を別セッションで検証し、投稿する指摘と取り下げる指摘を JSON で返す |
 | `comment <MR> --path <パス> --line <行> --body-file <ファイル> [--evidence-file <ファイル>]` | 差分の行に指摘のスレッドを立てる。同じ指摘か、同じ行に未解決の指摘が既にあれば書かない |
 | `resolve <MR> <スレッド> --body <文>` | 自分が立てたスレッドに返信して解決にする |
 | `summary <MR> --body-file <ファイル>` | 今の差分のレビューのまとめを 1 回だけ書く（差分の中身の指紋を印に残す） |
@@ -188,6 +189,27 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 制限時間内にコマンドが終われば、終了コードが 0 以外でも結果を証拠に出す。
 時間切れは未検証（仮説）として扱い、部分出力は証拠に出さない。
 設定が無い、許可リストに無いなどで検証できないときは、無理に実行せず、本文に理由を添えて仮説として投稿する。
+
+### 独立検証（proof）
+
+`mr verify` ではレビュー担当が許可されたコマンドを実行する。`proof` では別セッションの検証エージェントに MR の説明・差分と指摘の場所・主張を渡し、判定と証拠を受け取る。投稿は `mr comment` が受け持つ。
+
+先に `mr context` を実行し、作業フォルダを MR の今のコミットにする。`--findings` に渡す UTF-8 の JSON は次の形にする。ファイルと `--evidence-dir` は作業フォルダの外に置く。標準入力から読む場合は `--findings -` を使う。
+
+```json
+{"version": 1, "findings": [{"id": "f1", "target": {"path": "app.py", "line": 2}, "claim": "x が None のとき TypeError になります。"}]}
+```
+
+指摘に `self_assessment` を書けば、レビュー担当自身の推論や証拠を手元に残せる。検証セッションには `id`・場所・主張だけが届く。
+
+- `post` の指摘は `claim` を本文として投稿する。裏付けありの `evidence_file` を `comment --evidence-file` に渡すと、証拠節に「独立検証（proof）: 裏付けあり」が入り、`context` に「〔検証済み〕」と出る。
+- 判断不能や検証の失敗は、証拠なしで投稿すると仮説になる。`mr verify` で取った証拠があれば使える。
+- `drop` の指摘は投稿せず、まとめに取り下げた件数を書く。
+
+Dagu で使うには、環境ファイルの `MR_REVIEW_PROOF_CLI` と `MR_REVIEW_PROOF_AGENT` を設定する。使用する CLI の無人実行フラグは導入先で確認する。
+[独立検証の例](examples/change-watch-mr-review-proof.yaml.example) の `/home/you` などを自分の環境に合わせ、既存の
+`~/.config/dagu/dags/change-watch-mr-review.yaml` を**置き換える**。既定の例と並べると、同じ受け手 `mr-review` で同じ MR を取り合う。
+レビューの制限時間は 3600 秒で、その内側で検証の制限時間（既定 900 秒）がかかる。
 
 ## Windows で使うとき
 
