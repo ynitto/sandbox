@@ -14,6 +14,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - Dagu の夜間実行例と、ドリフトレポートを朝の集約用 JSON に変換するスクリプトを足す
 
+### webui-test の夜間回帰
+
+- 毎晩の `check` を実行する Dagu の例と、新規失敗・回復・画面変化を抽出する差分ツールを追加。朝の夜間点検集約から差分 JSON を参照できる。
+
 ### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
 
 - 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す

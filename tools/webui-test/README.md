@@ -291,6 +291,60 @@ python3 tools/codd-agent/init.py ~/work/my-app-docs --side design --ref app=../m
 
 どちらも相手の設定やコードを読まず、組み方は使うプロジェクトの設定に書くので、双方のインストールや実行に、もう一方は必須ではない。
 
+## 夜間の定期回帰
+
+[Dagu の例](dags/webui-nightly-regression.example.yaml)を Dagu の DAG ディレクトリにコピーし、
+対象プロジェクト、evidence、状態ディレクトリ、差分スクリプトのパスを環境に合わせる。
+Dagu のタイムゾーンで毎晩 03:00 に、次の順で実行する。
+
+1. 最新の evidence があれば、状態ディレクトリの `prev.json` にコピーする。
+2. プロジェクトで `webui-test check` を実行する。ケースが失敗して終了コード 1 が返っても差分処理へ進む。
+3. `prev.json` と更新された最新の evidence を比較し、`diff.json` と `diff.md` を書く。
+   evidence が更新されなかった場合は差分を残さず、朝の集約では未確認になる。
+
+最新の evidence は実行したケースファイルの項目だけを入れ替える。夜間の比較範囲をそろえるため、毎回同じケース一式を実行する。
+手動で比較する場合は、Python 3.8 以降で下記のように実行する。
+
+```sh
+python3 tools/webui-test/scripts/evidence_diff.py \
+  --before prev.json --after results/webui-test-evidence.json \
+  --output diff.json --md-out diff.md
+```
+
+`--before` のファイルがなければ初回とし、現在の結果を次回の基準にする。
+初回は現在の失敗総数（`failed_total`）だけを数え、ほかの件数は 0、一覧は空になる。
+`--after` のファイルがないか読めない場合は終了コード 2 を返す。比較前に既存の出力を消す。
+`--md-out` は任意。Markdown には新規失敗・回復・画面変化だけを載せ、対象がなければ「変化なし」と書く。
+
+`diff.json` の様式（version 1）
+
+| フィールド | 内容 |
+| --- | --- |
+| `version`, `source`, `generated_at` | `1`、`webui-test-evidence-diff`、生成日時（UTC） |
+| `baseline_missing` | 前回のファイルがなければ `true` |
+| `summary` | `new_failures`（新規失敗）、`recovered`（回復）、`still_failing`（継続失敗）、`screen_changes`（画面変化）、`added`（追加）、`removed`（削除）、`failed_total`（現在の失敗）、`passed_total`（現在の合格）の件数 |
+| `changes` | `new_failures` は `{id, title, error}`（エラーの記録がなければ `null`）、`recovered` と `screen_changes` は `{id, title}`、`added` と `removed` は `{id, kind, title}` の配列 |
+
+項目は `id` と `kind` の組で照合する。前回または今回の evidence 内で同じ組が重複していれば、入力不正として終了コード 2 を返す。
+新規失敗には今回初めて現れた失敗項目も含む。
+回復は `failed` から `passed` への遷移で、スキップは合否に含めない。
+画面変化は今回の `status` が `changed` または `removed` の画像と、前回と今回の `sha256` が異なる画像を数える。
+画面がなくなった場合、`changes.screen_changes` の項目に `"status": "removed"` を付け、Markdown には「画面がなくなった」と表示する。
+
+[nightly-check-digest](../nightly-check-digest/README.md) の `checks` に次の設定を追加する。
+新規失敗か画面変化が 1 件でもあれば、朝の集約で失敗として表示される。
+
+```yaml
+checks:
+  - name: Web UI の夜間回帰
+    type: json_report
+    path: /home/you/.local/state/webui-nightly-regression/diff.json
+    max_age_hours: 12
+    failure_conditions:
+      - {path: summary.new_failures, op: gt, value: 0}
+      - {path: summary.screen_changes, op: gt, value: 0}
+```
+
 ## 環境を切り替える（ローカル・検証環境）
 
 カレントディレクトリに `webui-test.config.yaml` を置き、環境ごとの接続先・認証・事前に入れる値を書く。
