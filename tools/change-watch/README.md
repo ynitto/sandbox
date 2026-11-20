@@ -26,7 +26,7 @@
 |---|---|
 | `changewatch/` | 本体: 取得・状態・`get` / `commit` / `call`・運用のコマンド |
 | `dags/*.example.yaml` | change-watch を使う Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） |
-| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） |
+| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） |
 
 ### プラグイン
 
@@ -201,7 +201,7 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
 - 失敗した処理も commit まで進める（分かれた先に `continue_on.failure`）。やり直しは Dagu の `retry_policy` に任せ、尽きたら Dagu の履歴に失敗として残る。
   commit しないでおくと、次の起動でも同じ変化が返り、毎分やり直し続ける
 - 処理の中で自分が書き込む（コメントを付けるなど）なら `commit --refresh` にする。書き込んだ後の姿を基準にするので、自分の書き込みを次の変化にしない
-- エージェントの例（インストーラが置くもの）も、どれもこの形で書いてある（[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
+- エージェントの例（インストーラが置くもの）も、どれもこの形で書いてある（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
   [gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
 
 ### 条件で分けるワークフローの例

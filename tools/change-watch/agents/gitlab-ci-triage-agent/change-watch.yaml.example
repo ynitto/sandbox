@@ -1,0 +1,27 @@
+# install.py install --agent gitlab-ci-triage-agent が ~/.config/change-watch/gitlab-ci-triage-agent/ に置く。
+# change-watch は失敗の一覧を定期的に取得する。どの失敗を診断するかは Dagu の条件に書く。
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-ci-triage-agent   # エージェントごとに分ける
+retention:
+  record_days: 30            # 30 日取得されていない失敗は、手元の姿から消す
+
+sources:
+  gitlab-pipelines:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/pipelines"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { status: failed, order_by: updated_at, sort: asc }   # 絞るなら ref: main・source: push などを足す
+    key: id                    # get --consumer が変化を見分ける key（パイプラインの ID）
+    pagination: { type: page, size_param: per_page, size: 100 }
+    incremental:
+      type: max_value
+      field: updated_at
+      param: updated_after
+      initial: "2026-01-01T00:00:00Z"   # 入れる日に直す（これより前の失敗は取らない）
+    schedule: "*/5 * * * *"
+    jitter_sec: 60
+    busy_wait_sec: 300
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }

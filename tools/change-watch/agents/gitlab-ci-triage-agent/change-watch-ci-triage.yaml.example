@@ -1,0 +1,132 @@
+# install.py install --agent gitlab-ci-triage-agent が ~/.config/dagu/dags/change-watch-ci-triage.yaml に置く。
+# 毎分、get → collect → diagnose → post → commit の順で失敗を 1 件診断する。
+# 入れた直後は dry-run。Dagu のログで投稿先と本文を確かめる。
+# Windows では command を python に、args の先頭を change-watch.pyz のフルパスにする（インストーラが置き換える）。
+description: "GitLab の失敗したパイプラインを 1 件診断する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-ci-triage-agent/gitlab-ci-triage-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_ci"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-ci-triage-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-pipelines"
+        - "--consumer"
+        - "ci-triage"
+        - "--watch"
+        - "updated_at"
+        - "--one"
+    timeout_sec: 480
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: collect
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+      - condition: "${CHANGE.record.status}"
+        expected: "failed"
+      # - condition: "${CHANGE.record.ref}"
+      #   expected: "re:^(main|release/.*)$"
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_ci"
+        - "ci"
+        - "collect"
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: COLLECT
+  - name: diagnose
+    depends: [collect]
+    preconditions:
+      - condition: "${COLLECT.pipeline}"
+        expected: "re:."
+      - condition: "${COLLECT.status}"
+        expected: ""
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_ci"
+        - "ci"
+        - "diagnose"
+        - "${CHANGE.key}"
+    timeout_sec: 120
+    output: DIAG
+  - name: post
+    depends: [diagnose]
+    preconditions:
+      - condition: "${DIAG.category}"
+        expected: "re:."
+      # - condition: "${DIAG.category}"
+      #   expected: "re:^(test_failure|dependency|infrastructure|configuration)$"
+      # - condition: "${DIAG.known}"
+      #   expected: "true"
+    continue_on:
+      skipped: true
+      failure: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_ci"
+        - "ci"
+        - "post"
+        - "${CHANGE.key}"
+    timeout_sec: 180
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [post]
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_ci"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-ci-triage-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-pipelines"
+        - "--consumer"
+        - "ci-triage"
+        - "${CHANGE.key}"
+    timeout_sec: 600
