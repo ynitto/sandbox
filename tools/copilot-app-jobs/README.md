@@ -59,6 +59,33 @@ python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder 
 
 Dagu から呼ぶ例は [`dags/copilot-app-job.example.yaml`](./dags/copilot-app-job.example.yaml) にあります。
 
+## 定型メニュー
+
+夜間の依頼文を `nightly_menu.py` で生成できます。別の場所に設置する場合は、`copilot_app_job.py` と
+同じフォルダに `nightly_menu.py` と `menu/` を置きます。
+
+| メニュー | 目的 | 必須パラメータ |
+|---|---|---|
+| [docs-followup](./menu/docs-followup.md) | コード変更に合わせたドキュメント更新案 | `target_dir` |
+| [test-maintenance](./menu/test-maintenance.md) | テストケースとコードの追加・更新案 | `lint_results`、`bindings` |
+| [changelog-draft](./menu/changelog-draft.md) | CHANGELOG の [Unreleased] 追記案 | `period` |
+| [drift-scan](./menu/drift-scan.md) | 検査で見つかった乖離の一覧と優先度 | `doc_drift_results`、`codd_gate_results` |
+
+```powershell
+python nightly_menu.py list
+python nightly_menu.py generate --menu docs-followup --param target_dir=src --param "revision_range=HEAD~3..HEAD" --out docs-request.md
+python nightly_menu.py submit --menu docs-followup --param target_dir=src --dir C:/work/my-folder --name docs-followup
+```
+
+`--param k=v` は複数回指定できます。任意パラメータと既定値は各テンプレートの入力欄を参照してください。
+相対パスで指定する作業対象・入力・成果物はアプリの作業フォルダを基準にします。
+`generate` は `--out` を省略すると標準出力に依頼文を出します。ファイルに保存した場合は
+`copilot_app_job.py run --prompt-file docs-request.md --dir C:/work/my-folder` で依頼して結果を待てます。
+`submit` は依頼を置いて ID を出し、すぐに終了します。別の受け箱を使う場合は `--box` を指定できます。
+
+毎晩 02:00 に順番に実行する [Dagu の例](./dags/nightly-menu.example.yaml) と、
+朝に結果を確認する [検収手順書](./menu/ACCEPTANCE.md) を同梱しています。
+
 ## 空振りを小さくする
 
 自動実行は、依頼が無い回もセッションを 1 つ始めます。空振りはゼロにはできないので、**1 回を小さく**し、

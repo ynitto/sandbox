@@ -1,0 +1,165 @@
+# Dagu のスケジュール時刻で毎晩 02:00 に起動する。
+# スクリプト・作業フォルダ・プロンプトのパスを自分の場所に直す。
+# C:/work/prompts は先に作成する。nightly-inputs の入力は作業フォルダ内に事前に用意する。
+# 下書きの出力先は各メニューの既定値。次回実行までに検収し、必要なファイルを保管する。
+# --timeout はアプリの自動実行間隔 + 作業時間より長くし、timeout_sec は --timeout より長くする。
+# 終了コード 3（取り下げ済み）だけ再試行する。4 は元の依頼が残るため再試行しない。
+description: "Copilot のデスクトップアプリで夜間の定型メニューを順に実行する"
+schedule: "0 2 * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: generate-docs-followup
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "generate"
+        - "--menu"
+        - "docs-followup"
+        - "--param"
+        - "target_dir=tools"
+        - "--param"
+        - "check_results=nightly-inputs/doc-drift.md, nightly-inputs/codd-gate.txt"
+        - "--out"
+        - "C:/work/prompts/docs-followup.md"
+
+  - name: run-docs-followup
+    depends: [generate-docs-followup]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"
+        - "--prompt-file"
+        - "C:/work/prompts/docs-followup.md"
+        - "--name"
+        - "docs-followup"
+        - "--timeout"
+        - "3600"
+    timeout_sec: 3900
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+      exit_code: [3]
+
+  - name: generate-test-maintenance
+    depends: [run-docs-followup]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "generate"
+        - "--menu"
+        - "test-maintenance"
+        - "--param"
+        - "lint_results=nightly-inputs/testcase-lint.txt"
+        - "--param"
+        - "bindings=nightly-inputs/test-bindings.json"
+        - "--out"
+        - "C:/work/prompts/test-maintenance.md"
+
+  - name: run-test-maintenance
+    depends: [generate-test-maintenance]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"
+        - "--prompt-file"
+        - "C:/work/prompts/test-maintenance.md"
+        - "--name"
+        - "test-maintenance"
+        - "--timeout"
+        - "3600"
+    timeout_sec: 3900
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+      exit_code: [3]
+
+  - name: generate-changelog-draft
+    depends: [run-test-maintenance]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "generate"
+        - "--menu"
+        - "changelog-draft"
+        - "--param"
+        - "period=直近 24 時間"
+        - "--param"
+        - "pr_source=nightly-inputs/pull-requests.md"
+        - "--out"
+        - "C:/work/prompts/changelog-draft.md"
+
+  - name: run-changelog-draft
+    depends: [generate-changelog-draft]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"
+        - "--prompt-file"
+        - "C:/work/prompts/changelog-draft.md"
+        - "--name"
+        - "changelog-draft"
+        - "--timeout"
+        - "3600"
+    timeout_sec: 3900
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+      exit_code: [3]
+
+  - name: generate-drift-scan
+    depends: [run-changelog-draft]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "generate"
+        - "--menu"
+        - "drift-scan"
+        - "--param"
+        - "doc_drift_results=nightly-inputs/doc-drift.md"
+        - "--param"
+        - "codd_gate_results=nightly-inputs/codd-gate.txt"
+        - "--out"
+        - "C:/work/prompts/drift-scan.md"
+
+  - name: run-drift-scan
+    depends: [generate-drift-scan]
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"
+        - "--prompt-file"
+        - "C:/work/prompts/drift-scan.md"
+        - "--name"
+        - "drift-scan"
+        - "--timeout"
+        - "3600"
+    timeout_sec: 3900
+    retry_policy:
+      limit: 2
+      interval_sec: 300
+      exit_code: [3]
