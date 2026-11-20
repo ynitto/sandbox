@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
+
+- 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す
+- リクエスターは差し戻しの原因を記録し、ワーカーは採用した記憶に承認・差し戻しの結果を返す。要修正の評価には原因分類と差し戻しコメントからの引用が必要
+- 差し戻し・確認待ち・非収束の振り返りを保存し、学習ループの失敗をイシューと完了報告に残す
+
 ### change-watch: gitlab-ci-triage-agent を足す
 
 - 失敗した GitLab パイプラインのログをマスクしてから保存し、決まったパターンで分類する。現場のパターンは JSON で足せる

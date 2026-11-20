@@ -4,10 +4,15 @@
 
 - [全体フロー](#全体フロー)
 - [Phase 1 — 環境確認](#phase-1--環境確認)
+  - [ステップ 1-2: 未精算の評価返し](#ステップ-1-2-未精算の評価返し)
 - [Phase 2 — イシュー取得](#phase-2--イシュー取得)
+  - [ステップ 2-6a: 差し戻しの振り返り](#ステップ-2-6a-差し戻しの振り返り差し戻し再着手時のみ)
+  - [ステップ 2-6b: 過去知見の参照](#ステップ-2-6b-過去知見の参照着手前必須)
 - [Phase 3 — イシュー着手](#phase-3--イシュー着手)
-- [Phase 4 — タスク実行（並列評価ループ）](#phase-4--タスク実行並列評価ループ)
+- [Phase 4 — タスク実行（実装ループ）](#phase-4--タスク実行実装ループ)
 - [Phase 5 — 成果物提出](#phase-5--成果物提出)
+  - [ステップ 5-5a: 実行知見の保存](#ステップ-5-5a-実行知見の保存)
+  - [ステップ 5-5b: レトロスペクティブの起動](#ステップ-5-5b-レトロスペクティブの起動条件付き)
 - [ワーカーの行動原則](#ワーカーの行動原則)
 
 ワーカーノードはプロンプトトリガーで起動し、オープンイシューを取得して実行・報告する。ポーリングは行わない。
@@ -22,20 +27,23 @@
 
 ```
 Phase 1  環境確認 ─── プロジェクト情報・認証確認
+   │         └── 未精算の評価返し: 過去に使った記憶のうち結果が出たものへ評価を返す
    │
 Phase 2  イシュー取得 ─── オープンイシューをフィルタして 1 件選択
    │         ├── self-defer チェック: 自分発行イシューは猶予期間中はスキップ
    │         ├── 放置アサインチェック: 他ノード着手中はロック期間中スキップ
    │         ├── 猶予期間経過後は自分発行イシューも実行可
    │         ├── 依存チェック: 依存イシューが未完了ならスキップ
-   │         └── 明確性チェック: 説明・受け入れ条件が曖昧なら指摘してスキップ
+   │         ├── 明確性チェック: 説明・受け入れ条件が曖昧なら指摘してスキップ
+   │         ├── 差し戻しの振り返り: 差し戻し再着手なら原因を分類し、学びを保存し、使った記憶へ評価を返す
+   │         └── 過去知見の参照（必須）: 記憶と wiki を検索し、結果をコメントに記録
    │
 Phase 3  イシュー着手 ─── assign + ラベル更新 + 作業用フォルダ作成 + 空ドラフト MR 作成
    │
 Phase 4  タスク実行 ─── 実装ループ（最大 5 回）
    │         └── スキル選定（skill-selector）→ 実装 → supporting_skills をそのまま適用 → agent-reviewer でレビュー → 修正・コミット・push
    │
-Phase 5  成果物提出 ─── push 確認 + MR 本文記入 + ドラフト解除 + イシューコメント + ラベル更新
+Phase 5  成果物提出 ─── push 確認 + MR 本文記入 + ドラフト解除 + イシューコメント（記憶の使い方を記録）+ ラベル更新 + 実行知見の保存
 ```
 
 ---
@@ -49,6 +57,28 @@ python scripts/gl.py current-user
 
 `project-info` が失敗する場合: カレントディレクトリが git リポジトリ内にあるか確認する。
 `current-user` が失敗する場合: GITLAB_TOKEN 環境変数が設定されているか確認して終了する。
+
+### ステップ 1-2: 未精算の評価返し
+
+以前のイシューで使った記憶のうち、承認または差し戻しの結果が出たのに評価を返していないものを精算する。
+評価は記憶を持つノードでしか返せないので、ワーカーが起動のたびに自分の分を片付ける。
+
+```
+python scripts/gl.py ltm-pending
+```
+
+出力の `rate_pending` を順に処理する（1 回の起動で最大 5 件。残りは次回）。
+
+- `outcome` が `approved` のもの → そのまま実行する:
+
+```
+python scripts/gl.py ltm-rate {issue_id} --outcome approved --auto
+```
+
+- `outcome` が `rework` のもの → ステップ 2-6a の手順 1〜4 をそのイシューに対して行う。
+
+`rate_pending` が空ならそのまま Phase 2 へ進む。このステップの失敗で作業を止めない（終了コード 3 は
+イシューに記録済み。ステップ 5-5 の完了報告に 1 行足す）。
 
 ---
 
@@ -175,7 +205,7 @@ python scripts/gl.py add-comment {issue_id} \
   --body "⏳ 依存イシュー #{dep_issue_id} が未完了のため着手を保留します。完了後に再実行してください。"
 ```
 
-依存イシューが **すべて完了**している場合はそのまま Phase 3 へ進む。
+依存イシューが **すべて完了**している場合はステップ 2-6 へ進む。
 
 ### ステップ 2-6: イシュー詳細の読み込み
 
@@ -184,7 +214,90 @@ python scripts/gl.py get-issue {issue_id}
 python scripts/gl.py get-comments {issue_id}
 ```
 
-`## 受け入れ条件` セクションを必ず確認し、全項目を把握してから ステップ 2-7 へ進む。
+`## 受け入れ条件` セクションを必ず確認し、全項目を把握してから、差し戻し再着手ならステップ 2-6a を行い、ステップ 2-6b へ進む。
+
+### ステップ 2-6a: 差し戻しの振り返り（差し戻し再着手時のみ）
+
+選択したイシューが `status:needs-rework`、またはコメントに差し戻しがある場合に実行する。
+定期レトロ（ステップ 5-5b）を待たず、ここで原因を分類して学びを残す。
+
+```
+python scripts/gl.py ltm-trail {issue_id} --get pending.retro_cycles
+# → [1] のように、振り返りが済んでいないサイクルが出る
+python scripts/gl.py ltm-trail {issue_id} --get pending.rate
+# → 自ノードの未精算サイクルと結果が出る
+```
+
+1. 対象サイクルの差し戻しコメントと完了コメント（記憶の使い方の記録）を読む。
+   振り返り（手順 2）と評価返し（手順 3〜4）は、それぞれ未処理の最も古い対象サイクルから行う。
+   どちらも対象がなければこのステップは終わり。
+   原因分類は差し戻しコメントの `<!-- gitlab-idd:rework-cause:... -->` を正とする。
+   マーカーが無い場合（人が直接リオープンした等）は原因を `unknown` とする。
+
+2. `pending.retro_cycles` の対象について学びを `_retro.json` に書いて保存する:
+
+   ```json
+   {
+     "category": "gitlab-idd-retro",
+     "title": "差し戻し #{issue_id}: {何を誤ったかを 1 行で}",
+     "summary": "{誤りと、次回変える行動を 1〜2 文で}",
+     "content": "事象: {差し戻しの指摘}\n原因: {なぜそう実装したか}\n見落とした手がかり: {着手時点で気づけた情報}",
+     "conclusion": "{次に同種のイシューでやること・やらないこと 1 文}",
+     "tags": "gitlab-idd,retro,cause-{slug}",
+     "memory_type": "episodic"
+   }
+   ```
+
+   ```
+   python scripts/gl.py ltm-save {issue_id} --kind retro --trigger rework --args-file _retro.json
+   ```
+
+3. `pending.rate` のうち `outcome: rework` の対象サイクルで `applied` と記録した記憶それぞれについて、差し戻しとの関係を判定する
+   （判定表は [learning-loop.md の「評価の判定表」](learning-loop.md#評価の判定表)）。結果を `_rate_plan.json` に書く:
+
+   ```json
+   {
+     "outcome": "rework",
+     "items": [
+       {"id": "mem-20260303-001", "rating": "correction",
+        "note": "トークン期限は 30 分。15 分という記述は現行仕様と不一致",
+        "evidence": "差し戻し: 「期限が 15 分になっている。AC は 30 分」"},
+       {"id": "mem-20260411-004", "rating": "none", "reason": "記憶は正しく、適用の仕方を誤った"}
+     ]
+   }
+   ```
+
+4. 評価を返す:
+
+   ```
+   python scripts/gl.py ltm-rate {issue_id} --plan-file _rate_plan.json
+   ```
+
+   終了コード 2（計画が規則に合わない）の場合は、表示された理由に従って該当項目を `"rating": "hold"` に
+   直し、`reason` に保留の理由を書いて再実行する。規則を回避する書き換えはしない。
+
+保存済みの振り返りがあっても、評価が未精算なら手順 3〜4 を行う。
+
+### ステップ 2-6b: 過去知見の参照（着手前必須）
+
+実装方針を考え始める前に、過去の記憶と wiki を検索する。差し戻し再着手のときも必ず実行する
+（同じサイクルで実行済みなら、記録済みの結果がそのまま返る）。
+
+```
+python scripts/gl.py ltm-recall {issue_id} \
+  --query "{技術スタック} {対象モジュール・機能のキーワード}" \
+  --context "gitlab-idd: {イシュータイトル}" \
+  --wiki-query "{対象ツール・ライブラリ名}" > _knowledge.json
+```
+
+- `--query` は 3 つまで、`--wiki-query` は 3 つまで繰り返せる。
+- 差し戻し再着手のときは、差し戻しの指摘に出てくる語を `--query` に足す
+  （例: `--query "JWT 期限 差し戻し"`）。過去の同種の差し戻し（カテゴリ `gitlab-idd-retro`）を拾うため。
+- 結果はイシューに「📚 参照した知見」コメントとして記録される。`_knowledge.json` は
+  ステップ 2-7・2-8 の判断材料にし、ステップ 4-0 でそのまま渡す。
+- 0 件（`status: empty`）や `ltm-use` 未導入（`status: unavailable`）でも先へ進む。
+  その事実がコメントに残ることが目的で、検索結果が無いことは着手を止める理由にならない。
+- 終了コード 3（検索の失敗）でも先へ進む。失敗はイシューに記録済み。
 
 ### ステップ 2-7: 説明の明確性チェック（着手前必須）
 
@@ -274,6 +387,8 @@ python scripts/gl.py update-issue {issue_id} \
 
 どちらの条件も満たさない場合はこのイシューをスキップして次の候補へ進む。
 
+Phase 3 に進む前にステップ 2-6b を実行する（回答で範囲が変わった場合は `--force` を付けて検索し直す）。
+
 ### ステップ 2-8: アプローチ提案（任意・判断による）
 
 イシューに複数の実装方針が考えられる場合（トレードオフが大きい・設計上の分岐点がある）、Phase 3 に進む前にリクエスターへアプローチ案を提案する。
@@ -328,6 +443,8 @@ python scripts/gl.py add-comment {issue_id} --body-file _approach.md
 ## Phase 3 — イシュー着手
 
 ### ステップ 3-1: 自分に assign してロック
+
+**前提**: ステップ 2-6b が済んでいること。`python scripts/gl.py ltm-trail {issue_id} --get pending.recall` が `True` なら 2-6b に戻る。
 
 MY_USER は `python scripts/gl.py current-user --get username` で取得した値を使う。
 
@@ -427,6 +544,8 @@ python scripts/gl.py add-comment {issue_id} --body-file _scout.md
 - **このファイルが依存するモジュール**: {例: `auth.py` が使う `db.py`}
 - **このファイルに依存するモジュール**: {例: `api.py` が `auth.py` を呼ぶ}
 
+ステップ 2-6b の `_knowledge.json` に環境固有の注意点（`wiki` や記憶の要約）がある場合は、「リスク箇所」に出典（記憶 ID または wiki のページ名）付きで転記する。
+
 ### リスク箇所
 
 - {高リスク箇所: 例「`auth.py` L42 の JWT 検証ロジック — セキュリティテスト必須」}
@@ -500,6 +619,28 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 - イシュータイトル・受け入れ条件（技術スタック・言語・フレームワーク）
 - ステップ 3-5 のスカウトマップ（影響ファイル・リスク箇所）
 - 差し戻しコメントがある場合はその内容
+- ステップ 2-6b の参照結果（`_knowledge.json` の内容を `knowledge_context` としてそのまま渡す）
+
+```yaml
+knowledge_context:
+  status: ok            # ok | empty | unavailable | error
+  cycle: 2
+  trigger: rework       # start | rework
+  memories:
+    - id: mem-20260303-001
+      title: "JWT の期限設定"
+      relevance: 0.71   # 検索時の関連度（recall の score）
+      summary: "…"
+  wiki_status: ok       # ok | empty | unavailable | error
+  wiki:
+    - id: atoms/kiro-cli-trust-flags
+      title: "kiro-cli の --trust-all-tools の癖"
+      relevance: 0.83
+  rework_causes: [spec-misread]   # 差し戻し再着手時のみ
+```
+
+`knowledge_context` は参考情報として渡す。スキルの最終選定は従来どおり skill-selector の判断を正とする。
+`status` が `ok` 以外でもブロックごと渡す（参照できなかったという事実も入力にする）。
 
 **skill-selector の推薦結果の扱い**:
 1. **worker-role は推薦結果を再解釈しない**。どのプライマリスキルを使うか、どの補助スキルを先行適用するかは、すべて skill-selector の出力を正とする
@@ -516,7 +657,7 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 ステップ 4-0 で選定したスキルに従ってタスクを実装する。
 
 ```
-イシュー本文（受け入れ条件・技術制約を含む）、スカウトマップコメント（gitlab-idd:scout-map）、
+イシュー本文（受け入れ条件・技術制約を含む）、スカウトマップコメント（gitlab-idd:scout-map）、参照した知見（`_knowledge.json`）、
 差し戻しコメント（あれば）、使用スキル（${SKILLS_DIR}/[選定スキル名]/SKILL.md）を参照し:
 - 受け入れ条件を全て満たすコードを作成・変更する
 - スカウトマップのリスク箇所に注意して変更する
@@ -568,6 +709,13 @@ agent-reviewer への入力:
   - 指摘なし or 軽微のみ → Phase 5 へ進む
   - 修正必要な指摘あり   → 修正してステップ 4-3 に戻る（最大 5 回）
   - 5 回を超えた場合    → 現状の実装で Phase 5 へ進み、未解決指摘をコメントに記載
+```
+
+5 回を超えて Phase 5 へ進む場合は、その場で振り返りを保存する（ステップ 2-6a の手順 2 と同じ形式。
+題は「非収束 #{issue_id}: …」）。記憶への評価返しは行わない。
+
+```
+python scripts/gl.py ltm-save {issue_id} --kind retro --trigger non-convergence --args-file _retro.json
 ```
 
 ### ステップ 4-5: 変更のコミットと push
@@ -678,7 +826,31 @@ python scripts/gl.py add-comment {issue_id} --body-file _comment.md
 ### リクエスターへの申し送り
 
 {未解決の指摘・確認してほしい事項があれば記載}
+
+### 参照した知見の使い方
+
+| 記憶 | 使い方 | どこに効いたか |
+|---|---|---|
+| mem-20260303-001 JWT の期限設定 | 採用 | 期限を 30 分にした根拠（`auth/token.py` の `EXPIRES`） |
+| mem-20260411-004 リトライ方針 | 参照のみ | — |
 ```
+
+コメント投稿後、同じ内容を機械可読で記録する。`_usage.json`:
+
+```json
+{"memories": [
+  {"id": "mem-20260303-001", "use": "applied", "how": "期限を 30 分にした根拠（auth/token.py の EXPIRES）"},
+  {"id": "mem-20260411-004", "use": "referenced"}
+]}
+```
+
+```
+python scripts/gl.py ltm-log {issue_id} --event usage --data-file _usage.json
+```
+
+- `applied`（採用）は、その記憶が無ければ別の実装になっていたものだけに付ける。`how` に、効いた判断と場所を書く。
+- 読んだだけのものは `referenced`、関係なかったものは `unused`。書かなかった記憶は `unused` として記録される。
+- 参照した知見が 0 件のときは、節を「参照した知見はありません」の 1 行にし、`ltm-log` も実行する（`{"memories":[]}` で空の記録を残す）。
 
 ### ステップ 5-4: ラベル更新
 
@@ -720,52 +892,59 @@ python scripts/gl.py add-comment {blocked_issue_id} \
 
 ### ステップ 5-5: 完了報告
 
+ステップ 5-5a・5-5b の実行後に報告する。
+
 ```
 ✅ イシュー #{id} の実装が完了しました。
 ブランチ: BRANCH
 MR: MR_URL
 レビュー待ち状態に更新しました。
+学習ループ: 知見 {n} 件を参照 / 保存 {成功・失敗・未導入} / 未解決の失敗 {m} 件
 ```
 
-### ステップ 5-5a: LTM フィードバック保存
+`n` は `_knowledge.json` の `memories` と `wiki` の合計件数。
+`m` は `python scripts/gl.py ltm-trail {issue_id} --get open_failures` の件数。ステップ 1-2 で失敗があれば、その旨も 1 行足す。
 
-`ltm-use` スクリプトが存在する場合、このイシューの実行結果を記録する（存在しない場合はスキップ）:
+### ステップ 5-5a: 実行知見の保存
 
-```bash
-SKILLS_DIR=$(dirname $(dirname $(realpath "$0"))) 2>/dev/null || true
+このイシューの実行結果を記録する。`_save.json`:
 
-if [ -f "${SKILLS_DIR}/ltm-use/scripts/save_memory.py" ]; then
-  python "${SKILLS_DIR}/ltm-use/scripts/save_memory.py" \
-    --non-interactive --no-dedup \
-    --category "gitlab-idd-execution" \
-    --title "イシュー #{issue_id} 完了: {issue_title_slug}" \
-    --summary "使用スキル: {primary_skill}" \
-    --content "イシュー: {issue_title}\n使用スキル: {primary_skill}\n補助スキル: {supporting_skill}\n課題: {problems_if_any}\n解決策: {solutions_if_any}" \
-    --conclusion "{このイシューの種別に有効だったスキル組み合わせの知見}" \
-    --tags "gitlab-idd,{primary_skill}"
-fi
+```json
+{
+  "category": "gitlab-idd-execution",
+  "title": "イシュー #{issue_id} 完了: {issue_title_slug}",
+  "summary": "使用スキル: {primary_skill}",
+  "content": "イシュー: {issue_title}\n使用スキル: {primary_skill}\n補助スキル: {supporting_skill}\n課題: {problems_if_any}\n解決策: {solutions_if_any}",
+  "conclusion": "{このイシューの種別に有効だったスキル組み合わせの知見}",
+  "tags": "gitlab-idd,{primary_skill}"
+}
 ```
 
-スクリプトへの実際のパスは環境に応じて調整する（例: `${SKILLS_DIR}/ltm-use/scripts/save_memory.py`）。
-
-### ステップ 5-5b: 自動レトロスペクティブトリガー（条件付き）
-
-`status:done` の累積イシュー数が 10 の倍数に達した場合、かつ `sprint-reviewer` スキルが利用可能な場合に自動でレトロスペクティブを起動する。
-
-```bash
-SKILLS_DIR=$(dirname $(dirname $(realpath "$0"))) 2>/dev/null || true
-
-# sprint-reviewer が存在する場合のみ実行
-if [ -f "${SKILLS_DIR}/sprint-reviewer/SKILL.md" ]; then
-  # status:done の件数を取得（list-issues の出力件数をカウント）
-  DONE_ISSUES=$(python scripts/gl.py list-issues --label "status:done")
-  DONE_COUNT=$(python -c "import json,sys; d=json.loads('${DONE_ISSUES}'); print(len(d) if isinstance(d,list) else 0)" 2>/dev/null || echo 0)
-
-  if [ "$DONE_COUNT" -gt 0 ] && [ "$((DONE_COUNT % 10))" -eq 0 ]; then
-    cat "${SKILLS_DIR}/sprint-reviewer/SKILL.md"
-  fi
-fi
 ```
+python scripts/gl.py ltm-save {issue_id} --kind execution --args-file _save.json
+```
+
+`ltm-use` の場所は gl.py が解決する。未導入の場合は終了コード 0 で `status: unavailable` が返る
+（ステップ 2-6b のコメントに記録済みなので、ここでは何も足さない）。
+保存に失敗した場合（終了コード 3）は、保存できなかった内容ごとイシューに記録される。作業は止めない。
+
+### ステップ 5-5b: レトロスペクティブの起動（条件付き）
+
+```
+python scripts/gl.py ltm-trail {issue_id} --retro-check --get retro_check
+# → {"due": true, "reasons": ["rework>=2"], "done_count": 17}
+```
+
+`due` が `true` になる条件（いずれか）:
+
+| reasons | 条件 |
+|---|---|
+| `done-multiple-of-10` | クローズ済み `status:done` の件数が 10 の倍数（0 件を除く） |
+| `rework>=2` | このイシューの差し戻しが 2 回以上 |
+| `via-clarification` | このイシューが `status:needs-clarification` を経由した |
+
+`due` が `true` で `sprint-reviewer` スキルがある場合は起動する。渡す情報に、このイシューの
+振り返り記録（`gitlab-idd-retro` カテゴリ）を足す。
 
 起動した場合、`sprint-reviewer` に以下を渡す:
 - 直近 10 件の完了イシュー（タイトル・使用スキル・差し戻し回数）
@@ -774,7 +953,11 @@ fi
 
 `sprint-reviewer` の分析結果は新規イシューまたはコメントとして記録する（詳細は `sprint-reviewer/SKILL.md` に従う）。
 
-条件を満たさない場合はスキップ。`sprint-reviewer` が存在しない場合もスキップ。
+`due` が `true` なのに `sprint-reviewer` が無い、または起動に失敗した場合は記録する:
+
+```
+python scripts/gl.py ltm-log {issue_id} --event failure --step sprint-review --reason "{理由 1 行}"
+```
 
 ### ステップ 5-6: 作業用フォルダの削除
 
@@ -800,3 +983,5 @@ python scripts/gl.py workspace-remove CLONE_DIR
 7. **self-defer を守る**: 自分発行イシューは猶予期間中は取得しない。他ノードへの委譲を尊重する
 8. **依存を守る**: `## 依存イシュー` に記載されたイシューがすべて完了するまで着手しない
 9. **曖昧なイシューには推測解釈で対話する**: 説明・受け入れ条件が不明確な場合は推測解釈を添えてコメントし、`status:needs-clarification` に更新して終了する。24 時間以内に回答があれば回答に従い、なければ推測解釈で着手する（ステップ 2-7 / 2-7b 参照）
+10. **着手前に過去を引く**: 実装方針を考える前にステップ 2-6b で記憶と wiki を検索し、結果をコメントに残す。0 件でも記録する。差し戻し再着手のときも必ず行う
+11. **使った記憶に結果を返す**: 採用した記憶は完了コメントに記録し、承認・差し戻しの結果が出たら評価を返す。減点は根拠を引用できるときだけ行い、迷ったら保留してコメントに残す。学習ループの失敗を黙って流さない

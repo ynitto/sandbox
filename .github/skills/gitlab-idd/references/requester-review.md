@@ -90,6 +90,15 @@ python scripts/gl.py update-issue {issue_id} \
   --remove-labels "status:needs-clarification"
 ```
 
+ワーカーに確認を求められたこと自体を、イシューの書き方の学びとして保存する:
+
+```
+python scripts/gl.py ltm-save {issue_id} --kind retro --trigger clarification --args-file _retro.json
+```
+
+題は「確認待ちになった #{issue_id}: {欠けていた情報}」。保存の失敗で詳細化の作業は止めない。
+`_retro.json` には `category: "gitlab-idd-retro"`、`title`、`summary`、次回の改善を 1 文にした `conclusion` を入れる。
+
 **完了報告**:
 
 ```
@@ -362,7 +371,17 @@ MR がマージされた後、次回レビュー実行時にイシューは自�
 
 - {design doc の改善点 1（例: 背景・目的が空のため記述が必要）}
 - {design doc の改善点 2}
+
+<!-- gitlab-idd:rework-cause:{原因分類をカンマ区切りで} -->
 ```
+
+末尾のマーカーに、差し戻しの原因分類を 1 つ以上書く（ワーカーが再着手時の振り返りと、使った記憶への
+評価返しに使う）。語彙は [learning-loop.md の「差し戻し原因」](learning-loop.md#差し戻し原因)の表のとおり:
+`ac-unmet` / `spec-misread` / `wrong-approach` / `quality` / `env` / `scope` / `design-doc` / `issue-defect`
+
+- 分類は差し戻しの指摘内容から決める。ワーカーがどの記憶を使ったかは見なくてよい。
+- 判断がつかないときは `ac-unmet` を選ぶ（記憶の減点に使われない分類）。
+- リクエスターは記憶への評価返しを行わない。評価は記憶を持つワーカー側のノードが行う。
 
 コメントを投稿してリオープンする:
 
@@ -374,6 +393,17 @@ python scripts/gl.py update-issue {issue_id} \
   --remove-labels "status:review-ready" \
   --state-event reopen
 ```
+
+原因分類に `issue-defect` を含めた場合（イシューの書き方に原因があった場合）は、リクエスター自身の
+学びとして保存する:
+
+```
+python scripts/gl.py ltm-save {issue_id} --kind retro --trigger rework --args-file _retro.json
+```
+
+`_retro.json` は `category: "gitlab-idd-retro"`、題は「イシュー記述の不備 #{issue_id}: {何が足りなかったか}」、
+`conclusion` に次回イシューを書くときに変えることを 1 文で書く。
+`summary` に不足していた情報と次回の改善を 1〜2 文で書く。
 
 **完了報告**:
 ```
@@ -400,6 +430,7 @@ python scripts/gl.py update-issue {issue_id} \
 
 ## 注意事項
 
+- 差し戻しコメントには必ず `<!-- gitlab-idd:rework-cause:... -->` を付ける。付け忘れると、ワーカー側で原因不明として扱われ、記憶への評価返しが保留になる
 - リクエスターは実装を行わない。評価と判定のみ
 - **マージは必ず人間が行う**: レビュー完了時に自動マージはしない。`merge-mr` コマンドは使用しない
 - 自分が実装したイシューはロック期間（デフォルト 24 時間）中はレビューしない。ロック経過後はレビュー可能
