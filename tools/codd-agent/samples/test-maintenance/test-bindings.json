@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "case": {"file": "tests/cases/discount.yaml", "id": "DISC-01"},
+      "targets": [
+        {"suite": "unit", "file": "tests/test_discount.py", "selector": "DiscountTest::test_applies_at_10000"}
+      ]
+    },
+    {
+      "case": {"file": "tests/cases/discount.yaml", "id": "DISC-02"},
+      "targets": [
+        {"suite": "unit", "file": "tests/test_discount.py", "selector": "DiscountTest::test_none_below_10000"}
+      ]
+    }
+  ]
+}

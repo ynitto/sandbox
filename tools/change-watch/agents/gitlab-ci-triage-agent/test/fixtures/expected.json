@@ -1,0 +1,293 @@
+{
+  "traces/test_failure/pytest-failed.log": {
+    "category": "test_failure",
+    "pattern": "pytest-failed",
+    "excerpt_contains": [
+      "============================= FAILURES ============================="
+    ],
+    "fix": false
+  },
+  "traces/test_failure/python-unittest-failed.log": {
+    "category": "test_failure",
+    "pattern": "python-unittest-failed",
+    "excerpt_contains": [
+      "FAILED (failures=1)"
+    ],
+    "fix": false
+  },
+  "traces/test_failure/jest-failed.log": {
+    "category": "test_failure",
+    "pattern": "jest-failed",
+    "excerpt_contains": [
+      "  ● cart › handles an empty list"
+    ],
+    "fix": false
+  },
+  "traces/test_failure/go-test-failed.log": {
+    "category": "test_failure",
+    "pattern": "go-test-failed",
+    "excerpt_contains": [
+      "--- FAIL: TestCartTotal (0.00s)"
+    ],
+    "fix": false
+  },
+  "traces/test_failure/junit-failed.log": {
+    "category": "test_failure",
+    "pattern": "junit-failed",
+    "excerpt_contains": [
+      "[ERROR] Tests run: 16, Failures: 1, Errors: 0, Skipped: 0"
+    ],
+    "fix": false
+  },
+  "traces/test_failure/rspec-failed.log": {
+    "category": "test_failure",
+    "pattern": "rspec-failed",
+    "excerpt_contains": [
+      "15 examples, 1 failure"
+    ],
+    "fix": false
+  },
+  "traces/dependency/npm-package-not-found.log": {
+    "category": "dependency",
+    "pattern": "npm-package-not-found",
+    "excerpt_contains": [
+      "npm ERR! code E404"
+    ],
+    "fix": true
+  },
+  "traces/dependency/npm-resolve-conflict.log": {
+    "category": "dependency",
+    "pattern": "npm-resolve-conflict",
+    "excerpt_contains": [
+      "npm ERR! code ERESOLVE"
+    ],
+    "fix": true
+  },
+  "traces/dependency/npm-lockfile-out-of-sync.log": {
+    "category": "dependency",
+    "pattern": "npm-lockfile-out-of-sync",
+    "excerpt_contains": [
+      "npm error `npm ci` can only install packages when your package.json and package-lock.json are in sync."
+    ],
+    "fix": true
+  },
+  "traces/dependency/pip-no-matching-distribution.log": {
+    "category": "dependency",
+    "pattern": "pip-no-matching-distribution",
+    "excerpt_contains": [
+      "ERROR: Could not find a version that satisfies the requirement requests==99.0 (from versions: 2.31.0, 2.32.3)"
+    ],
+    "fix": true
+  },
+  "traces/dependency/pip-resolution-impossible.log": {
+    "category": "dependency",
+    "pattern": "pip-resolution-impossible",
+    "excerpt_contains": [
+      "ERROR: Cannot install example-widget because these package versions have conflicting dependencies."
+    ],
+    "fix": false
+  },
+  "traces/dependency/python-module-not-found.log": {
+    "category": "dependency",
+    "pattern": "python-module-not-found",
+    "excerpt_contains": [
+      "ModuleNotFoundError: No module named 'cart_helpers'"
+    ],
+    "fix": true
+  },
+  "traces/dependency/maven-artifact-not-found.log": {
+    "category": "dependency",
+    "pattern": "maven-artifact-not-found",
+    "excerpt_contains": [
+      "[ERROR] Could not resolve dependencies for project org.example:cart:jar:1.0"
+    ],
+    "fix": false
+  },
+  "traces/dependency/gradle-unresolved.log": {
+    "category": "dependency",
+    "pattern": "gradle-unresolved",
+    "excerpt_contains": [
+      "> Could not resolve all files for configuration ':compileClasspath'."
+    ],
+    "fix": false
+  },
+  "traces/dependency/go-module-missing.log": {
+    "category": "dependency",
+    "pattern": "go-module-missing",
+    "excerpt_contains": [
+      "cart.go:4:2: missing go.sum entry for module providing package example.org/deps"
+    ],
+    "fix": true
+  },
+  "traces/dependency/bundler-gem-not-found.log": {
+    "category": "dependency",
+    "pattern": "bundler-gem-not-found",
+    "excerpt_contains": [
+      "Could not find gem 'example-cart (= 99.0)' in rubygems repository"
+    ],
+    "fix": false
+  },
+  "traces/dependency/image-not-found.log": {
+    "category": "dependency",
+    "pattern": "image-not-found",
+    "excerpt_contains": [
+      "Error response from daemon: manifest for registry.example.org/cart:99 not found: manifest unknown"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/job-timeout-log.log": {
+    "category": "infrastructure",
+    "pattern": "job-timeout-log",
+    "excerpt_contains": [
+      "ERROR: Job failed: execution took longer than 10m0s seconds"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/runner-system-failure-log.log": {
+    "category": "infrastructure",
+    "pattern": "runner-system-failure-log",
+    "excerpt_contains": [
+      "ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/disk-full.log": {
+    "category": "infrastructure",
+    "pattern": "disk-full",
+    "excerpt_contains": [
+      "tar: dist/bundle.js: Cannot write: No space left on device"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/out-of-memory.log": {
+    "category": "infrastructure",
+    "pattern": "out-of-memory",
+    "excerpt_contains": [
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/network-unreachable.log": {
+    "category": "infrastructure",
+    "pattern": "network-unreachable",
+    "excerpt_contains": [
+      "curl: (6) Could not resolve host: registry.example.org"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/rate-limited.log": {
+    "category": "infrastructure",
+    "pattern": "rate-limited",
+    "excerpt_contains": [
+      "Error response from daemon: toomanyrequests: You have reached your pull rate limit"
+    ],
+    "fix": false
+  },
+  "traces/infrastructure/resource-quota-exceeded.log": {
+    "category": "infrastructure",
+    "pattern": "resource-quota-exceeded",
+    "excerpt_contains": [
+      "Error from server: pods \"example-cart\" is forbidden: exceeded quota: ci-jobs"
+    ],
+    "fix": false
+  },
+  "traces/configuration/command-not-found.log": {
+    "category": "configuration",
+    "pattern": "command-not-found",
+    "excerpt_contains": [
+      "/usr/bin/bash: line 147: ruff: command not found"
+    ],
+    "fix": false
+  },
+  "traces/configuration/variable-not-set.log": {
+    "category": "configuration",
+    "pattern": "variable-not-set",
+    "excerpt_contains": [
+      "./ci/deploy.sh: line 12: RELEASE_CHANNEL: unbound variable"
+    ],
+    "fix": false
+  },
+  "traces/configuration/auth-failed.log": {
+    "category": "configuration",
+    "pattern": "auth-failed",
+    "excerpt_contains": [
+      "remote: HTTP Basic: Access denied"
+    ],
+    "fix": false
+  },
+  "traces/configuration/script-not-executable.log": {
+    "category": "configuration",
+    "pattern": "script-not-executable",
+    "excerpt_contains": [
+      "/bin/bash: ./ci/build.sh: Permission denied"
+    ],
+    "fix": false
+  },
+  "traces/configuration/git-ref-not-found.log": {
+    "category": "configuration",
+    "pattern": "git-ref-not-found",
+    "excerpt_contains": [
+      "fatal: couldn't find remote ref release/v9"
+    ],
+    "fix": false
+  },
+  "traces/configuration/file-not-found.log": {
+    "category": "configuration",
+    "pattern": "file-not-found",
+    "excerpt_contains": [
+      "cat: build/manifest.json: No such file or directory"
+    ],
+    "fix": false
+  },
+  "traces/unknown/plain-exit-1.log": {
+    "category": "unknown",
+    "pattern": null,
+    "excerpt_contains": [
+      "Observed value: 2"
+    ],
+    "fix": false
+  },
+  "traces/mixed/oom-during-pytest.log": {
+    "category": "infrastructure",
+    "pattern": "out-of-memory",
+    "excerpt_contains": [
+      "ERROR: Job failed: exit code 137"
+    ],
+    "fix": false
+  },
+  "gitlab-quota-exceeded": {
+    "category": "infrastructure",
+    "pattern": "gitlab-quota-exceeded",
+    "failure_reason": "ci_quota_exceeded",
+    "excerpt_contains": [],
+    "fix": false
+  },
+  "gitlab-runner-failure": {
+    "category": "infrastructure",
+    "pattern": "gitlab-runner-failure",
+    "failure_reason": "runner_system_failure",
+    "excerpt_contains": [],
+    "fix": false
+  },
+  "gitlab-job-timeout": {
+    "category": "infrastructure",
+    "pattern": "gitlab-job-timeout",
+    "failure_reason": "stuck_or_timeout_failure",
+    "excerpt_contains": [],
+    "fix": false
+  },
+  "gitlab-ci-yaml-invalid": {
+    "category": "configuration",
+    "pattern": "gitlab-ci-yaml-invalid",
+    "failure_reason": "yaml_errors",
+    "excerpt_contains": [],
+    "fix": false
+  },
+  "gitlab-job-prerequisite": {
+    "category": "configuration",
+    "pattern": "gitlab-job-prerequisite",
+    "failure_reason": "missing_dependency_failure",
+    "excerpt_contains": [],
+    "fix": false
+  }
+}
