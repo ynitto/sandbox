@@ -1,0 +1,20 @@
+{
+  "kiro_exports": [
+    {
+      "name": "Kiro 定期エクスポート",
+      "dir": "/home/you/exports/kiro",
+      "max_age_hours": 26
+    }
+  ],
+  "knowledge": {
+    "path": "/home/you/.local/state/upkeep-health-check/knowledge.json",
+    "max_age_hours": 26,
+    "thresholds": {
+      "outbox_oldest_days": 3,
+      "outbox_pending": 10,
+      "dormant_oldest_days": 90,
+      "pending_oldest_days": 7,
+      "index_drift": 0
+    }
+  }
+}

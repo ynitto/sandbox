@@ -1,0 +1,46 @@
+# ~/.config/dagu/dags/upkeep-health-check.yaml にコピーし、/home/you の各パスを置き換える。
+description: "Kiro のログと記憶レポートを更新し、保全点検の結果を保存する"
+schedule: "50 2 * * *"
+type: graph
+hist_retention_days: 14
+steps:
+  - name: export-kiro
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/work/repo/tools/kiro-log-exporter/kiro_log_exporter.py"
+        - "/home/you/exports/kiro"
+    continue_on:
+      failure: true
+    timeout_sec: 600
+  - name: report-knowledge
+    depends: [export-kiro]
+    action: exec
+    with:
+      command: /bin/sh
+      args:
+        - "-c"
+        - |
+          set -eu
+          mkdir -p /home/you/.local/state/upkeep-health-check
+          tmp=$(mktemp /home/you/.local/state/upkeep-health-check/knowledge.XXXXXX)
+          trap 'rm -f "$tmp"' EXIT
+          /home/you/.local/bin/agent-audit --config /home/you/.agents/agent-audit.yaml \
+            report --kind knowledge --json > "$tmp"
+          mv -f "$tmp" /home/you/.local/state/upkeep-health-check/knowledge.json
+    continue_on:
+      failure: true
+    timeout_sec: 600
+  - name: check-upkeep
+    depends: [report-knowledge]
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/work/repo/tools/upkeep-health-check/upkeep_health_check.py"
+        - "--config"
+        - "/home/you/.config/upkeep-health-check/config.json"
+        - "--output"
+        - "/home/you/.local/state/upkeep-health-check/result.json"
+    timeout_sec: 60

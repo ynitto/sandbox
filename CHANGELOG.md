@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### upkeep-health-check を追加
+
+- Kiro の定期エクスポートと knowledge レポートの更新停止、記憶ストアの滞留を点検する。Dagu の夜間実行例と、朝の集約で使う JSON 判定の設定例を同梱する。
+
 ### gitlab-idd: 着手前の知識参照と学習ループ（4.5.0）
 
 - 着手前と差し戻し再着手時に記憶と wiki を検索し、イシューに結果を記録して `skill-selector` に渡す
