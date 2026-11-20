@@ -1,0 +1,94 @@
+# 平日朝に UTC 日付の変化を受け取り、GitLab の判断待ちを集計する。
+description: "GitLab の判断待ちをハブ Issue に報告する"
+schedule: "0 9 * * 1-5"
+type: graph
+max_active_runs: 1
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/env"
+steps:
+  - name: tick
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_decision_stagnation"
+        - "tick"
+        - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/trigger/date.txt"
+    timeout_sec: 30
+  - name: get
+    depends: [tick]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/change-watch.yaml"
+        - "get"
+        - "--source"
+        - "daily-report"
+        - "--consumer"
+        - "decision-stagnation"
+        - "--watch"
+        - "sha256"
+        - "--initial"
+        - "emit"
+        - "--one"
+    timeout_sec: 30
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: report
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_decision_stagnation"
+        - "report"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/report.md"
+    timeout_sec: 600
+  - name: post
+    depends: [report]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_decision_stagnation"
+        - "post"
+        - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/report.md"
+    timeout_sec: 120
+  - name: commit
+    depends: [post]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-decision-stagnation-agent/change-watch.yaml"
+        - "commit"
+        - "--source"
+        - "daily-report"
+        - "--consumer"
+        - "decision-stagnation"
+        - "${CHANGE.key}"
+    timeout_sec: 30

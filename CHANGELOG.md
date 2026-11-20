@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### change-watch: 判断待ちの滞留を可視化して催促する
+
+- gitlab-decision-stagnation-agent を追加。承認・レビュー待ちの MR と判断系ラベルの Issue を集約し、滞留日数つきのサマリをハブ Issue へ定期投稿する。しきい値超過は担当者メンションつきで目立たせる。初期設定は dry-run
+
 ### change-watch: GitLab Issue の変化を通知する
 
 - gitlab-notify-agent を追加。issue-mailbox 互換の文言を tmux・prompt・ログ・ハブ Issue に配信し、失敗した通知を SQLite の台帳から再送する。
