@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### efficiency-report: エージェント活用の効果を月次で共有する
+
+- GitLab の集計済みメトリクスから削減見積もりと改善の示唆をまとめ、ハブ issue に月 1 件投稿できる Dagu 例を追加する。初期設定は dry-run。
+
 ### change-watch: GitLab Issue の変化を通知する
 
 - gitlab-notify-agent を追加。issue-mailbox 互換の文言を tmux・prompt・ログ・ハブ Issue に配信し、失敗した通知を SQLite の台帳から再送する。
