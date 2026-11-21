@@ -6,13 +6,15 @@
 # 説明は丸ごと入れ替わる（前の説明に足すなら、前の説明を含めた全文を渡す）。DESCRIPTION が空なら何もしない（説明を消さない）。
 # 説明だけを書き換えても、GitLab はメールで知らせない。知らせたいときは COMMENT も渡す（書き換えたあと、同じ issue にコメントを足す）:
 #   dagu start change-watch-issue-hub-description -- DESCRIPTION="…" COMMENT="説明を更新しました"
+# 説明・コメントは JSON にしてファイルに書き、call にはそのファイルを渡す（長い文をコマンド行に載せない）。
+# 長い説明は、引数でなくファイルから渡す（コマンド行には長さの上限がある）。
 # 何行もある説明をファイルやコマンドの出力から作るなら、compose の --text=… を --text-file=<ファイル> か -- <コマンド> [引数...] にする。
 #
-#   compose  説明を JSON（{"description": …}）にする（change-watch の description。改行・引用符を含む文をそのまま渡せる）
+#   compose  説明を JSON（{"description": …}）にしてファイルに書く（change-watch の description。改行・引用符を含む文をそのまま渡せる）
 #   target   書き換える issue の API の URL を決める（change-watch の api-url）
 # description・api-url は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub を付けて呼ぶ。設定は読まない）。
 #   update   issue を更新する（change-watch call PUT）
-#   note     足すコメントを JSON（{"body": …}）にする（change-watch の note）
+#   note     足すコメントを JSON（{"body": …}）にしてファイルに書く（change-watch の note）
 #   comment  同じ issue にコメントを足す（change-watch call POST。COMMENT が空なら書かない）
 description: "決めた GitLab の issue の説明を書き換える（ISSUE_URL を渡さなければハブの issue）"
 type: graph
@@ -33,13 +35,15 @@ steps:
         - "gitlab_hub"
         - "description"
         - "--text=${params.DESCRIPTION}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-description.json"
     timeout_sec: 60
     output: UPDATE
   - name: target
     depends: [compose]
     preconditions:              # 説明があるときだけ（DESCRIPTION が空なら書かない）
       - condition: "${UPDATE}"
-        expected: 're:^\{"description"'
+        expected: "re:."
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
@@ -70,8 +74,8 @@ steps:
         - "${ISSUE_API}"
         - "--source"
         - "gitlab-hub-issue"     # 接続（トークン）と要求の間隔を借りる取得元
-        - "--json"
-        - "${UPDATE}"
+        - "--json-file"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-description.json"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
@@ -87,6 +91,8 @@ steps:
         - "gitlab_hub"
         - "note"
         - "--text=${params.COMMENT}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-description-note.json"
     timeout_sec: 60
     output: NOTE
   - name: comment
@@ -95,7 +101,7 @@ steps:
       - condition: "${ISSUE_API}"
         expected: "re:^https?://"
       - condition: "${NOTE}"
-        expected: 're:^\{"body"'
+        expected: "re:."
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
@@ -111,8 +117,8 @@ steps:
         - "${ISSUE_API}/notes"
         - "--source"
         - "gitlab-hub-issue"
-        - "--json"
-        - "${NOTE}"
+        - "--json-file"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-description-note.json"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3

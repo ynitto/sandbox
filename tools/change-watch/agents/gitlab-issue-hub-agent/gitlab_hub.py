@@ -13,6 +13,9 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> note -- <コマンド> [引数...]     コマンドの標準出力
         issue に足すコメントの本文を {"body": "..."} の JSON で出す（change-watch call の --json に渡す）。
         本文が空なら何も出さない。コマンドが失敗したら何も出さず、その終了コードで終わる。
+        --out <ファイル> を付けると、JSON をそのファイルに書き、標準出力にはファイルのパスだけを出す（call の --json-file に渡す）。
+        長い文は JSON にするとコマンド行に収まらないことがある（Windows は 8191 文字まで）ので、ファイルで渡す。
+        --text が空で --text-file があれば、ファイルの中身を使う（ワークフローの引数を両方書いておける）。
 
     change-watch --plugin <このファイル> fields title="【完了】${CHANGE.record.title}" add_labels=完了
         issue の更新の JSON（{"title": "...", "add_labels": "..."}）を出す（change-watch call PUT の --json に渡す）。
@@ -266,7 +269,8 @@ def _read_text(a) -> tuple[int, str]:
     if command[:1] == ["--"]:
         command = command[1:]
     change = getattr(a, "change", None)
-    given = (a.text is not None, bool(a.text_file), bool(command), change is not None)
+    others = (bool(a.text_file), bool(command), change is not None)
+    given = (a.text is not None and (a.text != "" or not any(others)), *others)   # 空の --text は、ほかの渡し方があれば無いものとする
     if sum(given) != 1:
         extra = "・--change" if a.cmd == "check-request" else ""
         print(f"本文は --text・--text-file・-- <コマンド>{extra} のどれか 1 つで渡してください", file=sys.stderr)
@@ -296,9 +300,25 @@ def cmd_note(a) -> int:
     code, text = _read_text(a)
     if code != OK:
         return code
-    if text.strip():
-        print(note_json(text, "description" if a.cmd == "description" else "body"))
-    return OK                               # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+    if not text.strip():
+        return OK                           # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+    return _emit(note_json(text, "description" if a.cmd == "description" else "body"), a.out)
+
+
+def _emit(payload: str, out: str | None) -> int:
+    """JSON を標準出力に出す。--out があればファイルに書いて、パスだけを出す（長い JSON をコマンド行に載せないため）。"""
+    if not out:
+        print(payload)
+        return OK
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(payload)
+    except OSError as e:
+        print(f"--out のファイルに書けません: {e}", file=sys.stderr)
+        return USAGE
+    print(out)
+    return OK
 
 
 def cmd_check_request(a) -> int:
@@ -384,8 +404,7 @@ def cmd_fields(a) -> int:
     if not out:
         print("項目がありません（title=... のように渡してください）", file=sys.stderr)
         return USAGE
-    print(json.dumps(out))
-    return OK
+    return _emit(json.dumps(out), a.out)
 
 
 _CHECK = "依頼の書式を調べて、結果を JSON で出す（ワークフローの preconditions で種別ごとに分ける）"
@@ -393,6 +412,7 @@ _NOTE = "コメントの本文を {\"body\": ...} で出す（change-watch call 
 _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-watch call PUT の --json に渡す）"
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
 _OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
+_OUT = "JSON をこのファイルに書き、標準出力にはパスだけを出す（call の --json-file に渡す。長い文をコマンド行に載せない）"
 _API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
 
 
@@ -400,16 +420,18 @@ def _text_args(p, cmd: str) -> None:
     p.set_defaults(cmd=cmd)
     p.add_argument("--text", default=None, help="本文（- で始まる文も渡せるよう、--text=... の形で書く）")
     p.add_argument("--text-file", help="本文のファイル（UTF-8）")
+    p.add_argument("--out", help=_OUT)
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
 
 
 def _check_args(p) -> None:
-    _text_args(p, "check-request")
+    _text_args(p, "check-request")              # --out は使わない（結果は短い）
     p.add_argument("--change", help="get が出した JSON（record.body を調べる）")
     p.add_argument("--kinds-file", help="追加・置き換えする種別の JSON ファイル（UTF-8）")
 
 
 def _fields_args(p) -> None:
+    p.add_argument("--out", help=_OUT)
     p.add_argument("pairs", nargs="+", metavar="名前=値", help="title=...・add_labels=...・description=...・state_event=close など")
 
 

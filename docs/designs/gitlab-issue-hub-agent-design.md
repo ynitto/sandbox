@@ -44,9 +44,9 @@ Dagu: change-watch-issue-hub（毎分。例）
            retry_policy: 終了コード 3 だけ。continue_on: skipped・failure
   commit   preconditions: CHANGE.key があるとき。change-watch commit --consumer hub ${CHANGE.key}
 
-Dagu: change-watch-issue-hub-update（予定なし。dagu start … -- COMMENT=…。例）
-  compose  change-watch note --text=${params.COMMENT}                                       → NOTE
-  comment  preconditions: NOTE が ^{"body"。change-watch call POST "<issue の API>/notes" --json "${NOTE}"
+Dagu: change-watch-issue-hub-update（予定なし。dagu start … -- COMMENT=… か COMMENT_FILE=…。例）
+  compose  change-watch note --text=${params.COMMENT} --text-file=${params.COMMENT_FILE} --out <ファイル>   → NOTE（ファイルのパス）
+  comment  preconditions: NOTE が空でない。change-watch call POST "<issue の API>/notes" --json-file <ファイル>
   （issue の更新は、同じ形で change-watch fields title=… → call PUT "<issue の API>" --json "${UPDATE}" のステップを書く）
 
 examples/change-watch-issue-hub-get-post（インストーラは置かない。get と post の一通りの例）
@@ -56,11 +56,11 @@ examples/change-watch-issue-hub-get-post（インストーラは置かない。g
   commit   commit --refresh（取得元 gitlab-hub-issue の item で取り直し、自分の変更を次の変化にしない）
 
 examples/change-watch-issue-hub-description（インストーラは置かない。予定なし。dagu start … -- ISSUE_URL=… DESCRIPTION=… COMMENT=…）
-  compose  change-watch description --text=${params.DESCRIPTION}                            → UPDATE（{"description": …}）
-  target   preconditions: UPDATE が ^{"description"。change-watch api-url --url=${params.ISSUE_URL}   → ISSUE_API
-  update   change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"
-  note     change-watch note --text=${params.COMMENT}                                       → NOTE
-  comment  preconditions: ISSUE_API が ^https?://・NOTE が ^{"body"。change-watch call POST "${ISSUE_API}/notes" --json "${NOTE}"
+  compose  change-watch description --text=${params.DESCRIPTION} --out <ファイル>             → UPDATE（ファイルのパス）
+  target   preconditions: UPDATE が空でない。change-watch api-url --url=${params.ISSUE_URL}   → ISSUE_API
+  update   change-watch call PUT "${ISSUE_API}" --json-file <ファイル>
+  note     change-watch note --text=${params.COMMENT} --out <ファイル>                       → NOTE（ファイルのパス）
+  comment  preconditions: ISSUE_API が ^https?://・NOTE が空でない。change-watch call POST "${ISSUE_API}/notes" --json-file <ファイル>
            （GitLab は説明の変更だけではメールを送らないので、知らせたいときにコメントを足す）
 
 examples/change-watch-issue-hub-prune（インストーラは置かない。5 分ごと。AUTHOR=… KEEP_DAYS=…）
@@ -70,6 +70,10 @@ examples/change-watch-issue-hub-prune（インストーラは置かない。5 �
   commit   preconditions: DECISION が delete か keep。wait は記録せず、次の起動でもう一度見る
            （get は key の小さい順に返すので、待っているコメントの後ろはそれより新しい。初回は emit で今あるコメントも見る）
 ```
+
+本文の JSON はコマンド行に載せず、`--out` でファイルに書いて `call --json-file` に渡す。コマンド行には長さの上限があり
+（Windows の CreateProcess は 32767 文字、cmd を通すと 8191 文字）、日本語を `\uXXXX` で書く JSON は本文の 6 倍ほどになるため、
+数千字のコメントで「command line is too long」になる。引数で受ける `COMMENT` も同じ上限を受けるので、長い文は `COMMENT_FILE` で渡す。
 
 ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
 `api-url` が API の URL を先に作って渡す。接続と要求の間隔は取得元 `gitlab-hub-issue` のものを借りる。
