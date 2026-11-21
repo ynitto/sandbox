@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### cloud-waste-inventory の週次棚卸しを追加
+
+- 読み取り専用の Azure CLI で停止中 VM・未接続ディスク・過大 SKU を検出し、設定単価から月額削減見込みを算出する。GitLab ハブ issue への投稿は既定で dry-run とし、実投稿時は同日の重複を抑制する。週次の Dagu 例を同梱する。
+
 ### weekly-report
 
 - GitLab の複数プロジェクトを集約し、週次レポートとリリースノートの下書きを生成する。ハブ issue への投稿は明示的に有効化した場合に限り、同じ期間の投稿をスキップする。Dagu の週次実行例と Power Automate の配信レシピを同梱する。

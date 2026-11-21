@@ -1,0 +1,5 @@
+[
+  {"id": "/disk/spare", "name": "spare", "sku": {"name": "Premium_LRS"}, "diskSizeGb": 128, "diskState": "Unattached"},
+  {"id": "/disk/unpriced", "name": "unpriced", "sku": {"name": "Premium_LRS"}, "diskSizeGb": 256, "diskState": "Unattached"},
+  {"id": "/disk/used", "name": "used", "sku": {"name": "Premium_LRS"}, "diskSizeGb": 128, "diskState": "Attached"}
+]
