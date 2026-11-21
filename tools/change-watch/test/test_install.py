@@ -135,7 +135,7 @@ class AgentInstallTest(unittest.TestCase):
     def test_every_agent_lands_in_the_same_layout(self):
         import install
         names = install.available_agents()
-        self.assertEqual(names, ["gitlab-ci-triage-agent", "gitlab-issue-agent", "gitlab-issue-hub-agent", "gitlab-merge-followup-agent",
+        self.assertEqual(names, ["gitlab-ci-triage-agent", "gitlab-decision-stagnation-agent", "gitlab-issue-agent", "gitlab-issue-hub-agent", "gitlab-merge-followup-agent",
                                  "gitlab-mr-review-agent", "gitlab-notify-agent",
                                  "redmine-ticket-agent"])
         out = self.install("install", *[x for n in names for x in ("--agent", n)])
