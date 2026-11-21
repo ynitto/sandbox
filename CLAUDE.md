@@ -66,3 +66,4 @@
   画面や動きの変更は minor、直しだけは patch）。自動更新は配布物の版を `package.json` の `version` で
   比べるので、上げ忘れると新しい exe を配っても各 PC に「最新です」と出て届かない。CHANGELOG の
   agent-app の項に同じ版を書く。
+- CHANGELOG.md は直接編集しない。変更の記録は `changelog/unreleased/` にフラグメント（`<対象>-<スラッグ>.md`、内容は `### 見出し`＋箇条書き）を1件1ファイルで置く。集約は `tools/changelog-collect` で行う。
