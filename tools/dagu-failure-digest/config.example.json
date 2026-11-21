@@ -1,5 +1,6 @@
 {
   "history_command": ["dagu", "history", "{dag}", "--format", "json", "--limit", "100"],
+  "history_limit": 100,
   "dags": ["nightly-check-digest"],
   "state_file": "~/.local/state/dagu-failure-digest/state.json",
   "dry_run": true,

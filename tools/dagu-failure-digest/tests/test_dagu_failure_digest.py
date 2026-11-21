@@ -82,8 +82,10 @@ class DigestTest(unittest.TestCase):
 
     def test_failure_status_and_steps(self):
         selected = ["FAILED", "error", "Partially_Succeeded", "partial_success"]
-        ignored = ["succeeded", "running", "queued", "cancelled"]
-        self.history([self.record(status, status) for status in selected + ignored])
+        ignored = ["running", "queued", "cancelled"]
+        success = self.record("clean", "succeeded")
+        success["nodes"] = [{"name": "準備", "status": "succeeded"}]
+        self.history([self.record(status, status) for status in selected + ignored] + [success])
         code, body, _ = self.invoke()
         self.assertEqual(code, 0)
         self.assertTrue(body.startswith("<!-- dagu-failure-digest 2026-11-21 -->\n"))
@@ -91,8 +93,17 @@ class DigestTest(unittest.TestCase):
             self.assertIn(f"実行 ID: {digest.markdown(status)}", body)
         for status in ignored:
             self.assertNotIn(f"実行 ID: {status}", body)
+        self.assertNotIn("実行 ID: clean", body)
         self.assertIn("失敗ステップ: 収集", body)
         self.assertNotIn("準備", body)
+
+    def test_succeeded_run_with_failed_step(self):
+        run = self.record("step-failure", "succeeded")
+        run["nodes"] = [{"name": "収集", "status": "failed"}]
+        self.history([run])
+        code, body, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertIn("失敗ステップ: 収集 — 実行 ID: step-failure", body)
 
     def test_watermark_and_reported_ids(self):
         self.state(self.at(2), ["duplicate"])
@@ -101,7 +112,45 @@ class DigestTest(unittest.TestCase):
         code, body, _ = self.invoke()
         self.assertEqual(code, 0)
         self.assertIn("実行 ID: new", body)
+        self.assertIn("実行 ID: boundary", body)
+        self.assertEqual(body.count("実行 ID:"), 2)
+
+    def test_history_limit_keeps_oldest_watermark(self):
+        self.config.update(history_limit=2, dry_run=False)
+        success = self.record("latest", "succeeded", hours=0.5)
+        success["nodes"] = []
+        self.history([success, self.record("first")])
+        code, body, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertIn("実行 ID: first", body)
+        self.assertIn("### ⚠️ 注意（履歴の上限）", body)
+        self.assertIn("nightly — 履歴が上限 2 件に達した", body)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["sources"]["nightly"]["watermark"],
+                         digest.parse_time(self.at(1)).isoformat())
+
+        self.history([success, self.record("same-time")])
+        code, body, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertIn("実行 ID: same-time", body)
         self.assertEqual(body.count("実行 ID:"), 1)
+
+        code, body, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertNotIn("実行 ID:", body)
+        self.assertIn("### ⚠️ 注意（履歴の上限）", body)
+        self.assertEqual(self.opener.call_count, 3)
+
+    def test_missing_finished_at_ignores_watermark_for_unreported_failure(self):
+        self.state(self.at(2), ["duplicate"])
+        rows = [self.record("unfinished", hours=3), self.record("duplicate", hours=3)]
+        for row in rows:
+            del row["finishedAt"]
+        self.history(rows)
+        code, body, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertIn("実行 ID: unfinished", body)
+        self.assertNotIn("実行 ID: duplicate", body)
 
     def test_dry_run_preserves_pending(self):
         self.config["dry_run"] = False
@@ -119,8 +168,10 @@ class DigestTest(unittest.TestCase):
         self.assertFalse(self.state_path.with_suffix(".json.lock").exists())
 
     def test_post_and_second_run(self):
+        latest = self.record("latest", "succeeded", hours=0.5)
+        latest["nodes"] = []
         self.history([self.record("older", hours=2), self.record("new"),
-                      self.record("latest", "succeeded", hours=0.5)])
+                      latest])
         with patch.dict(os.environ, {"DAGU_FAILURE_DIGEST_DRY_RUN": "0"}):
             code, body, _ = self.invoke()
             second = self.invoke()
@@ -223,10 +274,21 @@ class DigestTest(unittest.TestCase):
         self.assertIn("実行 ID: new", body)
         self.assertIn("状態ファイルが壊れている", stderr)
 
+    def test_state_save_failure_after_post(self):
+        self.config["dry_run"] = False
+        self.history([self.record("new")])
+        with patch.object(digest, "save_state", side_effect=OSError("disk full")):
+            code, _, stderr = self.invoke()
+        self.assertEqual(code, 2)
+        self.opener.assert_called_once()
+        self.assertIn("状態保存に失敗しました", stderr)
+        self.assertIn("重複して投稿される可能性があります", stderr)
+
     def test_invalid_config(self):
         for updates in (
             {"dags": []}, {"dry_run": "true"}, {"history_command": "dagu"},
             {"timeout_seconds": True}, {"lookback_hours": float("inf")}, {"state_file": 0},
+            *({"history_limit": value} for value in (True, 0, -1, 2.0, "2", None)),
         ):
             with self.subTest(updates=updates), patch.dict(self.config, updates):
                 self.assertEqual(self.invoke()[0], 2)

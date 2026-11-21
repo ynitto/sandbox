@@ -31,8 +31,16 @@ class Run:
     run_id: str
     status: str
     started: datetime | None
+    finished: datetime | None
     timestamp: datetime
     failed_steps: list[str]
+
+    @property
+    def is_failure(self):
+        """実行の失敗と、成功扱いの実行に含まれるステップ失敗を判定する。"""
+        return self.status in FAILURE_STATUSES or (
+            self.status == "succeeded" and bool(self.failed_steps)
+        )
 
 
 def valid_text(value):
@@ -44,13 +52,17 @@ def load_config(path):
     if not isinstance(config, dict):
         raise ValueError("設定は JSON オブジェクトで指定してください")
     unknown = config.keys() - {
-        "history_command", "dags", "state_file", "dry_run", "timeout_seconds", "lookback_hours",
+        "history_command", "history_limit", "dags", "state_file", "dry_run",
+        "timeout_seconds", "lookback_hours",
     }
     if unknown:
         raise ValueError(f"未定義の設定項目があります（{', '.join(sorted(unknown))}）")
     command = config.get("history_command")
     if not isinstance(command, list) or not command or not all(map(valid_text, command)):
         raise ValueError("history_command は空でない文字列の配列を指定してください")
+    history_limit = config.setdefault("history_limit", 100)
+    if type(history_limit) is not int or history_limit <= 0:
+        raise ValueError("history_limit は正の整数を指定してください")
     per_dag = any("{dag}" in arg for arg in command)
     dags = config.get("dags", [])
     if (not isinstance(dags, list) or not all(map(valid_text, dags))
@@ -110,17 +122,18 @@ def normalize(row, dag):
         return None
     run_id = first_text(row, "dagRunId", "runId", "id")
     started = first_time(row, "startedAt", "started_at", "createdAt")
-    timestamp = first_time(row, "finishedAt", "finished_at", "updatedAt") or started
+    finished = first_time(row, "finishedAt", "finished_at")
+    timestamp = finished or first_time(row, "updatedAt") or started
     if not run_id or timestamp is None:
         return None
     steps = first_list(row, "nodes", "steps") or []
     failed_steps = [
-        step["name"] for step in steps
-        if isinstance(step, dict) and valid_text(step.get("name"))
-        and first_text(step, "status").casefold() in FAILURE_STATUSES
+        first_text(step, "name") or "ステップ不明" for step in steps
+        if isinstance(step, dict) and first_text(step, "status").casefold() in FAILURE_STATUSES
     ]
     return Run(first_text(row, "name", "dag", "dagName") or dag or "DAG 名不明",
-               run_id, first_text(row, "status").casefold(), started, timestamp, failed_steps)
+               run_id, first_text(row, "status").casefold(), started, finished, timestamp,
+               failed_steps)
 
 
 def read_history(command, source, cwd, timeout):
@@ -146,7 +159,8 @@ def read_history(command, source, cwd, timeout):
     if not isinstance(rows, list):
         raise HistoryError("履歴の JSON に実行の配列がありません")
     dag = None if source == ALL else source
-    return [run for row in rows if (run := normalize(row, dag)) is not None]
+    runs = [run for row in rows if (run := normalize(row, dag)) is not None]
+    return runs, len(rows)
 
 
 def load_state(path):
@@ -188,7 +202,8 @@ def pending_runs(runs, entry, since):
     seen = set(previous_ids)
     pending = []
     for run in sorted(runs, key=lambda run: run.timestamp, reverse=True):
-        if run.timestamp > watermark and run.status in FAILURE_STATUSES and run.run_id not in seen:
+        if (run.is_failure and run.run_id not in seen
+                and (run.finished is None or run.timestamp >= watermark)):
             pending.append(run)
             seen.add(run.run_id)
     return pending, previous_ids
@@ -203,7 +218,7 @@ def markdown(text):
                   lambda match: f"&#{ord(match[0])};", line)
 
 
-def render(runs, errors, day):
+def render(runs, errors, limited_sources, history_limit, day):
     lines = [f"<!-- dagu-failure-digest {day} -->", f"## Dagu 実行失敗サマリ（{day}）", ""]
     for run in sorted(runs, key=lambda run: run.timestamp, reverse=True):
         started = run.started.isoformat() if run.started else "開始時刻不明"
@@ -219,6 +234,13 @@ def render(runs, errors, day):
             lines.append(f"- {label} — {markdown(reason)}")
     if not runs and not errors:
         lines.append("✅ Dagu の実行失敗はありません")
+    if limited_sources:
+        lines.extend(["", "### ⚠️ 注意（履歴の上限）", ""])
+        for source in limited_sources:
+            label = "全体" if source == ALL else markdown(source)
+            lines.append(f"- {label} — 履歴が上限 {history_limit} 件に達したため、それより古い失敗を"
+                         "取りこぼした可能性があります。history_command の --limit と history_limit を"
+                         "大きくしてください。")
     return "\n".join(lines) + "\n"
 
 
@@ -269,33 +291,48 @@ def run(config, cwd, day, dry_run):
         sources = state["sources"]
         failures = []
         errors = {}
+        limited_sources = []
+        history_limit = config["history_limit"]
         for source, command in config["commands"].items():
             try:
-                runs = read_history(command, source, cwd, timeout)
+                runs, count = read_history(command, source, cwd, timeout)
             except HistoryError as error:
                 errors[source] = str(error)
                 continue
+            limited = count >= history_limit
+            if limited:
+                limited_sources.append(source)
             pending, previous_ids = pending_runs(runs, sources.get(source), config["since"])
             failures.extend(pending)
             if runs:
+                watermark = min if limited else max
                 sources[source] = {
-                    "watermark": max(run.timestamp for run in runs).isoformat(),
+                    "watermark": watermark(run.timestamp for run in runs).isoformat(),
                     "reported_ids": ([run.run_id for run in pending] + previous_ids)[:1000],
                 }
 
-        report = render(failures, errors, day)
+        report = render(failures, errors, limited_sources, history_limit, day)
         sys.stdout.write(report)
+        posted = False
         if dry_run:
             print("dry-run のため投稿しません", file=sys.stderr)
-        elif failures or errors:
+        elif failures or errors or limited_sources:
             post(report, timeout)
+            posted = True
             print("GitLab ハブ issue に投稿しました", file=sys.stderr)
         else:
             print("投稿対象がないため投稿しません", file=sys.stderr)
 
         all_failed = len(errors) == len(config["commands"])
         if not dry_run and not all_failed:
-            save_state(path, state)
+            try:
+                save_state(path, state)
+            except OSError as error:
+                message = "状態保存に失敗しました。"
+                if posted:
+                    message += "次回に同じ内容が重複して投稿される可能性があります。"
+                print(f"dagu-failure-digest: {message} {error}", file=sys.stderr)
+                return 2
         return 3 if all_failed else 0
 
 
