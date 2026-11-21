@@ -16,5 +16,12 @@
       "pending_oldest_days": 7,
       "index_drift": 0
     }
-  }
+  },
+  "change_watch": [
+    {
+      "name": "change-watch",
+      "state_dir": "/home/you/.local/state/change-watch",
+      "max_age_hours": 1
+    }
+  ]
 }

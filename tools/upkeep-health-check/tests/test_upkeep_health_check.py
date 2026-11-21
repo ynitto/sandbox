@@ -245,5 +245,106 @@ class UpkeepHealthCheckTests(unittest.TestCase):
                 self.assertEqual(item["threshold"], 24)
 
 
+class ChangeWatchTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.state_dir = root / "change-watch"
+        self.config_file = root / "config.json"
+        self.output_file = root / "result.json"
+        self.entry = {"name": "change-watch", "state_dir": "change-watch", "max_age_hours": 1}
+        self.config = {"change_watch": [self.entry]}
+
+    run_cli = UpkeepHealthCheckTests.run_cli
+    check = UpkeepHealthCheckTests.check
+
+    def write_state(self, age_hours, filename="state.db"):
+        self.state_dir.mkdir(exist_ok=True)
+        path = self.state_dir / filename
+        path.touch()
+        mtime = NOW_TIMESTAMP - age_hours * 3600
+        os.utime(path, (mtime, mtime))
+
+    def test_fresh_change_watch_database(self):
+        self.write_state(0.5)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["kind"], "change_watch")
+        self.assertEqual(entry["name"], "change-watch")
+        self.assertEqual(entry["status"], "ok")
+
+    def test_stale_change_watch_database(self):
+        self.write_state(2)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "stale")
+        self.assertEqual(entry["value"], 2)
+        self.assertEqual(entry["threshold"], 1)
+
+    def test_missing_change_watch_database(self):
+        for create_directory in (False, True):
+            with self.subTest(create_directory=create_directory):
+                if create_directory:
+                    self.state_dir.mkdir()
+                entry, = self.check()["items"]
+                self.assertEqual(entry["status"], "unknown")
+                self.assertEqual(entry["detail"], "状態 DB を確認できません")
+                self.assertIsNone(entry["value"])
+                self.assertEqual(entry["threshold"], 1)
+
+    def test_change_watch_uses_newer_wal(self):
+        self.write_state(2)
+        self.write_state(0.25, "state.db-wal")
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["value"], 0.25)
+
+    def test_change_watch_at_threshold_is_ok(self):
+        self.write_state(1)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["value"], 1)
+        self.assertEqual(entry["threshold"], 1)
+
+    def test_change_watch_wal_only(self):
+        self.write_state(0.5, "state.db-wal")
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["value"], 0.5)
+
+    def test_future_change_watch_mtime_is_unknown(self):
+        self.write_state(-1)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "unknown")
+        self.assertIn("時刻逆転", entry["detail"])
+
+    def test_change_watch_without_threshold(self):
+        del self.entry["max_age_hours"]
+        self.write_state(999)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertIsNone(entry["threshold"])
+
+    def test_invalid_change_watch_configuration_returns_two(self):
+        for entries, error in (
+            ([dict(self.entry, max_age_hours="1")], "max_age_hours"),
+            ([{"state_dir": "change-watch"}], "名前"),
+            ({}, "配列"),
+            ([], "点検対象を設定してください"),
+        ):
+            with self.subTest(entries=entries):
+                self.config["change_watch"] = entries
+                run = self.run_cli()
+                self.assertEqual(run.returncode, 2)
+                self.assertIn(error, run.stderr)
+                self.assertFalse(self.output_file.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
