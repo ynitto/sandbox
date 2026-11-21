@@ -54,6 +54,7 @@ class FakeGitLab:
     def __init__(self):
         self.notes: list[dict] = []
         self.posted: list[str] = []
+        self.other_posted: list[str] = []
         self.updates: list[dict] = []
         self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
         self.other = {"iid": OTHER, "title": "ほかの issue", "description": "前の説明", "labels": [], "state": "opened"}
@@ -85,9 +86,13 @@ class FakeGitLab:
             def do_POST(self):
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["body"]
+                if urlparse(self.path).path == other_path + "/notes":
+                    with outer.lock:
+                        outer.other_posted.append(body)
+                    return self._send(201, {"id": 1, "body": body})
                 if urlparse(self.path).path != path:
                     return self._send(404, {"message": "404 Not found"})
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["body"]
                 with outer.lock:
                     outer.posted.append(body)
                     note = outer._add(body, BOT)
@@ -545,15 +550,24 @@ class ExampleFlowTest(unittest.TestCase):
 
     def test_description_example(self):
         dag = "examples/change-watch-issue-hub-description.yaml.example"
-        done = {"compose": 0, "target": 0, "update": 0}
-        self.assertEqual(self.run_dag(dag, DESCRIPTION='## 状況\n"夜間バッチ" 済\n/close', ISSUE_URL=""), done)   # 指さなければハブ
+        done = {"compose": 0, "target": 0, "update": 0, "note": 0, "comment": None}
+        self.assertEqual(self.run_dag(dag, DESCRIPTION='## 状況\n"夜間バッチ" 済\n/close', ISSUE_URL="", COMMENT=""), done)   # 指さなければハブ
         self.assertEqual(self.gl.issue["description"], '## 状況\n"夜間バッチ" 済\n\\/close')
-        self.assertEqual(self.run_dag(dag, DESCRIPTION="書き換えた説明", ISSUE_URL=f"{self.gl.url}/{PROJECT}/-/issues/{OTHER}"), done)
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="書き換えた説明", ISSUE_URL=f"{self.gl.url}/{PROJECT}/-/issues/{OTHER}", COMMENT=""), done)
         self.assertEqual(self.gl.other["description"], "書き換えた説明")              # URL で指した issue だけが変わる
         self.assertEqual(self.gl.issue["description"], '## 状況\n"夜間バッチ" 済\n\\/close')
-        self.assertEqual(self.run_dag(dag, DESCRIPTION="", ISSUE_URL=""), {"compose": 0, "target": None, "update": None})   # 空なら消さない
-        self.assertEqual(self.run_dag(dag, DESCRIPTION="x", ISSUE_URL="https://example.com/not-an-issue")["target"], gh.USAGE)
-        self.assertEqual(len(self.gl.updates), 1)
+        self.assertEqual(self.gl.posted, [])                                         # COMMENT が空ならコメントしない
+        # 説明だけの変更では GitLab がメールを送らないので、COMMENT を渡すと書き換えた issue にコメントを足す。
+        told = {**done, "comment": 0}
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="二度目", ISSUE_URL="", COMMENT="説明を更新しました"), told)
+        self.assertEqual(self.gl.posted, ["説明を更新しました"])
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="三度目", ISSUE_URL=f"{self.gl.url}/{PROJECT}/-/issues/{OTHER}",
+                                      COMMENT="説明を更新しました"), told)
+        self.assertEqual((self.gl.other_posted, len(self.gl.posted)), (["説明を更新しました"], 1))
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="", ISSUE_URL="", COMMENT="説明なし")["comment"], None)   # 空なら消さず、コメントもしない
+        self.assertEqual(self.run_dag(dag, DESCRIPTION="x", ISSUE_URL="https://example.com/not-an-issue", COMMENT="")["target"], gh.USAGE)
+        self.assertEqual(len(self.gl.updates), 2)
+        self.assertEqual(len(self.gl.posted), 1)
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})
