@@ -1,0 +1,15 @@
+{
+  "provider": "azure",
+  "commands": {
+    "vms": ["az", "vm", "list", "--show-details", "--output", "json"],
+    "disks": ["az", "disk", "list", "--output", "json"]
+  },
+  "timeout_seconds": 60,
+  "dry_run": true,
+  "currency": "JPY",
+  "oversized_sizes": {
+    "Standard_D8s_v5": "Standard_D4s_v5"
+  },
+  "vm_monthly_prices": {},
+  "disk_monthly_prices": {}
+}

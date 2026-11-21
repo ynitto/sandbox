@@ -1,0 +1,6 @@
+[
+  {"id": "/vm/deallocated", "name": "deallocated", "hardwareProfile": {"vmSize": "Standard_D8s_v5"}, "powerState": "VM deallocated"},
+  {"id": "/vm/stopped", "name": "stopped", "hardwareProfile": {"vmSize": "Standard_Unknown"}, "powerState": "VM stopped"},
+  {"id": "/vm/oversized", "name": "oversized", "hardwareProfile": {"vmSize": "Standard_D8s_v5"}, "powerState": "VM running"},
+  {"id": "/vm/normal", "name": "normal", "hardwareProfile": {"vmSize": "Standard_D4s_v5"}, "powerState": "VM running"}
+]
