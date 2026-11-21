@@ -10,6 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - gitlab-mr-review-agent に companion プラグイン `iac` を追加。MR 差分の IaC（Terraform / Bicep / ARM / CloudFormation）変更を決定的ルールで検査し、公開範囲の拡大・IAM ワイルドカード・ネットワーク変更を検出したら警告コメントと追加承認ラベルを付ける。初期設定は dry-run
 
+### change-watch: 判断待ちの滞留を可視化して催促する
+
+- gitlab-decision-stagnation-agent を追加。承認・レビュー待ちの MR と判断系ラベルの Issue を集約し、滞留日数つきのサマリをハブ Issue へ定期投稿する。しきい値超過は担当者メンションつきで目立たせる。初期設定は dry-run
+
 ### change-watch: issue の説明を書き換えたことをメールで知らせる
 
 - gitlab-issue-hub-agent の説明を書き換える例に `COMMENT` を足す。GitLab は説明の変更だけではメールを送らないので、渡すと書き換えた issue にコメントも足す。
