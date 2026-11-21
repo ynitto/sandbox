@@ -1,0 +1,10 @@
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-decision-stagnation-agent
+
+sources:
+  daily-report:
+    folder:
+      path: trigger
+      include: ["date.txt"]
+      hash: true
+      settle_sec: 0
