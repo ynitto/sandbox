@@ -199,7 +199,7 @@ Dagu のワークフローから change-watch の CLI を呼んで、ハブの i
 どのステップも change-watch を `--plugin gitlab_hub` を付けて呼ぶ（下の「このエージェントが足すコマンド」。`<issue の API>` は `{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}` と書き、
 change-watch が issue の URL から作る）。コメントを見るなら `get` を `--source gitlab-hub-notes` にする。
 
-変わったことは GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める。
+コメントを足すと GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める（題や説明を変えただけでは届かない）。
 
 ## 決めた issue の説明を書き換える例（`examples/change-watch-issue-hub-description.yaml.example`）
 
@@ -219,6 +219,13 @@ dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.examp
 | `compose` | `change-watch description --text=…` | 説明を `call` に渡す形にする。何行もある説明は `--text-file=<ファイル>` か `-- <コマンド> [引数...]`（標準出力が説明になる）で渡す |
 | `target` | `change-watch api-url --url=…` | 書き換える issue を決める（URL が空ならハブの issue） |
 | `update` | `change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"` | issue を更新する |
+| `note` → `comment` | `change-watch note --text=…` → `change-watch call POST "${ISSUE_API}/notes" --json "${NOTE}"` | `COMMENT` を渡したときだけ、同じ issue にコメントを足す |
+
+説明だけを書き換えても、GitLab はメールで知らせない。知らせたいときは `COMMENT` も渡す。
+
+```bash
+dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが終わりました" COMMENT="説明を更新しました"
+```
 
 前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
 書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
@@ -234,7 +241,17 @@ dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.examp
 
 種別で振り分けるときは「依頼の書き方」の形にし、[Power Automate の組み方](power-automate/README.md) に沿って本文を作る。
 
-**ハブの issue → メール（頼む）**。GitLab がこの issue を見ている人へ、コメント・ラベル・状態などの変化をメールで知らせる。
+**ハブの issue → メール（頼む）**。GitLab がこの issue を見ている人へ、変化をメールで知らせる。届くかどうかは変化の種類で決まる。
+
+| 変化 | メール |
+|---|---|
+| コメントが付く | 届く |
+| 閉じる・開き直す | 届く |
+| 担当者・マイルストーン・期日が変わる | 届く |
+| ラベルが付く | そのラベルを購読している人にだけ届く |
+| 題・説明が変わる | 届かない（説明に新しく `@名前` を書かれた人にだけ届く） |
+
+確実に知らせたいときは、変えたあとにコメントを足す。
 Power Automate のフローをそのメールボックスの「新しいメールが届いたとき」で始め、件名・本文で何をするかを分ける。
 
 ## このエージェントが足すコマンド

@@ -82,7 +82,10 @@ def read_snapshots(ledger_dir, now):
                     if not isinstance(row, dict) or row.get("event") != "quota_snapshot":
                         continue
                     agent = row["agent_cli"]
-                    used = float(row["quota_used_percent"])
+                    raw_used = row["quota_used_percent"]
+                    if isinstance(raw_used, bool):
+                        continue
+                    used = float(raw_used)
                     timestamp = parse_time(row["ts"])
                     if not isinstance(agent, str) or not agent.strip() or not math.isfinite(used):
                         continue
