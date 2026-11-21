@@ -11,6 +11,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - gitlab-idd の ltm_bridge と gitlab-mr-review-agent の proof で、子プロセスの標準入出力を UTF-8 に固定し、Windows のロケール文字コードで日本語・絵文字の受け渡しが壊れる問題を修正する。
 - gitlab-mr-review-agent の verify で作業フォルダを解決済みのパスで渡し、Windows の短い名前（8.3 形式）で現在フォルダの表記が食い違う問題を修正する。
 
+### change-watch: 判断待ちの滞留を可視化して催促する
+
+- gitlab-decision-stagnation-agent を追加。承認・レビュー待ちの MR と判断系ラベルの Issue を集約し、滞留日数つきのサマリをハブ Issue へ定期投稿する。しきい値超過は担当者メンションつきで目立たせる。初期設定は dry-run
+
 ### change-watch: issue の説明を書き換えたことをメールで知らせる
 
 - gitlab-issue-hub-agent の説明を書き換える例に `COMMENT` を足す。GitLab は説明の変更だけではメールを送らないので、渡すと書き換えた issue にコメントも足す。
