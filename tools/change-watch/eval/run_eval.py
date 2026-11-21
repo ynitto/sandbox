@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 
 HERE = Path(__file__).resolve().parent
@@ -36,7 +37,10 @@ def extract_ci_triage(result):
 
 
 def extract_iac(result):
-    return {"rules": sorted({finding["rule"] for finding in result["findings"]})}
+    return {"rules": sorted({
+        finding["rule"] for finding in result["findings"]
+        if finding["rule"] is not None
+    })}
 
 
 def evaluate_ci_triage(agent, inputs):
@@ -61,12 +65,14 @@ def compare_values(expected, actual):
     return "pass" if expected == actual else "fail"
 
 
-def compare_baseline(previous_status, current_status):
-    if previous_status is None:
+def compare_baseline(previous, current):
+    if not isinstance(previous, dict) or previous.get("status") not in ("pass", "fail"):
         return "比較対象なし"
-    if previous_status == current_status:
+    if previous["status"] == current["status"]:
+        if "actual" in previous and previous["actual"] != current["actual"]:
+            return "不変（値の変化あり）"
         return "不変"
-    return "改善" if current_status == "pass" else "後退"
+    return "改善" if current["status"] == "pass" else "後退"
 
 
 def run_target(target):
@@ -74,11 +80,12 @@ def run_target(target):
     evaluate = EVALUATORS[target]
     results = {}
     for case in sorted((HERE / "cases" / target).iterdir()):
-        if not case.is_dir() or not (case / "input.json").is_file():
+        if not case.is_dir():
             continue
-        inputs = read_json(case / "input.json")
-        expected = read_json(case / "expected.json")
+        expected = None
         try:
+            expected = read_json(case / "expected.json")
+            inputs = read_json(case / "input.json")
             actual = evaluate(agent, inputs)
         except Exception as error:
             results[case.name] = {
@@ -101,19 +108,22 @@ def format_report(results, baseline=None):
     for target, cases in results.items():
         passed = sum(result["status"] == "pass" for result in cases.values())
         lines.append(f"{target}: {passed} pass, {len(cases) - passed} fail")
-        previous_cases = {} if baseline is None else baseline.get(target, {})
+        previous_cases = baseline.get(target) if isinstance(baseline, dict) else None
+        if not isinstance(previous_cases, dict):
+            previous_cases = {}
         for name, result in cases.items():
             status = result["status"]
             line = f"  {name}: {status}"
             if baseline is not None:
-                previous_status = previous_cases.get(name, {}).get("status")
-                line += f" ({compare_baseline(previous_status, status)})"
+                line += f" ({compare_baseline(previous_cases.get(name), result)})"
             lines.append(line)
             if status == "fail":
                 lines.append(f"    expected: {json.dumps(result['expected'], ensure_ascii=False)}")
                 lines.append(f"    actual:   {json.dumps(result['actual'], ensure_ascii=False)}")
                 if "error" in result:
                     lines.append(f"    error:    {result['error']}")
+        for name in sorted(previous_cases.keys() - cases.keys()):
+            lines.append(f"  {name}: 未実行（ベースラインにのみ存在）")
     return "\n".join(lines)
 
 
@@ -134,7 +144,14 @@ def main(argv=None):
     parser.add_argument("--baseline", type=Path, metavar="FILE")
     args = parser.parse_args(argv)
 
-    baseline = read_json(args.baseline) if args.baseline is not None else None
+    baseline = None
+    if args.baseline is not None:
+        try:
+            baseline = read_json(args.baseline)
+        except (OSError, ValueError) as error:
+            print(f"ベースラインを読み込めません: {error}", file=sys.stderr)
+        if not isinstance(baseline, dict):
+            baseline = {}
     targets = (args.target,) if args.target else MODULES
     results = {target: run_target(target) for target in targets}
     print(format_report(results, baseline))

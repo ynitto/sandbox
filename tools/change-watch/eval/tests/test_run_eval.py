@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import subprocess
@@ -36,6 +38,7 @@ class EvalTest(unittest.TestCase):
         actual = run_eval.extract_iac({
             "findings": [
                 {"rule": "open-ingress"},
+                {"rule": None},
                 {"rule": "iam-wildcard"},
                 {"rule": "open-ingress"},
             ],
@@ -53,16 +56,26 @@ class EvalTest(unittest.TestCase):
             (None, "pass", "比較対象なし"),
         ):
             with self.subTest(previous=previous, current=current):
-                self.assertEqual(run_eval.compare_baseline(previous, current), label)
+                self.assertEqual(run_eval.compare_baseline(
+                    {"status": previous, "actual": None},
+                    {"status": current, "actual": None},
+                ), label)
 
-    def test_failed_case_report(self):
+    def test_main_returns_one_and_reports_regression(self):
         results = {"iac": {"private-cidr": {
             "status": "fail",
             "expected": {"rules": []},
             "actual": {"rules": ["open-ingress"]},
         }}}
         baseline = {"iac": {"private-cidr": {"status": "pass", "actual": {"rules": []}}}}
-        report = run_eval.format_report(results, baseline)
+        output = StringIO()
+        with (
+            patch.object(run_eval, "run_target", return_value=results["iac"]),
+            patch.object(run_eval, "read_json", return_value=baseline),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(run_eval.main(["--target", "iac", "--baseline", "baseline.json"]), 1)
+        report = output.getvalue()
         self.assertIn("iac: 0 pass, 1 fail", report)
         self.assertIn("private-cidr: fail (後退)", report)
         self.assertIn('expected: {"rules": []}', report)
@@ -78,7 +91,11 @@ class EvalTest(unittest.TestCase):
                 case.mkdir(parents=True)
                 (case / "input.json").write_text("{}", encoding="utf-8")
                 (case / "expected.json").write_text(json.dumps(expected), encoding="utf-8")
-            with patch.object(run_eval, "HERE", root), patch.dict(run_eval.EVALUATORS, iac=evaluate):
+            with (
+                patch.object(run_eval, "HERE", root),
+                patch.object(run_eval, "load_module"),
+                patch.dict(run_eval.EVALUATORS, iac=evaluate),
+            ):
                 results = run_eval.run_target("iac")
 
         self.assertEqual(evaluate.call_count, 2)
@@ -90,6 +107,64 @@ class EvalTest(unittest.TestCase):
         })
         self.assertEqual(results["02-success"]["status"], "pass")
         self.assertIn("error:    evaluation failed", run_eval.format_report({"iac": results}))
+
+    def test_run_target_continues_after_fixture_read_errors(self):
+        failures = (
+            ("01-missing-input", "input.json", None, FileNotFoundError, {}),
+            ("02-invalid-input", "input.json", b"{", json.JSONDecodeError, {}),
+            ("03-invalid-expected", "expected.json", b"\xff", UnicodeDecodeError, None),
+            ("04-missing-expected", "expected.json", None, FileNotFoundError, None),
+        )
+        evaluate = Mock(return_value={})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in [row[0] for row in failures] + ["05-success"]:
+                case = root / "cases" / "iac" / name
+                case.mkdir(parents=True)
+                for filename in ("input.json", "expected.json"):
+                    (case / filename).write_bytes(b"{}")
+            for name, filename, contents, _, _ in failures:
+                path = root / "cases" / "iac" / name / filename
+                if contents is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(contents)
+            with (
+                patch.object(run_eval, "HERE", root),
+                patch.object(run_eval, "load_module"),
+                patch.dict(run_eval.EVALUATORS, iac=evaluate),
+            ):
+                results = run_eval.run_target("iac")
+            evaluate.assert_called_once()
+
+            for name, filename, _, exception_type, expected in failures:
+                with self.subTest(case=name):
+                    path = root / "cases" / "iac" / name / filename
+                    with self.assertRaises(exception_type) as raised:
+                        run_eval.read_json(path)
+                    self.assertEqual(results[name], {
+                        "status": "fail",
+                        "expected": expected,
+                        "actual": None,
+                        "error": str(raised.exception),
+                    })
+        self.assertEqual(results["05-success"]["status"], "pass")
+
+    def test_report_compares_values_at_same_status(self):
+        for status in ("pass", "fail"):
+            with self.subTest(status=status):
+                results = {"iac": {"case": {"status": status, "actual": {}, "expected": {}}}}
+                baseline = {"iac": {"case": {"status": status, "actual": None}}}
+                self.assertIn(
+                    f"case: {status} (不変（値の変化あり）)",
+                    run_eval.format_report(results, baseline),
+                )
+
+    def test_report_handles_malformed_baseline_entries(self):
+        results = {"iac": {"case": {"status": "pass", "actual": {}}}}
+        for baseline in ([], {"iac": []}, {"iac": {"case": 1}}, {"iac": {"case": {}}}):
+            with self.subTest(baseline=baseline):
+                self.assertIn("case: pass (比較対象なし)", run_eval.format_report(results, baseline))
 
     def run_cli(self, *args):
         command = [sys.executable, "-B", str(run_eval.HERE / "run_eval.py"), *args]
@@ -115,3 +190,19 @@ class EvalTest(unittest.TestCase):
             report = self.run_cli("--target", "iac", "--baseline", str(baseline))
             self.assertEqual(report.count("(不変)"), 5)
             self.assertNotIn("ci-triage", report)
+
+            for target, cases in snapshot.items():
+                cases[f"{target}-removed"] = {"status": "pass", "actual": {}}
+            baseline.write_text(json.dumps(snapshot), encoding="utf-8")
+            report = self.run_cli("--target", "iac", "--baseline", str(baseline))
+            self.assertIn("iac-removed: 未実行（ベースラインにのみ存在）", report)
+            self.assertNotIn("ci-triage-removed", report)
+
+    def test_cli_handles_malformed_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / "baseline.json"
+            for contents in ("null", "[]", "{"):
+                with self.subTest(contents=contents):
+                    baseline.write_text(contents, encoding="utf-8")
+                    report = self.run_cli("--target", "iac", "--baseline", str(baseline))
+                    self.assertEqual(report.count("(比較対象なし)"), 5)

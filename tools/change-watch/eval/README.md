@@ -23,11 +23,11 @@ python3 tools/change-watch/eval/run_eval.py --save-baseline /tmp/change-watch-ba
 python3 tools/change-watch/eval/run_eval.py --baseline /tmp/change-watch-baseline.json
 ```
 
-ベースラインには対象・ケースごとの `status` と `actual` を保存します。比較時は fail から pass になったケースを「改善」、pass から fail になったケースを「後退」、同じステータスのケースを「不変」と表示します。今回のケースに対応する記録がなければ「比較対象なし」と表示します。終了コードは今回の結果で決まります。
+ベースラインには対象・ケースごとの `status` と `actual` を保存します。比較時は fail から pass になったケースを「改善」、pass から fail になったケースを「後退」、同じステータスのケースを「不変」と表示します。ステータスが同じでも、保存した `actual` と今回の値が異なれば「不変（値の変化あり）」と表示します。対応する記録がないか、その記録に有効なステータスがなければ「比較対象なし」と表示します。今回実行した対象について、ベースラインにだけあるケースは「未実行（ベースラインにのみ存在）」として列挙します。終了コードは今回の結果で決まります。
 
 ## ケースの追加
 
-`cases/<target>/<case-name>/` を作成し、UTF-8 の `input.json` と `expected.json` を置きます。ランナーは `input.json` があるサブディレクトリを名前順に処理します。
+`cases/<target>/<case-name>/` を作成し、UTF-8 の `input.json` と `expected.json` を置きます。ランナーは各サブディレクトリを名前順に処理します。ファイルの欠落や読み込みエラーはそのケースの失敗として記録し、残りのケースを実行します。
 
 - **ci-triage** の入力には `pipeline`（`id`、`project_id`、`sha`、`ref`、`source`、`web_url`）、`jobs`（`id`、`name`、`stage`、`failure_reason`、`web_url` を持つオブジェクトの配列）、`traces`（ジョブ ID を文字列キーとするトレースのマップ）を指定します。期待値には全体の `category` と、検出したパターン ID を重複なくソートした `patterns` を指定します。未マッチの場合は `patterns` を空配列にします。
 - **iac** の入力には `diffs`（`new_path`、`old_path`、unified diff 文字列の `diff` を持つオブジェクトの配列）と、パスからファイル内容を引く `files` を指定します。参照するファイル内容がなければ `files` は空オブジェクトにできます。期待値には検出したルール ID を重複なくソートした `rules` を指定します。検出なしの場合は空配列にします。
