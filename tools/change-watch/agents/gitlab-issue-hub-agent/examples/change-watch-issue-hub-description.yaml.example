@@ -4,12 +4,16 @@
 #   dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.example.com/group/project/-/issues/7" DESCRIPTION="…"
 # ISSUE_URL を渡さなければハブの issue（GITLAB_HUB_ISSUE_URL）、渡せばその issue の説明を書き換える（同じ GitLab の、トークンで変えられる issue）。
 # 説明は丸ごと入れ替わる（前の説明に足すなら、前の説明を含めた全文を渡す）。DESCRIPTION が空なら何もしない（説明を消さない）。
+# 説明だけを書き換えても、GitLab はメールで知らせない。知らせたいときは COMMENT も渡す（書き換えたあと、同じ issue にコメントを足す）:
+#   dagu start change-watch-issue-hub-description -- DESCRIPTION="…" COMMENT="説明を更新しました"
 # 何行もある説明をファイルやコマンドの出力から作るなら、compose の --text=… を --text-file=<ファイル> か -- <コマンド> [引数...] にする。
 #
 #   compose  説明を JSON（{"description": …}）にする（change-watch の description。改行・引用符を含む文をそのまま渡せる）
 #   target   書き換える issue の API の URL を決める（change-watch の api-url）
 # description・api-url は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub を付けて呼ぶ。設定は読まない）。
 #   update   issue を更新する（change-watch call PUT）
+#   note     足すコメントを JSON（{"body": …}）にする（change-watch の note）
+#   comment  同じ issue にコメントを足す（change-watch call POST。COMMENT が空なら書かない）
 description: "決めた GitLab の issue の説明を書き換える（ISSUE_URL を渡さなければハブの issue）"
 type: graph
 hist_retention_days: 14
@@ -18,6 +22,7 @@ dotenv:
 params:
   - ISSUE_URL: ""               # 書き換える issue の URL（ブラウザで開いたときのもの）。空ならハブの issue
   - DESCRIPTION: ""             # 新しい説明（全文）
+  - COMMENT: ""                 # 書き換えたあとに足すコメント（任意。メールで知らせたいとき）
 steps:
   - name: compose
     action: exec
@@ -67,6 +72,47 @@ steps:
         - "gitlab-hub-issue"     # 接続（トークン）と要求の間隔を借りる取得元
         - "--json"
         - "${UPDATE}"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: note
+    depends: [update]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "note"
+        - "--text=${params.COMMENT}"
+    timeout_sec: 60
+    output: NOTE
+  - name: comment
+    depends: [note]
+    preconditions:              # 説明を書き換えて、コメントがあるときだけ（COMMENT が空なら書かない）
+      - condition: "${ISSUE_API}"
+        expected: "re:^https?://"
+      - condition: "${NOTE}"
+        expected: 're:^\{"body"'
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "${ISSUE_API}/notes"
+        - "--source"
+        - "gitlab-hub-issue"
+        - "--json"
+        - "${NOTE}"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
