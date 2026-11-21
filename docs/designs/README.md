@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計資料は 41 件（この README を除く Markdown ファイル）。うち 36 件をカテゴリ別に整理し、読む順序を示す。
+`docs/designs/` 配下の設計資料は 43 件（この README を除く Markdown ファイル）。うち 37 件をカテゴリ別に整理し、読む順序を示す。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 41 件中 36 件を掲載）
+## カテゴリ別索引（全 43 件中 37 件を掲載）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -42,6 +42,7 @@
 | [`gitlab-mr-review-agent-design.md`](./gitlab-mr-review-agent-design.md) | 決めた GitLab のリポジトリの MR を kiro-cli に 1 件ずつレビューさせる仕組みの設計。gitlab-issue-agent と同じく change-watch と Dagu の上に組む。変化を head のコミット・ドラフト・対象ブランチに絞り、レビューし終えたコミットを change-watch の受け手が覚え、差分の指紋と書き込みの印で、同じ MR を重ねてレビューしない。新しいコミットでは自分の未解決のスレッドを確かめ、直っていれば返信して解決にする。 |
 | [`gitlab-notify-agent-design.md`](./gitlab-notify-agent-design.md) | GitLab の issue の変化の検出を change-watch に一本化し、通知先（tmux の表示・プロンプト投入・ログ・ハブの issue）だけを設定で分ける仕組みの設計（実装済み）。文言は issue-mailbox と同じ形にし、文言 × チャネルを配信の台帳に記録してから送ることで、送れなかったチャネルにだけ送り直す。台帳に記録できたときだけ commit する。issue-mailbox からのリポジトリ単位の移行と戻し方を含む。 |
 | [`gitlab-proof-agent-design.md`](./gitlab-proof-agent-design.md) | GitLab の MR の指摘を別セッションで検証する `proof` プラグインの設計。入力の分離、判定と証拠規約、任意の Dagu ワークフローを扱う。 |
+| [`teams-dagu-trigger-design.md`](./teams-dagu-trigger-design.md) | Teams のメッセージから手元の Windows PC の Dagu のワークフローを動かし、結果を元のスレッドに返す仕組みの設計（案）。MS365 から外へ HTTP を送れず、GitLab の受信メールも OneDrive の同期も無い前提で、Power Automate が自分宛てに送ったメールを手元のクラシック版 Outlook から Power Automate Desktop（予備は COM）で読み、change-watch のフォルダ取得元と許可リストの照合を経て DAG を動かす。結果は知らせの issue の通知メールで Teams に返す。 |
 | [`redmine-ticket-agent-design.md`](./redmine-ticket-agent-design.md) | Redmine の自分が担当する未完了のチケットのうち、決めた条件に当たるものに、その条件と対にした文をコメントして完了にする仕組みの設計（対は複数。対ごとに Dagu のステップを 1 つ書く）。変化は change-watch の `get` / `commit`、条件は Dagu の `preconditions`、書き込みは `change-watch call` の 1 回の PUT で行い、プログラムは持たない。 |
 | [`dagu-workflow-builder-design.md`](./dagu-workflow-builder-design.md) | 各環境に入っているスキルのスクリプトを、スキル側の宣言（`chain.json`）の入出力の型でつなぎ、LLM を使わずに Dagu v2 の DAG を組み立てる仕組みの設計。入出力を `--help` から推測せず宣言で持つ・型は名前の完全一致だけでつなぐ・経路は有向超グラフの最小コストを名前順の同点解決で決定的に選ぶ・書き出しは v2.25 の `action: exec` と実行ごとの作業フォルダに合わせる、の 4 点が骨格。 |
 | [`change-watch-design.md`](./change-watch-design.md) | ワークフロー（Dagu）から Web API・フォルダを使う口の設計。取得（ページ単位で進めて途中から再開・予定・ずらし・要求の間隔と失敗の待ちの共有）と、ワークフローごとの受け手が前回 commit してからの変化を受け取る `get` / `commit`、書き込みの `call` を持つ。条件と処理は Dagu に書く（0.8.0 でルールと受け渡しをなくした経緯も）。 |
