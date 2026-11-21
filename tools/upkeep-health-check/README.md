@@ -1,6 +1,6 @@
-# Kiro エクスポートと記憶の保全点検
+# Kiro エクスポート・記憶・change-watch の保全点検
 
-Kiro の定期ログエクスポートや記憶レポートの更新停止、記憶メンテナンスの滞留を検出する。点検結果は JSON に保存し、朝の `nightly-check-digest` で集約できる。
+Kiro の定期ログエクスポート、記憶レポート、change-watch の状態 DB の更新停止や、記憶メンテナンスの滞留を検出する。点検結果は JSON に保存し、朝の `nightly-check-digest` で集約できる。
 
 ## 設定と実行
 
@@ -8,7 +8,8 @@ Python 3.9 以降の標準ライブラリだけで動く。`config.example.json`
 
 - `kiro_exports` は点検するエクスポート先の配列。各要素に表示用の `name` と出力先の `dir` を指定する。
 - `knowledge.path` は `agent-audit report --kind knowledge --json` の保存先。レポートの鮮度はファイルの更新時刻（mtime）で判定する。
-- 各入力の `max_age_hours` と `knowledge.thresholds` の各しきい値は任意の非負数。上限を省略した入力は取得可否だけを確認し、上限を省略したストア指標は点検項目に含めない。エクスポート先とレポートのうち、少なくとも一方を設定する。
+- `change_watch` は点検する change-watch の配列。各要素に表示用の `name` と状態 DB を置くディレクトリ `state_dir` を指定する。`max_age_hours` は状態 DB の更新から判定時刻までに許容する経過時間（時間）。
+- 各入力の `max_age_hours` と `knowledge.thresholds` の各しきい値は任意の非負数。鮮度上限を省略した入力は、確認できた更新時刻が判定時刻以前なら `ok`。上限を省略したストア指標は点検項目に含めない。エクスポート先、knowledge レポート、change-watch のうち、少なくとも1対象を設定する。
 
 ```sh
 python3 tools/upkeep-health-check/upkeep_health_check.py \
@@ -25,10 +26,11 @@ python3 tools/upkeep-health-check/upkeep_health_check.py \
 | Kiro の出力先直下の `.kiro_export_state.json` | 状態ファイルを確認でき、設定した鮮度上限以内 | mtime からの経過時間が上限を超過 | ディレクトリや状態ファイルが存在しない、または状態ファイルを確認できない |
 | knowledge レポート | JSON の `layers` を読み取れ、設定した鮮度上限以内 | mtime からの経過時間が上限を超過 | レポートが存在しない、または JSON や `layers` を読み取れない |
 | `layers.<層>` と `stores[]` | 設定した各指標が上限以内 | ストアの指標が上限を超過 | `configured: false`（未収集）、ストア情報がない、または設定した指標の数値を取得できない |
+| change-watch の `<state_dir>/state.db` と `<state_dir>/state.db-wal` のうち新しい方の更新時刻 | 更新時刻を確認でき、設定した鮮度上限以内 | 更新時刻からの経過時間が上限を超過 | どちらのファイルも存在しない、または確認できない |
 
 Kiro は状態ファイルの mtime を使う。既知のセッションだけで差分がない実行でも状態ファイルは保存され、出力済み `.log` の mtime は変わらない。セッションが一件も見つからなかった実行では状態ファイルは更新されない。
 
-状態ファイルと knowledge レポートの mtime が判定時刻より未来の場合、鮮度は `unknown` とし、`detail` に時刻逆転を記録する。鮮度上限を省略した場合も同様。
+鮮度判定に使う mtime が判定時刻より未来の場合は `unknown` とし、`detail` に時刻逆転を記録する。鮮度上限を省略した場合も同様。
 
 knowledge はレポートの鮮度と各ストアの状態を別の項目として記録する。読める古いレポートの指標は、そのレポート時点の値として併記する。上限と同じ値は `ok`。
 
@@ -39,9 +41,17 @@ knowledge はレポートの鮮度と各ストアの状態を別の項目とし�
 | `persona` | `pending_oldest_days`（最古の確認待ち日数） |
 | `moltbook` | `outbox_pending`（送信待ち件数）、`outbox_oldest_days`（最古の送信待ち日数） |
 
+### change-watch の死活監視
+
+change-watch は状態を WAL モードの単一の SQLite DB（`state.db`）に集約し、取得や `commit` のたびに書き込む。書き込みはまず `state.db-wal` に入るため、確認できた両ファイルのうち新しい方の更新時刻を最後の書き込み時刻とみなす。Dagu は毎分 `get` を呼び出し、`get` は取得元ごとの予定に従って取得を実行する。健全なら新しい依頼がなくても DB は更新され続ける。PC や Dagu が止まって書き込みが途絶え、鮮度上限を超えると `stale` になる。
+
+- この点検で分かるのは状態 DB への書き込みの有無まで。保守用の `gc` も同じ DB に書くため、`max_age_hours` は `gc` の実行間隔（通常は日次）より十分小さくする。目安は取得元の最長取得間隔より少し大きい値で、最長5分間隔なら1時間を設定する。
+- 取得元が失敗後の待ち時間（クールダウン）に入っている間や、`get --no-fetch` のように取得を行わない運用では、書き込みが止まり、change-watch が動いていても `stale` になることがある。
+- チェックポイントで `state.db-wal` が消えることがある。その場合は `state.db` の更新時刻で判定する。
+
 ## 出力
 
-version 1 の JSON を `--output` に書く。`summary` は各状態の項目数。`checked_at` は UTC の ISO 日時。`kind` は `kiro_export`、`knowledge_report`、`knowledge_layer`、`knowledge_metric` のいずれか。`detail` は短い日本語の説明。`value` と `threshold` は鮮度の場合は時間、ストア指標の場合は元の単位で、未取得・未設定の場合は `null`。
+version 1 の JSON を `--output` に書く。`summary` は各状態の項目数。`checked_at` は UTC の ISO 日時。`kind` は `kiro_export`、`knowledge_report`、`knowledge_layer`、`knowledge_metric`、`change_watch` のいずれか。`detail` は短い日本語の説明。`value` と `threshold` は鮮度の場合は時間、ストア指標の場合は元の単位で、未取得・未設定の場合は `null`。
 
 ```json
 {

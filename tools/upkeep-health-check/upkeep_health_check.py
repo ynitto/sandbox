@@ -1,4 +1,5 @@
 """保全点検の結果を version 1 の JSON で出力する。
+change-watch の状態 DB の鮮度も点検する。
 
 結果は version、source（upkeep-health-check）、checked_at（UTC の ISO 日時）、
 summary（ok / stale / unknown の件数）、items を持つ。各項目は name、kind、
@@ -50,7 +51,10 @@ def read_config(path):
     knowledge = config.get("knowledge")
     if "knowledge" in config:
         object_value(knowledge, "knowledge")
-    if not exports and knowledge is None:
+    change_watch = config.get("change_watch", [])
+    if not isinstance(change_watch, list):
+        raise ValueError("change_watch は配列で指定してください")
+    if not exports and knowledge is None and not change_watch:
         raise ValueError("点検対象を設定してください")
 
     def resolve(entry, key):
@@ -73,7 +77,12 @@ def read_config(path):
             if metric not in METRICS:
                 raise ValueError(f"未対応のしきい値です（{metric}）")
             validate_limit(limit, metric)
-    return exports, knowledge
+    for entry in change_watch:
+        object_value(entry, "change_watch の要素")
+        if not isinstance(entry.get("name"), str) or not entry["name"].strip():
+            raise ValueError("change_watch の要素には名前を指定してください")
+        entry["state_dir"] = resolve(entry, "state_dir")
+    return exports, knowledge, change_watch
 
 
 def item(name, kind, status, detail, value=None, threshold=None):
@@ -115,6 +124,21 @@ def check_export(entry, now):
         return item(name, kind, "unknown", "出力先の状態ファイルを確認できません",
                     threshold=limit)
     return check_freshness(name, kind, "状態ファイルの経過時間", mtime, now, limit)
+
+
+def check_change_watch(entry, now):
+    name, folder = entry["name"], entry["state_dir"]
+    kind = "change_watch"
+    limit = entry.get("max_age_hours")
+    mtimes = []
+    for filename in ("state.db", "state.db-wal"):
+        try:
+            mtimes.append(file_mtime((folder / filename).stat()))
+        except OSError:
+            continue
+    if not mtimes:
+        return item(name, kind, "unknown", "状態 DB を確認できません", threshold=limit)
+    return check_freshness(name, kind, "状態 DB の経過時間", max(mtimes), now, limit)
 
 
 def check_layers(layers, thresholds):
@@ -176,7 +200,7 @@ def write_result(path, result):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Kiro エクスポートと記憶の保全点検")
+    parser = argparse.ArgumentParser(description="Kiro エクスポート・記憶・change-watch の保全点検")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--now", help="判定時刻（ISO 日時。オフセット省略時は UTC）")
@@ -190,10 +214,11 @@ def main(argv=None):
             if now.tzinfo is None:
                 now = now.replace(tzinfo=timezone.utc)
             now = now.astimezone(timezone.utc)
-        exports, knowledge = read_config(args.config)
+        exports, knowledge, change_watch = read_config(args.config)
         items = [check_export(entry, now.timestamp()) for entry in exports]
         if knowledge is not None:
             items.extend(check_knowledge(knowledge, now.timestamp()))
+        items.extend(check_change_watch(entry, now.timestamp()) for entry in change_watch)
         counts = Counter(entry["status"] for entry in items)
         write_result(args.output, {
             "version": 1,
