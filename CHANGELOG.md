@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### weekly-report
+
+- GitLab の複数プロジェクトを集約し、週次レポートとリリースノートの下書きを生成する。ハブ issue への投稿は明示的に有効化した場合に限り、同じ期間の投稿をスキップする。Dagu の週次実行例と Power Automate の配信レシピを同梱する。
+
 ### CI: Windows ジョブの失敗を修正する
 
 - gitlab-idd の ltm_bridge と gitlab-mr-review-agent の proof で、子プロセスの標準入出力を UTF-8 に固定し、Windows のロケール文字コードで日本語・絵文字の受け渡しが壊れる問題を修正する。
