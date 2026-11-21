@@ -300,6 +300,24 @@ class NoteTest(unittest.TestCase):
 # 例の設定とワークフローを本物の change-watch で回す
 # ---------------------------------------------------------------------------
 
+class IssueTest(unittest.TestCase):
+    def test_issue_title_uses_first_line_of_direct_text(self):
+        code, out, err = run_main("issue", "--text=一行目\r二行目\r\n三行目")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"title": "一行目", "description": "一行目\n二行目\n三行目"})
+
+    def test_large_retention_period_waits(self):
+        record = {"state": "opened", "created_at": "2000-01-01T00:00:00Z",
+                  "system": False, "author": {"username": "hub-bot"}}
+        change = "--change=" + json.dumps({"kind": "appeared", "record": record})
+        for command, options in (
+            ("check-old-issue", ()),
+            ("check-old-note", ("--author=hub-bot",)),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(run_main(command, change, "--days=1000000000", *options), (0, "wait\n", ""))
+
+
 class FieldsTest(unittest.TestCase):
     def test_pairs_become_a_json_object(self):
         code, out, _ = run_main("fields", 'title=【完了】"引用"の題', "add_labels=完了,済", "description=/close\n本文", "a=b=c")

@@ -199,6 +199,22 @@ exports.checkSyntax = () => {
   assert.match(result.stderr, /engine check/);
 });
 
+test('markdownlint の標準出力への診断が JSON に混ざらない', (t) => {
+  const root = setup(t, 'valid.md');
+  stubPackage(root, 'markdownlint', `
+process.stdout.write('markdownlint startup\\n');
+exports.sync = () => {
+  process.stdout.write('markdownlint check\\n');
+  return { document: [] };
+};
+`);
+
+  const result = run(root, ['check', '--format', 'json']);
+  assert.equal(JSON.parse(expectCode(result, 0)).summary.filesChecked, 1);
+  assert.match(result.stderr, /markdownlint startup/);
+  assert.match(result.stderr, /markdownlint check/);
+});
+
 test('JSON と SARIF に指摘の位置が入る', (t) => {
   const root = setup(t, 'invalid-plantuml.md');
   const json = JSON.parse(expectCode(run(root, ['check', '--format', 'json']), 1));

@@ -366,7 +366,7 @@ def _read_text(a) -> tuple[int, str]:
             print("本文のファイルを文字として読めません（UTF-8・UTF-16・Shift_JIS のどれでもありません）", file=sys.stderr)
             return USAGE, ""
         return OK, text
-    return OK, a.text
+    return OK, _newlines(a.text)
 
 
 def cmd_note(a) -> int:
@@ -435,6 +435,10 @@ def cmd_check_request(a) -> int:
     return OK
 
 
+def _older_than(age: datetime.timedelta, days: int) -> bool:
+    return days <= datetime.timedelta.max.days and age > datetime.timedelta(days=days)
+
+
 def old_note(change: dict, author: str, days: int, now: datetime.datetime | None = None) -> str:
     """コメントの変化を、消す（delete）・まだ待つ（wait）・消さない（keep）に分ける。
     消すのは author が書いた、人のコメント（system でない）で、days 日より古いものだけ。日時を読めなければ消さない。"""
@@ -451,7 +455,7 @@ def old_note(change: dict, author: str, days: int, now: datetime.datetime | None
     if created.tzinfo is None:
         created = created.replace(tzinfo=datetime.timezone.utc)
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    return "delete" if now - created > datetime.timedelta(days=days) else "wait"
+    return "delete" if _older_than(now - created, days) else "wait"
 
 
 def old_issue(change: dict, days: int, now: datetime.datetime | None = None) -> str:
@@ -464,7 +468,7 @@ def old_issue(change: dict, days: int, now: datetime.datetime | None = None) -> 
     if created is None:
         return "keep"
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    return "expire" if now - created > datetime.timedelta(days=days) else "wait"
+    return "expire" if _older_than(now - created, days) else "wait"
 
 
 def _parse_time(value) -> datetime.datetime | None:

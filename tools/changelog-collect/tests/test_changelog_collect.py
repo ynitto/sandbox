@@ -70,6 +70,16 @@ class ChangelogCollectTest(unittest.TestCase):
         self.assertEqual(self.read_changelog(), CHANGELOG)
         self.assertTrue(fragment.exists())
 
+    def test_preserves_changelog_in_fragments_directory(self):
+        fragment = self.fragment("new.md", "### 新規")
+        self.changelog = self.changelog.rename(self.fragments / "CHANGELOG.md")
+
+        code, _, stderr = self.collect()
+
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(self.read_changelog(), CHANGELOG.replace("### 既存", "### 新規\n\n### 既存"))
+        self.assertFalse(fragment.exists())
+
     def test_collects_into_crlf_changelog_and_writes_lf(self):
         self.changelog.write_bytes(CHANGELOG.replace("\n", "\r\n").encode("utf-8"))
         fragment = self.fragment("new.md", "### 新規\n\n- 追加")
@@ -153,6 +163,18 @@ class ChangelogCollectTest(unittest.TestCase):
         self.assertIn(fragment.name, stderr)
         self.assertEqual(self.changelog.read_bytes(), original)
         self.assertTrue(fragment.exists())
+
+    def test_skips_heading_already_inserted_as_secondary_heading(self):
+        first = self.fragment("10-first.md", "### 一番目\n\n### 共通")
+        second = self.fragment("20-second.md", "### 共通\n\n- 二")
+
+        code, _, stderr = self.collect()
+
+        self.assertEqual(code, 0)
+        self.assertIn(second.name, stderr)
+        self.assertEqual(self.read_changelog().count("### 共通"), 1)
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
 
     def test_reports_unlink_failure_and_deletes_other_fragments(self):
         first = self.fragment("10-first.md", "### 一番目")

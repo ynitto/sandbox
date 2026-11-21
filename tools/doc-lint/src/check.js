@@ -114,4 +114,4 @@ function formatReport(report, format) {
   return JSON.stringify(report, null, 2) + '\n';
 }
 
-module.exports = { check: (...args) => withDiagnostics(() => check(...args)), formatReport };
+module.exports = { check: (...args) => withDiagnostics(() => check(...args), true), formatReport };
