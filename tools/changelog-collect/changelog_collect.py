@@ -17,9 +17,9 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="取り込み予定を表示する")
     args = parser.parse_args(argv)
 
+    exit_code = 0
     try:
-        with args.changelog.open(encoding="utf-8", newline="") as source:
-            lines = source.read().split("\n")
+        lines = args.changelog.read_text(encoding="utf-8").split("\n")
         if UNRELEASED not in lines:
             print(f"エラー: {args.changelog} に {UNRELEASED} がありません", file=sys.stderr)
             return 1
@@ -31,33 +31,38 @@ def main(argv=None):
             if path.name == "README.md" or not path.is_file():
                 continue
             body = path.read_text(encoding="utf-8").strip()
-            duplicate = next((line for line in body.split("\n") if line in existing_headings), None)
-            if duplicate is not None:
-                print(f"警告: {path.name} の見出しは取り込み済みです: {duplicate}", file=sys.stderr)
+            if not body:
+                print(f"警告: {path.name} は空です", file=sys.stderr)
                 continue
+            heading = next((line for line in body.split("\n") if line.startswith("### ")), None)
+            if heading in existing_headings:
+                print(f"警告: {path.name} の見出しは取り込み済みです: {heading}", file=sys.stderr)
+                continue
+            if heading is not None:
+                existing_headings.add(heading)
             fragments.append(path)
-            if body:
-                bodies.append(body)
+            bodies.append(body)
 
         if not fragments:
             print("取り込むフラグメントはありません")
             return 0
 
-        if bodies:
-            index = lines.index(UNRELEASED)
-            before = "\n".join(lines[:index + 1])
-            after = "\n".join(lines[index + 1:])
-            block = "\n\n".join(bodies) + "\n"
-            if not after.startswith("\n"):
-                block += "\n"
-            if args.dry_run:
-                print(block, end="")
-            else:
-                args.changelog.write_text(before + "\n" + block + after, encoding="utf-8", newline="\n")
-
-        if not args.dry_run:
+        index = lines.index(UNRELEASED)
+        before = "\n".join(lines[:index + 1])
+        after = "\n".join(lines[index + 1:])
+        block = "\n\n".join(bodies) + "\n"
+        if not after.startswith("\n"):
+            block += "\n"
+        if args.dry_run:
+            print(block, end="")
+        else:
+            args.changelog.write_text(before + "\n" + block + after, encoding="utf-8", newline="\n")
             for path in fragments:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError as error:
+                    print(f"エラー: {path.name} を削除できません: {error}", file=sys.stderr)
+                    exit_code = 1
 
     except (OSError, UnicodeError) as error:
         print(f"エラー: {error}", file=sys.stderr)
@@ -66,7 +71,7 @@ def main(argv=None):
     print("取り込み予定:" if args.dry_run else "取り込み完了:")
     for path in fragments:
         print(path.name)
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

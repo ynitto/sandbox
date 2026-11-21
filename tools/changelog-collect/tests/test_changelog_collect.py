@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,6 +70,17 @@ class ChangelogCollectTest(unittest.TestCase):
         self.assertEqual(self.read_changelog(), CHANGELOG)
         self.assertTrue(fragment.exists())
 
+    def test_collects_into_crlf_changelog_and_writes_lf(self):
+        self.changelog.write_bytes(CHANGELOG.replace("\n", "\r\n").encode("utf-8"))
+        fragment = self.fragment("new.md", "### 新規\n\n- 追加")
+        code, _, stderr = self.collect()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        expected = CHANGELOG.replace("### 既存", "### 新規\n\n- 追加\n\n### 既存")
+        self.assertEqual(self.changelog.read_bytes(), expected.encode("utf-8"))
+        self.assertFalse(fragment.exists())
+
     def test_no_fragments_with_missing_or_empty_directory(self):
         for directory_exists in (False, True):
             with self.subTest(directory_exists=directory_exists):
@@ -102,17 +114,67 @@ class ChangelogCollectTest(unittest.TestCase):
         self.assertTrue(fragment.exists())
 
     def test_skips_duplicate_and_collects_other_fragment(self):
-        duplicate = self.fragment("duplicate.md", "### 別の見出し\n\n### リリース済み")
-        fresh = self.fragment("new.md", "### 新規")
+        duplicate = self.fragment("duplicate.md", "### リリース済み\n\n### 別の見出し")
+        fresh = self.fragment("new.md", "前置き\n\n### 新規\n\n### 既存")
         code, stdout, stderr = self.collect()
 
         self.assertEqual(code, 0)
         self.assertIn(duplicate.name, stderr)
         self.assertIn("### リリース済み", stderr)
         self.assertIn(fresh.name, stdout)
-        self.assertEqual(self.read_changelog(), CHANGELOG.replace("### 既存", "### 新規\n\n### 既存"))
+        self.assertEqual(self.read_changelog(), CHANGELOG.replace(
+            "### 既存", "前置き\n\n### 新規\n\n### 既存\n\n### 既存",
+        ))
         self.assertTrue(duplicate.exists())
         self.assertFalse(fresh.exists())
+
+    def test_skips_duplicate_heading_in_same_run(self):
+        first = self.fragment("10-first.md", "### 新規\n\n- 一")
+        second = self.fragment("20-second.md", "### 新規\n\n- 二")
+        code, stdout, stderr = self.collect()
+
+        self.assertEqual(code, 0)
+        self.assertIn("警告", stderr)
+        self.assertIn(second.name, stderr)
+        self.assertNotIn(second.name, stdout)
+        self.assertEqual(self.read_changelog(), CHANGELOG.replace(
+            "### 既存", "### 新規\n\n- 一\n\n### 既存",
+        ))
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+
+    def test_skips_empty_fragment(self):
+        fragment = self.fragment("empty.md", " \n\t\n")
+        original = self.changelog.read_bytes()
+        code, _, stderr = self.collect()
+
+        self.assertEqual(code, 0)
+        self.assertIn("警告", stderr)
+        self.assertIn(fragment.name, stderr)
+        self.assertEqual(self.changelog.read_bytes(), original)
+        self.assertTrue(fragment.exists())
+
+    def test_reports_unlink_failure_and_deletes_other_fragments(self):
+        first = self.fragment("10-first.md", "### 一番目")
+        second = self.fragment("20-second.md", "### 二番目")
+        unlink = Path.unlink
+
+        def unlink_with_failure(path):
+            if path == first:
+                raise PermissionError("permission denied")
+            unlink(path)
+
+        with patch.object(Path, "unlink", unlink_with_failure):
+            code, _, stderr = self.collect()
+
+        self.assertEqual(code, 1)
+        self.assertIn("エラー", stderr)
+        self.assertIn(first.name, stderr)
+        self.assertEqual(self.read_changelog(), CHANGELOG.replace(
+            "### 既存", "### 一番目\n\n### 二番目\n\n### 既存",
+        ))
+        self.assertTrue(first.exists())
+        self.assertFalse(second.exists())
 
     def test_all_fragments_are_duplicates(self):
         duplicate = self.fragment("duplicate.md", "### 既存")
