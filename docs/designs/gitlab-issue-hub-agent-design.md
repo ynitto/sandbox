@@ -76,6 +76,16 @@ examples/change-watch-issue-hub-notice（インストーラは置かない。予
   close    preconditions: CLOSE が yes・CREATED.iid が数。change-watch call PUT "…/issues/${CREATED.iid}" --json '{"state_event": "close"}'
            （コメントの通知メールには前のやりとりが入ることがあり、Power Automate からそのまま Teams に投稿できない。
             新しい issue の通知メールは題と説明だけなので、知らせを 1 件ずつ issue にする。受け手は通知を「新しい issue」だけにする）
+
+examples/change-watch-issue-hub-notice-expire（インストーラは置かない。5 分ごと。TITLE=… TEXT=… か TEXT_FILE=… KEEP_DAYS=… MODE=close|delete）
+  設定は examples/change-watch-notice.yaml.example（取得元 gitlab-notice-issues: 知らせ用プロジェクトの開いている issue。ハブとは別の設定・状態）
+  compose → create   本文があれば issue を立てる（continue_on.skipped で、立てないときも片付けへ進む）
+  get      change-watch get --source gitlab-notice-issues --consumer notice-expire --initial emit --watch state --one   → CHANGE
+  check    change-watch check-old-issue --change=${CHANGE} --days=…                        → DECISION（expire・wait・keep）
+  close    preconditions: DECISION が expire・MODE が close。call PUT …/issues/${CHANGE.key} --json '{"state_event": "close"}'
+  delete   preconditions: DECISION が expire・MODE が delete。call DELETE …/issues/${CHANGE.key}（Owner が要る）
+  commit   preconditions: DECISION が keep か、expire で MODE が close・delete。wait は記録せず、次の起動でもう一度見る
+           （get は key の小さい順に返す。issue の番号は立てた順なので、待っている issue の後ろはそれより新しい）
 ```
 
 本文の JSON はコマンド行に載せず、`--out` でファイルに書いて `call --json-file` に渡す。コマンド行には長さの上限があり
