@@ -230,6 +230,25 @@ dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが
 前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
 書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
 
+## 溜まった古いコメントを消す例（`examples/change-watch-issue-hub-prune.yaml.example`）
+
+メールで知らせるためにコメントを足し続けると、issue にコメントが溜まる。メールは送り終えているので、古いコメントは消してよい。
+インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に、`AUTHOR` をトークンの持ち主のユーザー名に直す。
+
+消すのは、`AUTHOR` が書いた、`KEEP_DAYS` 日（既定 7）より古いコメントだけ。ほかの人のコメントと、ラベルの変更などの記録は消さない。
+付けてすぐ消すと GitLab がメールを送る前に無くなることがあるので、`KEEP_DAYS` は 1 以上にする。
+5 分ごとに起動し、1 回の起動でコメントを古い順に 1 件見る（初回は今あるコメントも順に見る）。
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `get` | `change-watch get --source gitlab-hub-notes --consumer hub-prune --initial emit --watch body --one` | まだ見終えていないコメントを、古い順に 1 件受け取る |
+| `check` | `change-watch check-old-note --change=${CHANGE} --author=… --days=…` | 消す（`delete`）・まだ待つ（`wait`）・消さない（`keep`）を決める |
+| `delete` | `change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"` | `delete` のときだけ、そのコメントを消す |
+| `commit` | `change-watch commit --source gitlab-hub-notes --consumer hub-prune ${CHANGE.key}` | `delete`・`keep` なら見終えたと記録する。`wait` なら記録せず、次の起動でもう一度見る |
+
+トークンの持ち主が自分のコメントを消すので、トークンに追加の権限は要らない。消せなかったときは記録せず、次の起動でやり直す。
+説明を書き換えたときに GitLab が残す「説明を変更しました」の記録は、API では消せない。
+
 ## Power Automate とつなぐ
 
 **メール → ハブの issue（頼まれる）**。Power Automate のフローを「新しいメールが届いたとき」で始め、件名や差出人で絞って、次のどちらかで
@@ -251,7 +270,8 @@ dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが
 | ラベルが付く | そのラベルを購読している人にだけ届く |
 | 題・説明が変わる | 届かない（説明に新しく `@名前` を書かれた人にだけ届く） |
 
-確実に知らせたいときは、変えたあとにコメントを足す。
+確実に知らせたいときは、変えたあとにコメントを足す。メールに載るのはそのコメントの本文だけなので、Power Automate に渡したい内容はコメントに書く。
+溜まったコメントは「溜まった古いコメントを消す例」で消せる。
 Power Automate のフローをそのメールボックスの「新しいメールが届いたとき」で始め、件名・本文で何をするかを分ける。
 
 ## このエージェントが足すコマンド
@@ -270,6 +290,7 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
 | `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
+| `check-old-note --change=<get の JSON> --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
 
 `note`・`description` は、本文が空なら何も出さず、`--` のあとのコマンドが失敗したらその終了コードで終わる。
 

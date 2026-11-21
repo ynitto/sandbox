@@ -5,6 +5,7 @@ Dagu と同じ順（test/dagrun.py）に回したときの流れを確かめる�
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import io
 import json
@@ -54,6 +55,8 @@ class FakeGitLab:
     def __init__(self):
         self.notes: list[dict] = []
         self.posted: list[str] = []
+        self.deleted: list[int] = []
+        self.next_id = 999
         self.other_posted: list[str] = []
         self.updates: list[dict] = []
         self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
@@ -98,6 +101,19 @@ class FakeGitLab:
                     note = outer._add(body, BOT)
                 self._send(201, note)
 
+            def do_DELETE(self):
+                if self.headers.get("PRIVATE-TOKEN") != TOKEN:
+                    return self._send(401, {"message": "401 Unauthorized"})
+                head, _, note_id = urlparse(self.path).path.rpartition("/")
+                with outer.lock:
+                    found = [n for n in outer.notes if head == path and str(n["id"]) == note_id]
+                    if not found:
+                        return self._send(404, {"message": "404 Not found"})
+                    outer.notes.remove(found[0])
+                    outer.deleted.append(found[0]["id"])
+                self.send_response(204)
+                self.end_headers()
+
             def do_PUT(self):
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
@@ -128,15 +144,16 @@ class FakeGitLab:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def _add(self, body: str, author: dict, system: bool = False) -> dict:
-        note = {"id": 1000 + len(self.notes), "body": body, "author": dict(author), "system": system,
-                "created_at": "2026-11-09T00:00:00Z", "updated_at": "2026-11-09T00:00:00Z", "noteable_iid": ISSUE}
+    def _add(self, body: str, author: dict, system: bool = False, created_at: str = "2026-11-09T00:00:00Z") -> dict:
+        self.next_id += 1
+        note = {"id": self.next_id, "body": body, "author": dict(author), "system": system,
+                "created_at": created_at, "updated_at": created_at, "noteable_iid": ISSUE}
         self.notes.append(note)
         return note
 
-    def add(self, body: str, author: dict = ALICE, system: bool = False) -> dict:
+    def add(self, body: str, author: dict = ALICE, system: bool = False, **kw) -> dict:
         with self.lock:
-            return self._add(body, author, system)
+            return self._add(body, author, system, **kw)
 
     def close(self):
         self.server.shutdown()
@@ -568,6 +585,57 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(self.run_dag(dag, DESCRIPTION="x", ISSUE_URL="https://example.com/not-an-issue", COMMENT="")["target"], gh.USAGE)
         self.assertEqual(len(self.gl.updates), 2)
         self.assertEqual(len(self.gl.posted), 1)
+
+    def test_prune_example_deletes_only_own_old_comments(self):
+        dag = "examples/change-watch-issue-hub-prune.yaml.example"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        mine = self.gl.add("古い知らせ", author=BOT)                                  # 2026-11-09（7 日より古い）
+        self.gl.add("人のコメント")
+        self.gl.add("changed the description", author=BOT, system=True)
+        self.gl.add("昨日の知らせ", author=BOT, created_at=(now - datetime.timedelta(days=1)).isoformat())
+        last = self.gl.add("そのあとの古い日付のコメント", author=BOT)                 # 待っているコメントの後ろは見ない
+        hub = "change-watch-issue-hub.yaml.example"
+        self.assertEqual(self.run_dag(hub)["get"], 0)                                # 依頼を見るワークフローも動いている
+        run = lambda **kw: self.run_dag(dag, **{"AUTHOR": "hub-bot", "KEEP_DAYS": "7", **kw})
+        self.assertEqual(run(), {"get": 0, "check": 0, "delete": 0, "commit": 0})    # 初回から、今あるコメントも見る
+        self.assertEqual(self.gl.deleted, [mine["id"]])
+        keep = {"get": 0, "check": 0, "delete": None, "commit": 0}
+        self.assertEqual([run(), run(), run()], [keep] * 3)                          # 消えたことを覚え、人のコメントと記録は消さない
+        wait = {"get": 0, "check": 0, "delete": None, "commit": None}
+        self.assertEqual([run(), run()], [wait, wait])                               # まだ新しいコメントは、消さずに次も見る
+        self.assertEqual(self.gl.deleted, [mine["id"]])
+        self.assertEqual(run(KEEP_DAYS="0")["check"], gh.USAGE)                      # すぐ消す指定は受けない
+        self.assertEqual(run(AUTHOR="")["check"], gh.USAGE)
+        self.assertEqual(self.gl.deleted, [mine["id"]])
+        with self.gl.lock:                                                           # 日がたてば消し、後ろへ進む
+            self.gl.notes[-2]["created_at"] = "2026-11-09T09:00:00.000+09:00"
+            self.gl.notes[-2]["body"] += "（書き直し）"
+        self.assertEqual([run()["delete"] for _ in range(4)], [0, None, 0, None])
+        self.assertEqual(len(self.gl.deleted), 3)
+        self.assertEqual(self.gl.deleted[-1], last["id"])
+        self.assertEqual(run(), {"get": 0, "check": 0, "delete": None, "commit": None})   # 消し終えたら、もう何もしない
+        self.assertEqual([n["body"] for n in self.gl.notes], ["人のコメント", "changed the description"])
+        # 依頼を見るワークフローは、消えたコメントには返信せず、見終えたと記録する。
+        runs = [self.run_dag(hub) for _ in range(4)]
+        self.assertEqual(runs[0], {"get": 0, "request": None, "reply": None, "commit": 0})
+        self.assertEqual(runs[-1]["commit"], None)
+        self.assertEqual(self.gl.posted, [])
+
+    def test_old_note_decision(self):
+        now = datetime.datetime(2026, 11, 21, tzinfo=datetime.timezone.utc)
+        rec = {"system": False, "author": {"username": "hub-bot"}, "created_at": "2026-11-13T23:59:59.000Z"}
+        decide = lambda record, kind="appeared", days=7: gh.old_note({"kind": kind, "record": record}, "hub-bot", days, now)
+        self.assertEqual(decide(rec), "delete")
+        self.assertEqual(decide(rec, kind="changed"), "delete")
+        self.assertEqual(decide({**rec, "created_at": "2026-11-14T00:00:00Z"}), "wait")          # ちょうど 7 日はまだ消さない
+        self.assertEqual(decide({**rec, "created_at": "2026-11-14T08:59:59+09:00"}), "delete")   # 時差つきの日時
+        self.assertEqual(decide(rec, kind="removed"), "keep")
+        self.assertEqual(decide({**rec, "system": True}), "keep")
+        self.assertEqual(decide({**rec, "author": {"username": "alice"}}), "keep")
+        self.assertEqual(decide({**rec, "created_at": "いつか"}), "keep")                         # 読めない日時は消さない
+        self.assertEqual(decide(None), "keep")
+        self.assertEqual(run_main("check-old-note", "--change=", "--author=hub-bot"), (0, "", ""))
+        self.assertEqual(run_main("check-old-note", "--change=[]", "--author=hub-bot")[0], gh.USAGE)
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})
