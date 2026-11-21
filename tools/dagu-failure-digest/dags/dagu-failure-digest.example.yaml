@@ -1,0 +1,17 @@
+# ツール・設定・hub agent のパスを利用環境に合わせる。
+description: "Dagu の実行失敗を集め、GitLab ハブ issue にコメントする"
+schedule: "35 7 * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: collect-and-post
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/work/repo/tools/dagu-failure-digest/dagu_failure_digest.py"
+        - "--config"
+        - "/home/you/.config/dagu-failure-digest/config.json"
+    timeout_sec: 300
