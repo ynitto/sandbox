@@ -27,6 +27,13 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
         issue の説明を書き換える JSON（{"description": "..."}）を出す（change-watch call PUT の --json に渡す）。
         本文の渡し方と、空・失敗のときの扱いは note と同じ（ファイルやコマンドの出力から、何行もある説明を渡せる）。
 
+    フィルタ gitlab_project_api    {{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}
+                                       プロジェクト（か、その中の issue）の URL を、プロジェクトの API の URL にする（issue を立てるのに使う）
+
+    change-watch --plugin <このファイル> issue --title "..." [--labels 通知] --text "..." | --text-file F | -- <コマンド> [引数...]
+        新しい issue の JSON（{"title": ..., "description": ..., "labels": ...}）を出す（change-watch call POST "<プロジェクトの API>/issues" に渡す）。
+        本文の渡し方・空のとき・--out は note と同じ。--title が空なら本文の 1 行目を題にする。
+
     change-watch --plugin <このファイル> api-url [--url=<issue の URL>]
         issue の API の URL を出す（change-watch call の URL に渡す）。ハブでない issue を、ワークフローの引数で指して変えるときに使う。
         --url が無いか空なら、ハブの issue（環境変数 GITLAB_HUB_ISSUE_URL）。
@@ -100,6 +107,19 @@ def gitlab_issue_api(url, _arg=None) -> str:
                          "（https://gitlab.example.com/group/project/-/issues/42 の形で書いてください）")
     base, project, iid = m.groups()
     return f"{base}/api/v4/projects/{urllib.parse.quote(project, safe='')}/issues/{iid}"
+
+
+def gitlab_project_api(url, _arg=None) -> str:
+    """プロジェクトの URL（https://gitlab.example.com/group/project。その中の issue などの URL でもよい）を、
+    プロジェクトの API の URL（https://gitlab.example.com/api/v4/projects/group%2Fproject）にする。"""
+    url = str(url or "").strip()
+    if "/api/v4/" in url:
+        return re.sub(r"(/api/v4/projects/[^/?#]+).*$", r"\1", url.rstrip("/"))
+    m = _ISSUE_URL.match(url) or re.match(r"^(https?://[^/?#]+)/([^?#]+?)(?:/-/[^?#]*)?/?(?:[?#].*)?$", url)
+    if not m or not m.group(2).strip("/"):
+        raise ValueError(f"GitLab のプロジェクトの URL ではありません: {url!r}"
+                         "（https://gitlab.example.com/group/project の形で書いてください）")
+    return f"{m.group(1)}/api/v4/projects/{urllib.parse.quote(m.group(2).strip('/'), safe='')}"
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +403,21 @@ def _emit(payload: str, out: str | None) -> int:
     return OK
 
 
+def cmd_issue(a) -> int:
+    code, text = _read_text(a)
+    if code != OK:
+        return code
+    if not text.strip():
+        return OK                           # 空なら何も出さない（ワークフローは issue を立てるステップを飛ばす）
+    title = " ".join((a.title or "").split()) or next(line.strip() for line in text.strip().split("\n") if line.strip())
+    out = {"title": title[:255], "description": disarm(text.strip())}
+    if (a.labels or "").strip():
+        out["labels"] = a.labels.strip()
+    if any(_refuse_broken(v) for v in out.values()):
+        return USAGE
+    return _emit(json.dumps(out), a.out)
+
+
 def cmd_check_request(a) -> int:
     code, text = _read_text(a)
     if code != OK:
@@ -477,6 +512,7 @@ _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-wat
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
 _OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
 _OUT = "JSON をこのファイルに書き、標準出力にはパスだけを出す（call の --json-file に渡す。長い文をコマンド行に載せない）"
+_ISSUE = "新しい issue の JSON を出す（change-watch call POST \"<プロジェクトの API>/issues\" に渡す）"
 _API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
 
 
@@ -505,6 +541,12 @@ def _old_note_args(p) -> None:
     p.add_argument("--days", default="7", help="この日数より古いコメントを消す（既定 7。1 以上）")
 
 
+def _issue_args(p) -> None:
+    _text_args(p, "issue")
+    p.add_argument("--title", default="", help="題（空なら本文の 1 行目）")
+    p.add_argument("--labels", default="", help="付けるラベル（カンマ区切り）")
+
+
 def _api_url_args(p) -> None:
     p.add_argument("--url", default="", help="issue の URL（無いか空なら、環境変数 GITLAB_HUB_ISSUE_URL のハブの issue）")
 
@@ -512,6 +554,8 @@ def _api_url_args(p) -> None:
 def register(api) -> None:
     """フィルタと、ワークフローが呼ぶコマンド（change-watch --plugin <このファイル> note ... など。設定は読まない）。"""
     api.add_filter("gitlab_issue_api", gitlab_issue_api)
+    api.add_filter("gitlab_project_api", gitlab_project_api)
+    _issue_args(api.add_command("issue", lambda _cfg, _store, a: cmd_issue(a), _ISSUE, needs_config=False))
     _text_args(api.add_command("note", lambda _cfg, _store, a: cmd_note(a), _NOTE, needs_config=False), "note")
     _text_args(api.add_command("description", lambda _cfg, _store, a: cmd_note(a), _DESCRIPTION, needs_config=False), "description")
     _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
@@ -526,13 +570,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     _text_args(sub.add_parser("note", help=_NOTE), "note")
     _text_args(sub.add_parser("description", help=_DESCRIPTION), "description")
+    _issue_args(sub.add_parser("issue", help=_ISSUE))
     _check_args(sub.add_parser("check-request", help=_CHECK))
     _fields_args(sub.add_parser("fields", help=_FIELDS))
     _api_url_args(sub.add_parser("api-url", help=_API_URL))
     _old_note_args(sub.add_parser("check-old-note", help=_OLD_NOTE))
     a = p.parse_args(argv)
     return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
-            "check-request": cmd_check_request, "check-old-note": cmd_check_old_note}[a.cmd](a)
+            "check-request": cmd_check_request, "check-old-note": cmd_check_old_note,
+            "issue": cmd_issue}[a.cmd](a)
 
 
 if __name__ == "__main__":

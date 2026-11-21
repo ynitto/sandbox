@@ -59,6 +59,7 @@ class FakeGitLab:
         self.next_id = 999
         self.other_posted: list[str] = []
         self.updates: list[dict] = []
+        self.created: dict[int, dict] = {}                   # プロジェクトに新しく立てた issue（iid ごと）
         self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
         self.other = {"iid": OTHER, "title": "ほかの issue", "description": "前の説明", "labels": [], "state": "opened"}
         self.lock = threading.Lock()
@@ -66,6 +67,7 @@ class FakeGitLab:
         issue_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{ISSUE}"
         path = issue_path + "/notes"
         other_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}/issues/{OTHER}"
+        project_path = f"/api/v4/projects/{PROJECT.replace('/', '%2F')}"
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -89,7 +91,14 @@ class FakeGitLab:
             def do_POST(self):
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["body"]
+                sent = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if urlparse(self.path).path == project_path + "/issues":
+                    with outer.lock:
+                        iid = 100 + len(outer.created)
+                        outer.created[iid] = {"iid": iid, "state": "opened", "labels": sent.get("labels", "").split(",")
+                                              if sent.get("labels") else [], **{k: sent[k] for k in ("title", "description")}}
+                        return self._send(201, dict(outer.created[iid]))
+                body = sent["body"]
                 if urlparse(self.path).path == other_path + "/notes":
                     with outer.lock:
                         outer.other_posted.append(body)
@@ -118,6 +127,12 @@ class FakeGitLab:
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                head, _, iid = urlparse(self.path).path.rpartition("/")
+                if head == project_path + "/issues" and iid.isdigit() and int(iid) in outer.created:
+                    with outer.lock:
+                        if body.get("state_event") == "close":
+                            outer.created[int(iid)]["state"] = "closed"
+                        return self._send(200, dict(outer.created[int(iid)]))
                 if urlparse(self.path).path == other_path:
                     with outer.lock:
                         outer.other.update(body)
@@ -435,7 +450,7 @@ class ExampleFlowTest(unittest.TestCase):
                       "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml": str(self.cfg),
                       "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py": str(PROGRAM),
                       "/home/you/work/hub/on_request.py": str(HANDLER)}
-        for name in ("hub-update-note", "hub-description", "hub-description-note"):   # call に渡す JSON のファイル
+        for name in ("hub-update-note", "hub-description", "hub-description-note", "hub-notice"):   # call に渡す JSON のファイル
             self.paths[f"/home/you/.config/change-watch/gitlab-issue-hub-agent/{name}.json"] = str(self.tmp / "out" / f"{name}.json")
 
     def run_dag(self, name: str, **params) -> dict:
@@ -696,6 +711,40 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(decide(None), "keep")
         self.assertEqual(run_main("check-old-note", "--change=", "--author=hub-bot"), (0, "", ""))
         self.assertEqual(run_main("check-old-note", "--change=[]", "--author=hub-bot")[0], gh.USAGE)
+
+    def test_notice_example_opens_and_closes_a_new_issue(self):
+        dag = "examples/change-watch-issue-hub-notice.yaml.example"
+        self.env["GITLAB_NOTICE_PROJECT_URL"] = f"{self.gl.url}/{PROJECT}"
+        run = lambda **kw: self.run_dag(dag, **{"TITLE": "", "TEXT": "", "TEXT_FILE": "", "LABELS": "通知", "CLOSE": "yes", **kw})
+        self.assertEqual(run(TITLE="夜間バッチ", TEXT="終わりました\n/close"), {"compose": 0, "create": 0, "close": 0})
+        self.assertEqual(self.gl.created[100], {"iid": 100, "state": "closed", "labels": ["通知"],
+                                                "title": "夜間バッチ", "description": "終わりました\n\\/close"})
+        self.assertEqual((self.gl.posted, self.gl.updates), ([], []))                 # ハブの issue には書かない
+        long = "\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000))          # 長い本文もファイルで渡せる
+        source = self.tmp / "notice.txt"
+        source.write_text("集計の結果\n" + long, encoding="cp932")
+        self.assertEqual(run(TEXT_FILE=str(source), LABELS="", CLOSE="no"), {"compose": 0, "create": 0, "close": None})
+        self.assertEqual({k: self.gl.created[101][k] for k in ("title", "state", "labels")}, {"title": "集計の結果",
+                                                                                            "state": "opened", "labels": []})
+        self.assertEqual(self.gl.created[101]["description"], "集計の結果\n" + long)
+        self.assertEqual(run(), {"compose": 0, "create": None, "close": None})       # 本文が無ければ立てない
+        self.assertEqual(run(TEXT="化け\ufffd")["compose"], gh.USAGE)                # 文字化けは立てない
+        self.assertEqual(len(self.gl.created), 2)
+
+    def test_project_api_url(self):
+        api = "https://gitlab.example.com/api/v4/projects/group%2Fsub%2Fnotices"
+        for url in ("https://gitlab.example.com/group/sub/notices", "https://gitlab.example.com/group/sub/notices/",
+                    "https://gitlab.example.com/group/sub/notices/-/issues/7", "https://gitlab.example.com/group/sub/notices/-/issues",
+                    "https://gitlab.example.com/group/sub/notices?tab=1", api + "/issues/3"):
+            with self.subTest(url=url):
+                self.assertEqual(gh.gitlab_project_api(url), api)
+        for bad in ("", "https://gitlab.example.com/", "notices"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                gh.gitlab_project_api(bad)
+        code, out, _ = run_main("issue", "--text=\n\n  一行目  \n二行目", "--labels= ")
+        self.assertEqual((code, json.loads(out)), (0, {"title": "一行目", "description": "一行目  \n二行目"}))
+        self.assertEqual(json.loads(run_main("issue", "--title= 題\nの続き ", "--text=x" )[1])["title"], "題 の続き")
+        self.assertEqual(run_main("issue", "--title=題", "--text= "), (0, "", ""))
 
     def test_maintenance_runs(self):
         self.assertEqual(self.run_dag("change-watch-gitlab-issue-hub-agent-maintenance.yaml.example"), {"gc": 0})

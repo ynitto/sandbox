@@ -69,6 +69,13 @@ examples/change-watch-issue-hub-prune（インストーラは置かない。5 �
   delete   preconditions: DECISION が delete。change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"
   commit   preconditions: DECISION が delete か keep。wait は記録せず、次の起動でもう一度見る
            （get は key の小さい順に返すので、待っているコメントの後ろはそれより新しい。初回は emit で今あるコメントも見る）
+
+examples/change-watch-issue-hub-notice（インストーラは置かない。予定なし。TITLE=… TEXT=… か TEXT_FILE=… LABELS=… CLOSE=…）
+  compose  change-watch issue --title=… --labels=… --text=… --text-file=… --out <ファイル>   → NOTICE（ファイルのパス）
+  create   preconditions: NOTICE が空でない。change-watch call POST "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues" --json-file <ファイル>   → CREATED
+  close    preconditions: CLOSE が yes・CREATED.iid が数。change-watch call PUT "…/issues/${CREATED.iid}" --json '{"state_event": "close"}'
+           （コメントの通知メールには前のやりとりが入ることがあり、Power Automate からそのまま Teams に投稿できない。
+            新しい issue の通知メールは題と説明だけなので、知らせを 1 件ずつ issue にする。受け手は通知を「新しい issue」だけにする）
 ```
 
 本文の JSON はコマンド行に載せず、`--out` でファイルに書いて `call --json-file` に渡す。コマンド行には長さの上限があり

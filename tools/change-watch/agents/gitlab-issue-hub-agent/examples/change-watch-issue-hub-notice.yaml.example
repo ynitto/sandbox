@@ -1,0 +1,98 @@
+# gitlab-issue-hub-agent: 知らせを 1 件ずつ新しい issue にして、メール（→ Power Automate → Teams）へ届ける例。インストーラは置かない。
+# ~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に直す。予定では動かさない。ほかのワークフローやコマンド行から動かす:
+#   dagu start change-watch-issue-hub-notice -- TITLE="夜間バッチ" TEXT="終わりました"
+#   dagu start change-watch-issue-hub-notice -- TITLE="夜間バッチ" TEXT_FILE="/home/you/work/hub/notice.txt"
+# ハブの issue にコメントを足すと、通知メールに前のコメントまで入ることがある。新しい issue の通知メールには、その issue の説明しか入らない。
+# 立てる先のプロジェクトは .env の GITLAB_NOTICE_PROJECT_URL（例 https://gitlab.example.com/group/notices）。知らせ専用のプロジェクトにする。
+# メールを受ける人は、そのプロジェクトの通知を「カスタム」にし、「新しい issue」だけを選ぶ（閉じたときのメールは届かない）。
+# 立てた issue はすぐ閉じる（CLOSE を no にすると開いたまま）。閉じた issue は一覧に出ない。
+#
+#   compose  題・本文・ラベルを JSON にしてファイルに書く（change-watch の issue。長い本文もコマンド行に載せない）
+#   create   プロジェクトに issue を立てる（change-watch call POST。GitLab が「新しい issue」のメールを送る）
+#   close    立てた issue を閉じる（change-watch call PUT）
+# issue は gitlab_hub.py が change-watch に足すコマンド、gitlab_project_api は同じくフィルタ（--plugin gitlab_hub を付けて呼ぶ）。
+description: "知らせを新しい GitLab の issue にして、その通知メールで届ける（前のやりとりがメールに入らない）"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - TITLE: ""                   # 題（空なら本文の 1 行目。メールの件名に入る）
+  - TEXT: ""                    # 本文
+  - TEXT_FILE: ""               # 本文を書いたファイル（長いとき。TEXT が空なら使う）
+  - LABELS: "通知"              # 付けるラベル（カンマ区切り。空なら付けない）
+  - CLOSE: "yes"                # 立てたらすぐ閉じる（no なら開いたまま）
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "issue"
+        - "--title=${params.TITLE}"
+        - "--labels=${params.LABELS}"
+        - "--text=${params.TEXT}"
+        - "--text-file=${params.TEXT_FILE}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-notice.json"
+    timeout_sec: 60
+    output: NOTICE
+  - name: create
+    depends: [compose]
+    preconditions:              # 本文があるときだけ（TEXT も TEXT_FILE も空なら立てない）
+      - condition: "${NOTICE}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues"   # change-watch がプロジェクトの URL から API の URL を作る
+        - "--source"
+        - "gitlab-hub-issue"     # 接続（トークン）と要求の間隔を借りる取得元
+        - "--json-file"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-notice.json"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CREATED
+  - name: close
+    depends: [create]
+    preconditions:              # 立てられて、CLOSE が yes のときだけ
+      - condition: "${params.CLOSE}"
+        expected: "yes"
+      - condition: "${CREATED.iid}"
+        expected: "re:^[0-9]+$"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues/${CREATED.iid}"
+        - "--source"
+        - "gitlab-hub-issue"
+        - "--json"
+        - '{"state_event": "close"}'
+    timeout_sec: 120
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

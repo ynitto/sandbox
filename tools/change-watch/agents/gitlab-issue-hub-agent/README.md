@@ -241,6 +241,32 @@ dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが
 前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
 書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
 
+## 知らせを新しい issue にして届ける例（`examples/change-watch-issue-hub-notice.yaml.example`）
+
+ハブの issue にコメントを足すと、通知メールに前のコメントまで入ることがあり、そのまま Teams に流せない。
+この例は知らせを 1 件ずつ新しい issue にする。新しい issue の通知メールには、その issue の題と説明しか入らない。
+インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
+
+```bash
+dagu start change-watch-issue-hub-notice -- TITLE="夜間バッチ" TEXT="終わりました"
+dagu start change-watch-issue-hub-notice -- TITLE="夜間バッチ" TEXT_FILE="C:/work/hub/notice.txt"
+```
+
+1. 知らせ専用のプロジェクトを作り、その URL を `.env` の `GITLAB_NOTICE_PROJECT_URL` に書く（例 `https://gitlab.example.com/group/notices`）。
+   トークンの持ち主は、そのプロジェクトで issue を立てられる役割（Reporter 以上）にする。
+2. メールを受ける人（Power Automate が見るメールボックスの持ち主）は、そのプロジェクトの通知を「カスタム」にし、「新しい issue」だけを選ぶ。
+   ハブの issue と同じく、トークンの持ち主とは別の人にする。
+3. Power Automate では、このプロジェクトからの「新しい issue」のメールを Teams に流す。件名に題が、本文に説明が入る。
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `compose` | `change-watch issue --title=… --labels=… --text=… --text-file=… --out=<ファイル>` | 題・本文・ラベルを JSON にしてファイルに書く。題が空なら本文の 1 行目にする |
+| `create` | `change-watch call POST "<プロジェクトの API>/issues" --json-file=<ファイル>` | issue を立てる。GitLab が「新しい issue」のメールを送る |
+| `close` | `change-watch call PUT "<プロジェクトの API>/issues/<番号>"` | 立てた issue をすぐ閉じる（`CLOSE=no` なら開いたまま） |
+
+本文は `TEXT` か、長ければファイルにして `TEXT_FILE` で渡す（Shift_JIS・UTF-16 のファイルも読める）。どちらも空なら何もしない。
+閉じた issue は一覧に出ず、通知を「新しい issue」だけにしていれば、閉じたときのメールも届かない。
+
 ## 溜まった古いコメントを消す例（`examples/change-watch-issue-hub-prune.yaml.example`）
 
 メールで知らせるためにコメントを足し続けると、issue にコメントが溜まる。メールは送り終えているので、古いコメントは消してよい。
@@ -300,6 +326,7 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `description`（渡し方は `note` と同じ） | issue の説明 | `call PUT "<issue の API>" --json` |
 | `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
 | `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
+| `issue --title=<題> [--labels=<ラベル>]`（本文の渡し方は `note` と同じ） | 新しい issue（題が空なら本文の 1 行目） | `call POST "<プロジェクトの API>/issues" --json-file` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
 | `check-old-note --change=<get の JSON> --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
 
