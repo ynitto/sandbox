@@ -8,7 +8,7 @@ Python 3.9 以降の標準ライブラリだけで動く。`config.example.json`
 
 - `kiro_exports` は点検するエクスポート先の配列。各要素に表示用の `name` と出力先の `dir` を指定する。
 - `knowledge.path` は `agent-audit report --kind knowledge --json` の保存先。レポートの鮮度はファイルの更新時刻（mtime）で判定する。
-- `change_watch` は点検する change-watch の配列。各要素に表示用の `name` と状態 DB を置くディレクトリ `state_dir` を指定する。`max_age_hours` は状態 DB の更新から判定時刻までに許容する経過時間（時間）。
+- `change_watch` は点検する change-watch の配列。各要素に表示用の `name` と状態 DB を置くディレクトリ `state_dir` を指定する。`max_age_hours` は状態 DB の更新から判定時刻までに許容する経過時間（時間）。空配列は未設定として扱う。
 - 各入力の `max_age_hours` と `knowledge.thresholds` の各しきい値は任意の非負数。鮮度上限を省略した入力は、確認できた更新時刻が判定時刻以前なら `ok`。上限を省略したストア指標は点検項目に含めない。エクスポート先、knowledge レポート、change-watch のうち、少なくとも1対象を設定する。
 
 ```sh

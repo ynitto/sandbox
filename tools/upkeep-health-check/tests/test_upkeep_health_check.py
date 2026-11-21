@@ -301,6 +301,21 @@ class ChangeWatchTests(unittest.TestCase):
         self.assertEqual(entry["status"], "ok")
         self.assertEqual(entry["value"], 0.25)
 
+    def test_change_watch_at_threshold_is_ok(self):
+        self.write_state(1)
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["value"], 1)
+        self.assertEqual(entry["threshold"], 1)
+
+    def test_change_watch_wal_only(self):
+        self.write_state(0.5, "state.db-wal")
+
+        entry, = self.check()["items"]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["value"], 0.5)
+
     def test_future_change_watch_mtime_is_unknown(self):
         self.write_state(-1)
 
