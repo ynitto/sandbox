@@ -55,10 +55,13 @@ examples/change-watch-issue-hub-get-post（インストーラは置かない。g
   fields → retitle    同じ条件で fields title=【完了】… → call PUT <issue の API>
   commit   commit --refresh（取得元 gitlab-hub-issue の item で取り直し、自分の変更を次の変化にしない）
 
-examples/change-watch-issue-hub-description（インストーラは置かない。予定なし。dagu start … -- ISSUE_URL=… DESCRIPTION=…）
+examples/change-watch-issue-hub-description（インストーラは置かない。予定なし。dagu start … -- ISSUE_URL=… DESCRIPTION=… COMMENT=…）
   compose  change-watch description --text=${params.DESCRIPTION}                            → UPDATE（{"description": …}）
   target   preconditions: UPDATE が ^{"description"。change-watch api-url --url=${params.ISSUE_URL}   → ISSUE_API
   update   change-watch call PUT "${ISSUE_API}" --json "${UPDATE}"
+  note     change-watch note --text=${params.COMMENT}                                       → NOTE
+  comment  preconditions: ISSUE_API が ^https?://・NOTE が ^{"body"。change-watch call POST "${ISSUE_API}/notes" --json "${NOTE}"
+           （GitLab は説明の変更だけではメールを送らないので、知らせたいときにコメントを足す）
 ```
 
 ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、

@@ -142,8 +142,13 @@ def check_layers(layers, thresholds):
 def check_knowledge(config, now):
     name, kind = "knowledge", "knowledge_report"
     path, limit = config["path"], config.get("max_age_hours")
+
+    def open_report(filename, flags):
+        # A FIFO must not block before fstat can reject it.
+        return os.open(filename, flags | os.O_NONBLOCK)
+
     try:
-        with path.open(encoding="utf-8") as report:
+        with open(path, encoding="utf-8", opener=open_report) as report:
             mtime = file_mtime(os.fstat(report.fileno()))
             layers = object_value(json.load(report), "レポート").get("layers")
             object_value(layers, "layers")

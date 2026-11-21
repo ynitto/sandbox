@@ -91,6 +91,7 @@ class UpkeepHealthCheckTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
+            timeout=5,
         )
 
     def check(self):
@@ -169,6 +170,13 @@ class UpkeepHealthCheckTests(unittest.TestCase):
         self.assertEqual(unknown[0]["kind"], "knowledge_layer")
         self.assertIn("moltbook", unknown[0]["name"])
         self.assertIn("未収集", unknown[0]["detail"])
+
+    def test_fifo_report_is_unknown_without_waiting_for_a_writer(self):
+        os.mkfifo(self.knowledge_file)
+        result = self.check()
+        item = next(item for item in result["items"] if item["kind"] == "knowledge_report")
+        self.assertEqual(item["status"], "unknown")
+        self.assertIsNone(item["value"])
 
     def test_missing_state_file_and_malformed_report(self):
         self.state_file.parent.mkdir()

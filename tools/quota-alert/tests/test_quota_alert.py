@@ -137,6 +137,15 @@ class QuotaAlertTest(unittest.TestCase):
         self.assertEqual(agent["predicted_exhaustion_at"], "2026-11-20T06:00:00Z")
         self.assertEqual(agent["status"], "warning")
 
+    def test_boolean_usage_is_ignored(self):
+        self.snapshot(0, 80)
+        self.snapshot(1, True)
+        self.snapshot(1, False, agent="invalid")
+        self.invoke(1)
+        agents = self.agents()
+        self.assertEqual(set(agents), {"codex"})
+        self.assertEqual(agents["codex"]["used_percent"], 80)
+
     def test_invalid_reset_is_treated_as_unknown(self):
         self.snapshot(0, 0, reset_at="invalid")
         self.snapshot(4, 40, reset_at="invalid")
