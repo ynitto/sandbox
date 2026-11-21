@@ -13,6 +13,8 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> note -- <コマンド> [引数...]     コマンドの標準出力
         issue に足すコメントの本文を {"body": "..."} の JSON で出す（change-watch call の --json に渡す）。
         本文が空なら何も出さない。コマンドが失敗したら何も出さず、その終了コードで終わる。
+        ファイル・コマンドの出力は UTF-8 で読み、読めなければ UTF-16（BOM つき）・この PC の文字コード（Shift_JIS など）で読む。
+        文字化けした文字（U+FFFD）を含む本文は書かず、2 で終わる（渡される前に文字が失われている）。
         --out <ファイル> を付けると、JSON をそのファイルに書き、標準出力にはファイルのパスだけを出す（call の --json-file に渡す）。
         長い文は JSON にするとコマンド行に収まらないことがある（Windows は 8191 文字まで）ので、ファイルで渡す。
         --text が空で --text-file があれば、ファイルの中身を使う（ワークフローの引数を両方書いておける）。
@@ -24,6 +26,13 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> description --text "..." | --text-file F | -- <コマンド> [引数...]
         issue の説明を書き換える JSON（{"description": "..."}）を出す（change-watch call PUT の --json に渡す）。
         本文の渡し方と、空・失敗のときの扱いは note と同じ（ファイルやコマンドの出力から、何行もある説明を渡せる）。
+
+    フィルタ gitlab_project_api    {{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}
+                                       プロジェクト（か、その中の issue）の URL を、プロジェクトの API の URL にする（issue を立てるのに使う）
+
+    change-watch --plugin <このファイル> issue --title "..." [--labels 通知] --text "..." | --text-file F | -- <コマンド> [引数...]
+        新しい issue の JSON（{"title": ..., "description": ..., "labels": ...}）を出す（change-watch call POST "<プロジェクトの API>/issues" に渡す）。
+        本文の渡し方・空のとき・--out は note と同じ。--title が空なら本文の 1 行目を題にする。
 
     change-watch --plugin <このファイル> api-url [--url=<issue の URL>]
         issue の API の URL を出す（change-watch call の URL に渡す）。ハブでない issue を、ワークフローの引数で指して変えるときに使う。
@@ -48,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import locale
 import os
 import re
 import subprocess
@@ -99,6 +109,19 @@ def gitlab_issue_api(url, _arg=None) -> str:
     return f"{base}/api/v4/projects/{urllib.parse.quote(project, safe='')}/issues/{iid}"
 
 
+def gitlab_project_api(url, _arg=None) -> str:
+    """プロジェクトの URL（https://gitlab.example.com/group/project。その中の issue などの URL でもよい）を、
+    プロジェクトの API の URL（https://gitlab.example.com/api/v4/projects/group%2Fproject）にする。"""
+    url = str(url or "").strip()
+    if "/api/v4/" in url:
+        return re.sub(r"(/api/v4/projects/[^/?#]+).*$", r"\1", url.rstrip("/"))
+    m = _ISSUE_URL.match(url) or re.match(r"^(https?://[^/?#]+)/([^?#]+?)(?:/-/[^?#]*)?/?(?:[?#].*)?$", url)
+    if not m or not m.group(2).strip("/"):
+        raise ValueError(f"GitLab のプロジェクトの URL ではありません: {url!r}"
+                         "（https://gitlab.example.com/group/project の形で書いてください）")
+    return f"{m.group(1)}/api/v4/projects/{urllib.parse.quote(m.group(2).strip('/'), safe='')}"
+
+
 # ---------------------------------------------------------------------------
 # コメントの本文・説明・更新の項目（Dagu のワークフローから、change-watch のコマンドとして呼ぶ）
 # ---------------------------------------------------------------------------
@@ -113,18 +136,60 @@ def note_json(text: str, field: str = "body") -> str:
     return json.dumps({field: disarm(text.strip())})         # ASCII だけで出す（Windows のコンソールの文字コードに依らない）
 
 
+_BROKEN = "\ufffd"                        # 読めなかった文字の置き換え（ここまで来たら、元の文字はもう無い）
+
+
+def _encodings() -> list[str]:
+    """本文のバイト列を読む文字コードの順。UTF-8 を先に、読めなければこの PC の文字コード（日本語の Windows なら cp932）。
+    UTF-8 モードの Python でも、この PC の本来の文字コードを使う（locale.getencoding）。"""
+    native = getattr(locale, "getencoding", lambda: locale.getpreferredencoding(False))()
+    out: list[str] = []
+    for enc in ("utf-8", native, "cp932"):
+        if enc and enc.lower().replace("_", "-") not in [e.lower().replace("_", "-") for e in out]:
+            out.append(enc)
+    return out
+
+
+def decode(raw: bytes) -> tuple[str | None, str]:
+    """バイト列を文字にする。(文字, 使った文字コード)。BOM があればそれに従い、無ければ UTF-8・この PC の文字コード・cp932 の順に
+    試す。どれでも読めなければ (None, "")（読めない文字を黙って置き換えない）。"""
+    for bom, enc in ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+        if raw.startswith(bom):
+            try:
+                return _newlines(raw.decode(enc)), enc
+            except UnicodeError:
+                return None, ""
+    for enc in _encodings():
+        try:
+            return _newlines(raw.decode(enc)), enc
+        except (UnicodeError, LookupError):
+            continue
+    return None, ""
+
+
+def _newlines(text: str) -> str:
+    """改行を \n にそろえる（Windows のコマンド・ファイルの \r\n を、コメントに持ち込まない）。"""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _run(command: list[str]) -> tuple[int, str]:
     try:
-        p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        p = subprocess.run(command, capture_output=True,
                            env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"))
     except OSError as e:
         print(f"コマンドを動かせません: {e}", file=sys.stderr)
         return NOT_FOUND, ""
     if p.stderr:
-        sys.stderr.write(p.stderr)          # Dagu のログに残す（コメントには書かない）
+        err, _ = decode(p.stderr)
+        sys.stderr.write(err if err is not None else p.stderr.decode("utf-8", "replace"))   # Dagu のログに残す（コメントには書かない）
     if p.returncode != 0:
         print(f"コマンドが終了コード {p.returncode} で終わりました", file=sys.stderr)
-    return p.returncode, p.stdout
+        return p.returncode, ""
+    text, _ = decode(p.stdout)
+    if text is None:
+        print("コマンドの出力を文字として読めません（UTF-8・Shift_JIS のどちらでもありません）", file=sys.stderr)
+        return USAGE, ""
+    return OK, text
 
 
 def _violation(code: str, field: str, line: int, message: str) -> dict:
@@ -288,11 +353,15 @@ def _read_text(a) -> tuple[int, str]:
         return OK, text
     if a.text_file:
         try:
-            with open(a.text_file, encoding="utf-8-sig") as f:
-                return OK, f.read()
-        except (OSError, UnicodeError) as e:
+            with open(a.text_file, "rb") as f:
+                text, _ = decode(f.read())
+        except OSError as e:
             print(f"本文のファイルを読めません: {e}", file=sys.stderr)
             return USAGE, ""
+        if text is None:
+            print("本文のファイルを文字として読めません（UTF-8・UTF-16・Shift_JIS のどれでもありません）", file=sys.stderr)
+            return USAGE, ""
+        return OK, text
     return OK, a.text
 
 
@@ -302,7 +371,20 @@ def cmd_note(a) -> int:
         return code
     if not text.strip():
         return OK                           # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+    if _refuse_broken(text):
+        return USAGE
     return _emit(note_json(text, "description" if a.cmd == "description" else "body"), a.out)
+
+
+def _refuse_broken(text: str) -> bool:
+    """文字化け（U+FFFD）を含む文は書かない。渡される前に、UTF-8 でない文字が置き換えられている。"""
+    if _BROKEN not in text:
+        return False
+    line = text[:text.index(_BROKEN)].count("\n") + 1
+    print(f"本文の {line} 行目に文字化けした文字（U+FFFD）があるので書きません。本文が渡される前に、UTF-8 でない文字が"
+          "置き換えられています。前のステップの出力を ${…} で渡しているなら、ファイル（--text-file）か -- <コマンド> で"
+          "渡してください（Shift_JIS のファイル・出力も読めます）", file=sys.stderr)
+    return True
 
 
 def _emit(payload: str, out: str | None) -> int:
@@ -319,6 +401,21 @@ def _emit(payload: str, out: str | None) -> int:
         return USAGE
     print(out)
     return OK
+
+
+def cmd_issue(a) -> int:
+    code, text = _read_text(a)
+    if code != OK:
+        return code
+    if not text.strip():
+        return OK                           # 空なら何も出さない（ワークフローは issue を立てるステップを飛ばす）
+    title = " ".join((a.title or "").split()) or next(line.strip() for line in text.strip().split("\n") if line.strip())
+    out = {"title": title[:255], "description": disarm(text.strip())}
+    if (a.labels or "").strip():
+        out["labels"] = a.labels.strip()
+    if any(_refuse_broken(v) for v in out.values()):
+        return USAGE
+    return _emit(json.dumps(out), a.out)
 
 
 def cmd_check_request(a) -> int:
@@ -401,6 +498,8 @@ def cmd_fields(a) -> int:
             print(f"項目は 名前=値 で書いてください: {item!r}", file=sys.stderr)
             return USAGE
         out[key.strip()] = disarm(value) if key.strip() == "description" else value
+    if any(_refuse_broken(v) for v in out.values()):
+        return USAGE
     if not out:
         print("項目がありません（title=... のように渡してください）", file=sys.stderr)
         return USAGE
@@ -413,6 +512,7 @@ _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-wat
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
 _OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
 _OUT = "JSON をこのファイルに書き、標準出力にはパスだけを出す（call の --json-file に渡す。長い文をコマンド行に載せない）"
+_ISSUE = "新しい issue の JSON を出す（change-watch call POST \"<プロジェクトの API>/issues\" に渡す）"
 _API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
 
 
@@ -441,6 +541,12 @@ def _old_note_args(p) -> None:
     p.add_argument("--days", default="7", help="この日数より古いコメントを消す（既定 7。1 以上）")
 
 
+def _issue_args(p) -> None:
+    _text_args(p, "issue")
+    p.add_argument("--title", default="", help="題（空なら本文の 1 行目）")
+    p.add_argument("--labels", default="", help="付けるラベル（カンマ区切り）")
+
+
 def _api_url_args(p) -> None:
     p.add_argument("--url", default="", help="issue の URL（無いか空なら、環境変数 GITLAB_HUB_ISSUE_URL のハブの issue）")
 
@@ -448,6 +554,8 @@ def _api_url_args(p) -> None:
 def register(api) -> None:
     """フィルタと、ワークフローが呼ぶコマンド（change-watch --plugin <このファイル> note ... など。設定は読まない）。"""
     api.add_filter("gitlab_issue_api", gitlab_issue_api)
+    api.add_filter("gitlab_project_api", gitlab_project_api)
+    _issue_args(api.add_command("issue", lambda _cfg, _store, a: cmd_issue(a), _ISSUE, needs_config=False))
     _text_args(api.add_command("note", lambda _cfg, _store, a: cmd_note(a), _NOTE, needs_config=False), "note")
     _text_args(api.add_command("description", lambda _cfg, _store, a: cmd_note(a), _DESCRIPTION, needs_config=False), "description")
     _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
@@ -462,13 +570,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     _text_args(sub.add_parser("note", help=_NOTE), "note")
     _text_args(sub.add_parser("description", help=_DESCRIPTION), "description")
+    _issue_args(sub.add_parser("issue", help=_ISSUE))
     _check_args(sub.add_parser("check-request", help=_CHECK))
     _fields_args(sub.add_parser("fields", help=_FIELDS))
     _api_url_args(sub.add_parser("api-url", help=_API_URL))
     _old_note_args(sub.add_parser("check-old-note", help=_OLD_NOTE))
     a = p.parse_args(argv)
     return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
-            "check-request": cmd_check_request, "check-old-note": cmd_check_old_note}[a.cmd](a)
+            "check-request": cmd_check_request, "check-old-note": cmd_check_old_note,
+            "issue": cmd_issue}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -69,11 +69,23 @@ examples/change-watch-issue-hub-prune（インストーラは置かない。5 �
   delete   preconditions: DECISION が delete。change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"
   commit   preconditions: DECISION が delete か keep。wait は記録せず、次の起動でもう一度見る
            （get は key の小さい順に返すので、待っているコメントの後ろはそれより新しい。初回は emit で今あるコメントも見る）
+
+examples/change-watch-issue-hub-notice（インストーラは置かない。予定なし。TITLE=… TEXT=… か TEXT_FILE=… LABELS=… CLOSE=…）
+  compose  change-watch issue --title=… --labels=… --text=… --text-file=… --out <ファイル>   → NOTICE（ファイルのパス）
+  create   preconditions: NOTICE が空でない。change-watch call POST "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues" --json-file <ファイル>   → CREATED
+  close    preconditions: CLOSE が yes・CREATED.iid が数。change-watch call PUT "…/issues/${CREATED.iid}" --json '{"state_event": "close"}'
+           （コメントの通知メールには前のやりとりが入ることがあり、Power Automate からそのまま Teams に投稿できない。
+            新しい issue の通知メールは題と説明だけなので、知らせを 1 件ずつ issue にする。受け手は通知を「新しい issue」だけにする）
 ```
 
 本文の JSON はコマンド行に載せず、`--out` でファイルに書いて `call --json-file` に渡す。コマンド行には長さの上限があり
 （Windows の CreateProcess は 32767 文字、cmd を通すと 8191 文字）、日本語を `\uXXXX` で書く JSON は本文の 6 倍ほどになるため、
 数千字のコメントで「command line is too long」になる。引数で受ける `COMMENT` も同じ上限を受けるので、長い文は `COMMENT_FILE` で渡す。
+
+本文のバイト列（`--text-file`・`-- <コマンド>` の標準出力）は、BOM があればそれに従い、無ければ UTF-8・`locale.getencoding()`・cp932 の順に
+厳密に読む。Windows のコマンドはパイプへ cp932 で出すので、UTF-8 の `errors="replace"` で読むと日本語がすべて U+FFFD になっていた。
+引数で渡された文は、Dagu（Go）が UTF-8 でないバイトを U+FFFD にしてから CreateProcessW に渡すため、こちらでは戻せない。
+U+FFFD を含む文は書かずに 2 で終わり、壊れた文を GitLab に残さない。
 
 ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
 `api-url` が API の URL を先に作って渡す。接続と要求の間隔は取得元 `gitlab-hub-issue` のものを借りる。
