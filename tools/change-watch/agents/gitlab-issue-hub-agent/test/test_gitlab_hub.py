@@ -224,6 +224,9 @@ class NoteTest(unittest.TestCase):
         code, out, err = run_main("note", "--", sys.executable, "-c",
                                   "import sys; sys.stdout.buffer.write('結果: 正常\\n'.encode('cp932'))")
         self.assertEqual((code, json.loads(out)["body"]), (0, "結果: 正常"), err)
+        code, out, err = run_main("note", "--", sys.executable, "-c",                  # Windows の改行も \n にそろえる
+                                  "import sys; sys.stdout.buffer.write('一行目\\r\\n二行目\\r\\n'.encode('cp932'))")
+        self.assertEqual((code, json.loads(out)["body"]), (0, "一行目\n二行目"), err)
         code, out, err = run_main("note", "--", sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\x81 ')")
         self.assertEqual((code, out), (gh.USAGE, ""))
         self.assertIn("コマンドの出力を文字として読めません", err)

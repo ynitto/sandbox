@@ -136,15 +136,20 @@ def decode(raw: bytes) -> tuple[str | None, str]:
     for bom, enc in ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
         if raw.startswith(bom):
             try:
-                return raw.decode(enc), enc
+                return _newlines(raw.decode(enc)), enc
             except UnicodeError:
                 return None, ""
     for enc in _encodings():
         try:
-            return raw.decode(enc), enc
+            return _newlines(raw.decode(enc)), enc
         except (UnicodeError, LookupError):
             continue
     return None, ""
+
+
+def _newlines(text: str) -> str:
+    """改行を \n にそろえる（Windows のコマンド・ファイルの \r\n を、コメントに持ち込まない）。"""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _run(command: list[str]) -> tuple[int, str]:
@@ -336,7 +341,7 @@ def _read_text(a) -> tuple[int, str]:
         if text is None:
             print("本文のファイルを文字として読めません（UTF-8・UTF-16・Shift_JIS のどれでもありません）", file=sys.stderr)
             return USAGE, ""
-        return OK, text.replace("\r\n", "\n")
+        return OK, text
     return OK, a.text
 
 
