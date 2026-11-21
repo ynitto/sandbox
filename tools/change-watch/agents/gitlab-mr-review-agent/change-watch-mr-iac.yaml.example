@@ -1,0 +1,21 @@
+# install.py install --agent gitlab-mr-review-agent が、パスを環境に合わせて置く。
+# 手動実行の例: dagu start change-watch-mr-iac -- IID=123
+description: "指定した GitLab MR の IaC リスクを検査する"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env"
+params:
+  - IID: ""
+steps:
+  - name: iac
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_iac"
+        - "iac"
+        - "post"
+        - "${params.IID}"
+    timeout_sec: 300

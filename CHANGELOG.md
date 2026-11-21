@@ -10,6 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - 読み取り専用の Azure CLI で停止中 VM・未接続ディスク・過大 SKU を検出し、設定単価から月額削減見込みを算出する。GitLab ハブ issue への投稿は既定で dry-run とし、実投稿時は同日の重複を抑制する。週次の Dagu 例を同梱する。
 
+### change-watch: IaC変更のリスク検査を追加
+
+- gitlab-mr-review-agent に companion プラグイン `iac` を追加。MR 差分の IaC（Terraform / Bicep / ARM / CloudFormation）変更を決定的ルールで検査し、公開範囲の拡大・IAM ワイルドカード・ネットワーク変更を検出したら警告コメントと追加承認ラベルを付ける。初期設定は dry-run
+
 ### change-watch: 判断待ちの滞留を可視化して催促する
 
 - gitlab-decision-stagnation-agent を追加。承認・レビュー待ちの MR と判断系ラベルの Issue を集約し、滞留日数つきのサマリをハブ Issue へ定期投稿する。しきい値超過は担当者メンションつきで目立たせる。初期設定は dry-run

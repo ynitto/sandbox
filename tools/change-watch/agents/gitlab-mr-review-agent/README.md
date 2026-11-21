@@ -33,7 +33,7 @@ GitLab への問い合わせ（いつ取得するか・まとめる・失敗の�
    |---|---|
    | プログラム | `~/.local/share/change-watch/agents/gitlab-mr-review-agent/`（Windows は `%LOCALAPPDATA%\Programs\change-watch\agents\gitlab-mr-review-agent\`） |
    | 設定（`change-watch.yaml`・`gitlab-mr-review-agent.env`） | `~/.config/change-watch/gitlab-mr-review-agent/` |
-   | Dagu のワークフロー（`change-watch-mr-review.yaml`・整理の `change-watch-gitlab-mr-review-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
+   | Dagu のワークフロー（`change-watch-mr-review.yaml`・IaC 検査の `change-watch-mr-iac.yaml`・整理の `change-watch-gitlab-mr-review-agent-maintenance.yaml`） | `~/.config/dagu/dags/` |
    | 状態 | `~/.local/state/change-watch/gitlab-mr-review-agent/` |
 
 2. GitLab の URL・リポジトリ・トークンと手元のリポジトリを `~/.config/change-watch/gitlab-mr-review-agent/gitlab-mr-review-agent.env` に書く。
@@ -210,6 +210,52 @@ Dagu で使うには、環境ファイルの `MR_REVIEW_PROOF_CLI` と `MR_REVIE
 [独立検証の例](examples/change-watch-mr-review-proof.yaml.example) の `/home/you` などを自分の環境に合わせ、既存の
 `~/.config/dagu/dags/change-watch-mr-review.yaml` を**置き換える**。既定の例と並べると、同じ受け手 `mr-review` で同じ MR を取り合う。
 レビューの制限時間は 3600 秒で、その内側で検証の制限時間（既定 900 秒）がかかる。
+
+### IaC リスク検査（iac）
+
+`iac` は GitLab API から MR 全体の差分を読み、LLM を使わずに追加行を検査する。既存の
+`GITLAB_URL`・`GITLAB_TOKEN`・`GITLAB_PROJECT` を使う（`--project` でプロジェクトを上書きできる）。
+
+```sh
+change-watch --plugin gitlab_iac iac check 123 --format json --output iac.json
+change-watch --plugin gitlab_iac iac check 123 --format markdown
+change-watch --plugin gitlab_iac iac post 123
+```
+
+`check` の既定出力は JSON、`post` は Markdown。どちらも `--format json|markdown` で選び、
+`--output` を省略すると標準出力に書く。指摘にはファイル、MR 新側の行番号、ルール、重大度、判定に使ったリテラルやプロパティ名が入る。
+
+| 形式 | 対象ファイル |
+|---|---|
+| Terraform | `.tf` |
+| Bicep | `.bicep` |
+| ARM | `.json` のうち `$schema` の値に `deploymentTemplate` を含むもの、または `azuredeploy.json`、`arm-template.json`、`deployment-template.json` 系 |
+| CloudFormation | `.yaml` / `.yml` のうち `AWSTemplateFormatVersion` キーを含むもの、または `cloudformation` / `cfn` ディレクトリ配下や同名のファイル（例 `cfn-prod.yml`） |
+
+ファイル名・パスは大文字小文字を区別しない。ARM のファイル名では単語間の区切りに `-`・`_`・`.` を使え、
+環境名などの接尾辞も指定できる。名前で分類できず差分から識別子を確認できない JSON / YAML は、MR の head のファイルを参照する。
+
+| ルール | 重大度 | 判定 |
+|---|---|---|
+| `open-ingress` | high | `cidr_blocks`、`CidrIp`、`sourceAddressPrefix` などに `0.0.0.0/0` または `::/0` が追加された場合。近くに送信方向の指定や Bicep / ARM の `Deny` が見える場合は除外 |
+| `public-storage` | high | `allowBlobPublicAccess: true`、公開 ACL、パブリックアクセスのブロックを無効にする `BlockPublicPolicy: false` など |
+| `iam-wildcard` | high | `Action` / `Resource` などの値にワイルドカードがある場合。文字列、インライン配列、YAML ブロックリストを確認 |
+| `iam-admin` | high | AWS の `AdministratorAccess` 名・ARN、Azure の Owner ロール ID |
+| `network-change` | low | 差分の前後行や hunk のヘッダーにセキュリティグループ、NSG、ファイアウォール、VPC/VNet、サブネットなどのリソース宣言があり、その hunk に追加行がある場合。high の指摘がある hunk では省略 |
+
+決定的な正規表現と簡易走査なので、変数や補間、ポリシーの Effect、テンプレートの展開、実効権限などの意味解析は行わない。
+hunk の外にある設定によっては検出漏れや過検出が起こる。削除行だけの変更は検査対象外で、GitLab が差分を省略した対象ファイルは
+`skipped_files` に出す。
+
+`post` は既定で dry-run。検出結果を表示し、`MR_REVIEW_IAC_POST=1` のときだけ、
+検出がある MR に `MR_REVIEW_IAC_LABEL`（既定 `needs-extra-approval`）を追加してから警告コメントを投稿する。
+同じ対象差分とルールの指紋が既存コメントの識別行にあれば両方をスキップする。同時実行では、両方がコメントを投稿する可能性がある。
+コメント投稿とラベル付けまでをこのツールが担当する。**マージをブロックするには、GitLab 側でそのラベルを条件とする承認ルールを設定する。**
+ラベルの取り外しは運用側で行う。
+
+インストーラが置く [独立 Dagu ワークフロー](change-watch-mr-iac.yaml.example) は、
+`dagu start change-watch-mr-iac -- IID=123` で実行できる。実投稿する場合はワークフローが読む環境ファイルで
+`MR_REVIEW_IAC_POST=1` を設定する。
 
 ## Windows で使うとき
 
