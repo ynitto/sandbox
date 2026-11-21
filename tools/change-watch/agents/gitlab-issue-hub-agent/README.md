@@ -267,6 +267,36 @@ dagu start change-watch-issue-hub-notice -- TITLE="夜間バッチ" TEXT_FILE="C
 本文は `TEXT` か、長ければファイルにして `TEXT_FILE` で渡す（Shift_JIS・UTF-16 のファイルも読める）。どちらも空なら何もしない。
 閉じた issue は一覧に出ず、通知を「新しい issue」だけにしていれば、閉じたときのメールも届かない。
 
+## 知らせの issue を残し、決めた日数で閉じる例（`examples/change-watch-issue-hub-notice-expire.yaml.example`）
+
+上の例は立てた issue をすぐ閉じる。こちらは開いたまま残し、`KEEP_DAYS` 日（既定 7）たったものを閉じる（`MODE=delete` なら消す）。
+知らせを届けるのと、古い issue を片付けるのを 1 本のワークフローで行う。
+
+```bash
+dagu start change-watch-issue-hub-notice-expire -- TITLE="夜間バッチ" TEXT="終わりました"
+```
+
+1. 上の例の 1〜3 と同じく、知らせ専用のプロジェクトを作って `.env` の `GITLAB_NOTICE_PROJECT_URL` に書き、受け手の通知を「新しい issue」だけにする。
+   このプロジェクトの開いている issue はすべて片付けの対象になるので、ほかの issue を立てない。
+2. `examples/change-watch-notice.yaml.example` を `~/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml` にコピーする
+   （知らせ用プロジェクトの issue を見る設定。ハブの設定とは別のファイルにする）。
+3. ワークフローを `~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
+
+5 分ごとにも動き、本文が無ければ issue を立てずに片付けだけをする。片付けは 1 回の起動で、開いている issue を古い順に 1 件見る。
+初回は今ある issue も順に見る。
+
+| ステップ | 呼ぶもの | すること |
+|---|---|---|
+| `compose` → `create` | `change-watch issue … --out=<ファイル>` → `change-watch call POST "<プロジェクトの API>/issues" --json-file=<ファイル>` | 本文があれば issue を立てる |
+| `get` | `change-watch get --source gitlab-notice-issues --consumer notice-expire --initial emit --watch state --one` | 開いている issue を古い順に 1 件受け取る |
+| `check` | `change-watch check-old-issue --change=${CHANGE} --days=…` | 期限が来た（`expire`）・まだ待つ（`wait`）・何もしない（`keep`）を決める |
+| `close` / `delete` | `change-watch call PUT …/issues/<番号>`（閉じる）・`change-watch call DELETE …/issues/<番号>`（消す） | `expire` のとき、`MODE` に従って閉じるか消す |
+| `commit` | `change-watch commit --source gitlab-notice-issues --consumer notice-expire <番号>` | 片付けたか何もしないときに見終えたと記録する。`wait` なら記録せず、次の起動でもう一度見る |
+
+閉じた issue は一覧に出ず、通知を「新しい issue」だけにしていれば閉じたときのメールも届かない。
+消すにはトークンの持ち主がそのプロジェクトの Owner である必要がある。消した issue は戻せない。
+`KEEP_DAYS` は 1 以上にする（立ててすぐ閉じると、メールが送られる前に閉じてしまうことがある）。
+
 ## 溜まった古いコメントを消す例（`examples/change-watch-issue-hub-prune.yaml.example`）
 
 メールで知らせるためにコメントを足し続けると、issue にコメントが溜まる。メールは送り終えているので、古いコメントは消してよい。
@@ -327,6 +357,7 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
 | `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
 | `issue --title=<題> [--labels=<ラベル>]`（本文の渡し方は `note` と同じ） | 新しい issue（題が空なら本文の 1 行目） | `call POST "<プロジェクトの API>/issues" --json-file` |
+| `check-old-issue --change=<get の JSON> [--days=7]` | その issue の期限が来たか（`expire`・`wait`・`keep`） | ワークフローの `preconditions` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
 | `check-old-note --change=<get の JSON> --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
 

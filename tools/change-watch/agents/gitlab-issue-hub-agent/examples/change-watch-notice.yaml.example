@@ -1,0 +1,22 @@
+# gitlab-issue-hub-agent: 知らせ用プロジェクトの issue を見る change-watch の設定の例（examples/change-watch-issue-hub-notice-expire 用）。
+# インストーラは置かない。~/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml にコピーする。
+# ハブの設定（change-watch.yaml）とは別のファイルにして、状態も別の場所に置く（ハブの取得に影響させない）。
+# 知らせ用プロジェクトの URL は .env の GITLAB_NOTICE_PROJECT_URL、接続は connections.yaml の gitlab（ハブと同じものでよい）。
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-issue-hub-agent-notice
+
+sources:
+  gitlab-notice-issues:
+    connection: gitlab
+    request:
+      # 知らせ用プロジェクトの、開いている issue（立てた順）。閉じた・消した issue は次の取得で一覧から外れる
+      url: "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, order_by: created_at, sort: asc }
+    key: iid                   # get --consumer が変化を見分ける key（issue の番号）
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "0 * * * *"      # GitLab に問い合わせる予定（1 時間ごと。日単位の期限には十分）
+    jitter_sec: 60
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }

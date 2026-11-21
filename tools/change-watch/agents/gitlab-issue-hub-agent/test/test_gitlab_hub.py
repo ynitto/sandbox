@@ -60,6 +60,8 @@ class FakeGitLab:
         self.other_posted: list[str] = []
         self.updates: list[dict] = []
         self.created: dict[int, dict] = {}                   # プロジェクトに新しく立てた issue（iid ごと）
+        self.removed: list[int] = []                         # 消した issue
+        self.now = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.issue = {"iid": ISSUE, "title": "メール連携のハブ", "description": "", "labels": [], "state": "opened"}
         self.other = {"iid": OTHER, "title": "ほかの issue", "description": "前の説明", "labels": [], "state": "opened"}
         self.lock = threading.Lock()
@@ -80,6 +82,13 @@ class FakeGitLab:
                 if u.path == issue_path:
                     with outer.lock:
                         return self._send(200, dict(outer.issue))
+                if u.path == project_path + "/issues":                   # 知らせ用プロジェクトの issue の一覧
+                    q = parse_qs(u.query)
+                    page, per = int(q.get("page", ["1"])[0]), int(q.get("per_page", ["20"])[0])
+                    with outer.lock:
+                        items = [dict(i) for i in sorted(outer.created.values(), key=lambda i: i["created_at"])
+                                 if q.get("state", [""])[0] in ("", i["state"])]
+                    return self._send(200, items[(page - 1) * per: page * per])
                 if u.path != path:
                     return self._send(404, {"message": "404 Not found"})
                 q = parse_qs(u.query)
@@ -95,7 +104,8 @@ class FakeGitLab:
                 if urlparse(self.path).path == project_path + "/issues":
                     with outer.lock:
                         iid = 100 + len(outer.created)
-                        outer.created[iid] = {"iid": iid, "state": "opened", "labels": sent.get("labels", "").split(",")
+                        outer.created[iid] = {"iid": iid, "state": "opened", "created_at": outer.now(),
+                                              "labels": sent.get("labels", "").split(",")
                                               if sent.get("labels") else [], **{k: sent[k] for k in ("title", "description")}}
                         return self._send(201, dict(outer.created[iid]))
                 body = sent["body"]
@@ -113,6 +123,14 @@ class FakeGitLab:
             def do_DELETE(self):
                 if self.headers.get("PRIVATE-TOKEN") != TOKEN:
                     return self._send(401, {"message": "401 Unauthorized"})
+                head, _, iid = urlparse(self.path).path.rpartition("/")
+                if head == project_path + "/issues" and iid.isdigit() and int(iid) in outer.created:
+                    with outer.lock:
+                        outer.created.pop(int(iid))
+                        outer.removed.append(int(iid))
+                    self.send_response(204)
+                    self.end_headers()
+                    return
                 head, _, note_id = urlparse(self.path).path.rpartition("/")
                 with outer.lock:
                     found = [n for n in outer.notes if head == path and str(n["id"]) == note_id]
@@ -442,6 +460,14 @@ class ExampleFlowTest(unittest.TestCase):
             src.update(retry={"attempts": 1}, failure_backoff_sec=0)
         self.cfg = self.tmp / "change-watch.yaml"
         self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        notice = yaml.safe_load((AGENT / "examples" / "change-watch-notice.yaml.example").read_text(encoding="utf-8"))
+        notice["state_dir"] = str(self.tmp / "state-notice")                 # ハブとは別の状態
+        for src in notice["sources"].values():
+            for k in ("schedule", "jitter_sec"):
+                src.pop(k)
+            src.update(retry={"attempts": 1}, failure_backoff_sec=0)
+        self.notice_cfg = self.tmp / "change-watch-notice.yaml"
+        self.notice_cfg.write_text(yaml.safe_dump(notice, allow_unicode=True), encoding="utf-8")
         self.conn = self.tmp / "connections.yaml"
         self.conn.write_text("gitlab:\n  - label: default\n    url: ${GITLAB_URL}\n    token: ${GITLAB_TOKEN}\n", encoding="utf-8")
         self.env = {**os.environ, "GITLAB_URL": "http://127.0.0.1:9", "GITLAB_TOKEN": TOKEN,   # 接続の url は使わない
@@ -449,8 +475,9 @@ class ExampleFlowTest(unittest.TestCase):
         self.paths = {"/home/you/.github/connections.yaml": str(self.conn),
                       "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml": str(self.cfg),
                       "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py": str(PROGRAM),
-                      "/home/you/work/hub/on_request.py": str(HANDLER)}
-        for name in ("hub-update-note", "hub-description", "hub-description-note", "hub-notice"):   # call に渡す JSON のファイル
+                      "/home/you/work/hub/on_request.py": str(HANDLER),
+                      "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml": str(self.notice_cfg)}
+        for name in ("hub-update-note", "hub-description", "hub-description-note", "hub-notice", "hub-notice-expire"):   # call に渡す JSON のファイル
             self.paths[f"/home/you/.config/change-watch/gitlab-issue-hub-agent/{name}.json"] = str(self.tmp / "out" / f"{name}.json")
 
     def run_dag(self, name: str, **params) -> dict:
@@ -717,7 +744,7 @@ class ExampleFlowTest(unittest.TestCase):
         self.env["GITLAB_NOTICE_PROJECT_URL"] = f"{self.gl.url}/{PROJECT}"
         run = lambda **kw: self.run_dag(dag, **{"TITLE": "", "TEXT": "", "TEXT_FILE": "", "LABELS": "通知", "CLOSE": "yes", **kw})
         self.assertEqual(run(TITLE="夜間バッチ", TEXT="終わりました\n/close"), {"compose": 0, "create": 0, "close": 0})
-        self.assertEqual(self.gl.created[100], {"iid": 100, "state": "closed", "labels": ["通知"],
+        self.assertEqual({k: v for k, v in self.gl.created[100].items() if k != "created_at"}, {"iid": 100, "state": "closed", "labels": ["通知"],
                                                 "title": "夜間バッチ", "description": "終わりました\n\\/close"})
         self.assertEqual((self.gl.posted, self.gl.updates), ([], []))                 # ハブの issue には書かない
         long = "\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000))          # 長い本文もファイルで渡せる
@@ -730,6 +757,52 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual(run(), {"compose": 0, "create": None, "close": None})       # 本文が無ければ立てない
         self.assertEqual(run(TEXT="化け\ufffd")["compose"], gh.USAGE)                # 文字化けは立てない
         self.assertEqual(len(self.gl.created), 2)
+
+    def test_notice_expire_example_closes_or_deletes_old_issues(self):
+        dag = "examples/change-watch-issue-hub-notice-expire.yaml.example"
+        self.env["GITLAB_NOTICE_PROJECT_URL"] = f"{self.gl.url}/{PROJECT}"
+        run = lambda **kw: self.run_dag(dag, **{"TITLE": "", "TEXT": "", "TEXT_FILE": "", "LABELS": "通知",
+                                                "KEEP_DAYS": "7", "MODE": "close", **kw})
+        steps = ("compose", "create", "get", "check", "close", "delete", "commit")
+        result = lambda *codes: dict(zip(steps, codes))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ago = lambda days: (now - datetime.timedelta(days=days)).isoformat()
+        # 知らせを届けると issue を立て、開いたまま残す。片付けは同じ起動で、まだ新しいので待つ。
+        self.assertEqual(run(TITLE="夜間バッチ", TEXT="終わりました"), result(0, 0, 0, 0, None, None, None))
+        self.assertEqual({k: self.gl.created[100][k] for k in ("title", "state", "labels")},
+                         {"title": "夜間バッチ", "state": "opened", "labels": ["通知"]})
+        self.assertEqual(run(), result(0, None, 0, 0, None, None, None))            # 予定で動けば、片付けだけ（まだ待つ）
+        self.assertEqual(run(TEXT="二件目"), result(0, 0, 0, 0, None, None, None))
+        with self.gl.lock:                                                         # 日がたつ
+            self.gl.created[100]["created_at"] = ago(8)
+            self.gl.created[101]["created_at"] = ago(3)
+        self.assertEqual(run(KEEP_DAYS="0")["check"], gh.USAGE)                     # すぐ片付ける指定は受けない
+        self.assertEqual(run(), result(0, None, 0, 0, 0, None, 0))                 # 8 日前の issue だけ閉じる
+        self.assertEqual([self.gl.created[i]["state"] for i in (100, 101)], ["closed", "opened"])
+        self.assertEqual(run()["commit"], 0)                                       # 閉じた issue が一覧から外れたと記録する
+        self.assertEqual([run()["commit"], run()["commit"]], [None, None])         # 3 日前の issue は待つ
+        self.assertEqual(run(MODE="delete")["delete"], None)                       # 待っている issue は消さない
+        with self.gl.lock:
+            self.gl.created[101]["created_at"] = ago(10)
+        self.assertEqual(run(MODE="delete"), result(0, None, 0, 0, None, 0, 0))    # 消すなら消す
+        self.assertEqual((self.gl.removed, sorted(self.gl.created)), ([101], [100]))
+        self.assertEqual([run()["commit"] for _ in range(3)][-1], None)            # 片付け終えたら、もう何もしない
+        self.assertEqual(len(self.gl.created), 1)
+        self.assertEqual((self.gl.posted, self.gl.updates), ([], []))              # ハブの issue には書かない
+
+    def test_old_issue_decision(self):
+        now = datetime.datetime(2026, 11, 21, tzinfo=datetime.timezone.utc)
+        rec = {"state": "opened", "created_at": "2026-11-13T23:59:59.000Z"}
+        decide = lambda record, kind="appeared", days=7: gh.old_issue({"kind": kind, "record": record}, days, now)
+        self.assertEqual(decide(rec), "expire")
+        self.assertEqual(decide({**rec, "created_at": "2026-11-14T00:00:00Z"}), "wait")   # ちょうど 7 日はまだ
+        self.assertEqual(decide({**rec, "created_at": "2026-11-14T08:59:59+09:00"}), "expire")
+        self.assertEqual(decide({**rec, "state": "closed"}), "keep")
+        self.assertEqual(decide(rec, kind="removed"), "keep")
+        self.assertEqual(decide({**rec, "created_at": "いつか"}), "keep")
+        self.assertEqual(run_main("check-old-issue", "--change="), (0, "", ""))
+        self.assertEqual(run_main("check-old-issue", "--change=[]")[0], gh.USAGE)
+        self.assertEqual(run_main("check-old-issue", "--change={}", "--days=x")[0], gh.USAGE)
 
     def test_project_api_url(self):
         api = "https://gitlab.example.com/api/v4/projects/group%2Fsub%2Fnotices"

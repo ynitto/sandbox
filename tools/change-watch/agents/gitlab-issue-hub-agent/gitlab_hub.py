@@ -45,6 +45,10 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
         get が出したコメントの変化を見て、消してよいかを 1 語で出す（古いコメントを消すワークフローの preconditions で分ける）:
         delete（--author が書いた、--days 日より古いコメント）・wait（--author が書いたが、まだ新しい）・keep（それ以外。消さない）。
 
+    change-watch --plugin <このファイル> check-old-issue --change JSON [--days 7]
+        get が出した issue の変化を見て、期限が来たかを 1 語で出す（古い issue を閉じる・消すワークフローの preconditions で分ける）:
+        expire（開いていて、--days 日より前に立てた issue）・wait（開いているが、まだ新しい）・keep（それ以外。何もしない）。
+
     これらのコマンドは設定を読まない（--config・--connections は要らない）。python3 <このファイル> note ... と直接呼んでも同じ。
 
 Dagu の引数に任意の文（改行・引用符）を JSON として渡せるようにし、書き込む文に混ざった GitLab のクイックアクション
@@ -450,6 +454,59 @@ def old_note(change: dict, author: str, days: int, now: datetime.datetime | None
     return "delete" if now - created > datetime.timedelta(days=days) else "wait"
 
 
+def old_issue(change: dict, days: int, now: datetime.datetime | None = None) -> str:
+    """issue の変化を、期限が来た（expire）・まだ待つ（wait）・何もしない（keep）に分ける。
+    期限が来たのは、開いていて days 日より前に立てたものだけ。日時を読めなければ何もしない。"""
+    record = change.get("record")
+    if change.get("kind") not in ("appeared", "changed") or not isinstance(record, dict) or record.get("state") != "opened":
+        return "keep"
+    created = _parse_time(record.get("created_at"))
+    if created is None:
+        return "keep"
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return "expire" if now - created > datetime.timedelta(days=days) else "wait"
+
+
+def _parse_time(value) -> datetime.datetime | None:
+    try:
+        t = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
+def _days_arg(value) -> int | None:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None
+    return days if days >= 1 else None
+
+
+def _change_arg(value) -> tuple[int, dict | None]:
+    if not (value or "").strip():
+        return OK, None                     # 受け取った変化が無ければ何も出さない
+    try:
+        change = json.loads(value)
+        if not isinstance(change, dict):
+            raise TypeError
+    except (ValueError, TypeError, RecursionError):
+        print("--change は get が出した JSON で渡してください", file=sys.stderr)
+        return USAGE, None
+    return OK, change
+
+
+def cmd_check_old_issue(a) -> int:
+    days = _days_arg(a.days)
+    if days is None:
+        print("--days は 1 以上の整数で渡してください（立ててすぐ閉じると、メールが送られないことがあります）", file=sys.stderr)
+        return USAGE
+    code, change = _change_arg(a.change)
+    if change is not None:
+        print(old_issue(change, days))
+    return code
+
+
 def cmd_check_old_note(a) -> int:
     author = (a.author or "").strip()
     if not author:
@@ -513,6 +570,7 @@ _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch ca
 _OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
 _OUT = "JSON をこのファイルに書き、標準出力にはパスだけを出す（call の --json-file に渡す。長い文をコマンド行に載せない）"
 _ISSUE = "新しい issue の JSON を出す（change-watch call POST \"<プロジェクトの API>/issues\" に渡す）"
+_OLD_ISSUE = "issue の変化を見て、期限が来たか（expire・wait・keep）を出す（古い issue を閉じる・消すワークフローの preconditions で分ける）"
 _API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
 
 
@@ -547,6 +605,11 @@ def _issue_args(p) -> None:
     p.add_argument("--labels", default="", help="付けるラベル（カンマ区切り）")
 
 
+def _old_issue_args(p) -> None:
+    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）")
+    p.add_argument("--days", default="7", help="この日数より前に立てた issue を期限が来たとする（既定 7。1 以上）")
+
+
 def _api_url_args(p) -> None:
     p.add_argument("--url", default="", help="issue の URL（無いか空なら、環境変数 GITLAB_HUB_ISSUE_URL のハブの issue）")
 
@@ -561,6 +624,7 @@ def register(api) -> None:
     _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
     _fields_args(api.add_command("fields", lambda _cfg, _store, a: cmd_fields(a), _FIELDS, needs_config=False))
     _api_url_args(api.add_command("api-url", lambda _cfg, _store, a: cmd_api_url(a), _API_URL, needs_config=False))
+    _old_issue_args(api.add_command("check-old-issue", lambda _cfg, _store, a: cmd_check_old_issue(a), _OLD_ISSUE, needs_config=False))
     _old_note_args(api.add_command("check-old-note", lambda _cfg, _store, a: cmd_check_old_note(a), _OLD_NOTE, needs_config=False))
 
 
@@ -575,10 +639,11 @@ def main(argv: list[str] | None = None) -> int:
     _fields_args(sub.add_parser("fields", help=_FIELDS))
     _api_url_args(sub.add_parser("api-url", help=_API_URL))
     _old_note_args(sub.add_parser("check-old-note", help=_OLD_NOTE))
+    _old_issue_args(sub.add_parser("check-old-issue", help=_OLD_ISSUE))
     a = p.parse_args(argv)
     return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
             "check-request": cmd_check_request, "check-old-note": cmd_check_old_note,
-            "issue": cmd_issue}[a.cmd](a)
+            "issue": cmd_issue, "check-old-issue": cmd_check_old_issue}[a.cmd](a)
 
 
 if __name__ == "__main__":

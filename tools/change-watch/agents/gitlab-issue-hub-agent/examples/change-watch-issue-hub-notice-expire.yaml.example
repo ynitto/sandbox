@@ -1,0 +1,198 @@
+# gitlab-issue-hub-agent: 知らせを新しい issue にして届け、KEEP_DAYS 日たった issue を閉じる（か消す）例。インストーラは置かない。
+# ~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に直す。設定は examples/change-watch-notice.yaml.example を
+# ~/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml にコピーして使う。
+# 知らせを届けるときは、本文を渡して動かす（新しい issue の通知メールには、その issue の題と説明しか入らない）:
+#   dagu start change-watch-issue-hub-notice-expire -- TITLE="夜間バッチ" TEXT="終わりました"
+#   dagu start change-watch-issue-hub-notice-expire -- TITLE="夜間バッチ" TEXT_FILE="/home/you/work/hub/notice.txt"
+# 予定（5 分ごと）でも動き、本文が無ければ issue は立てずに、古い issue の片付けだけをする。
+# 片付けは 1 回の起動で、開いている issue を古い順に 1 件見る（初回は今ある issue も順に見る）:
+#   expire  KEEP_DAYS 日より前に立てた issue。MODE が close なら閉じ、delete なら消す（消すにはプロジェクトの Owner が要る）
+#   wait    まだ新しい。見終えたと記録せず、次の起動でもう一度見る（後ろの issue はそれより新しい）
+#   keep    それ以外（閉じた・消えた issue など）。何もせず見終えたと記録する
+# 知らせ用プロジェクトでは、片付けの対象をこのワークフローが立てた issue に絞るため、ほかの issue を立てない。
+# メールを受ける人は、そのプロジェクトの通知を「カスタム」にし、「新しい issue」だけを選ぶ（閉じたときのメールは届かない）。
+#
+#   compose → create            知らせがあれば、JSON にしてファイルに書き、issue を立てる（change-watch の issue と call POST）
+#   get → check → close/delete → commit   古い issue を 1 件見て、期限が来ていれば閉じるか消す（change-watch の get・check-old-issue・call・commit）
+description: "知らせを新しい GitLab の issue にしてメールで届け、決めた日数がたった issue を閉じる（か消す）"
+schedule: "*/5 * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - TITLE: ""                   # 題（空なら本文の 1 行目。メールの件名に入る）
+  - TEXT: ""                    # 本文（空なら issue を立てず、片付けだけをする）
+  - TEXT_FILE: ""               # 本文を書いたファイル（長いとき。TEXT が空なら使う）
+  - LABELS: "通知"              # 付けるラベル（カンマ区切り。空なら付けない）
+  - KEEP_DAYS: "7"              # この日数より前に立てた issue を片付ける（1 以上）
+  - MODE: "close"               # close なら閉じる、delete なら消す
+steps:
+  - name: compose
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "issue"
+        - "--title=${params.TITLE}"
+        - "--labels=${params.LABELS}"
+        - "--text=${params.TEXT}"
+        - "--text-file=${params.TEXT_FILE}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-notice-expire.json"
+    timeout_sec: 60
+    output: NOTICE
+  - name: create
+    depends: [compose]
+    preconditions:              # 本文があるときだけ（予定で動いたときは立てない）
+      - condition: "${NOTICE}"
+        expected: "re:."
+    continue_on:
+      skipped: true             # 立てないときも片付けへ進む
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues"   # change-watch がプロジェクトの URL から API の URL を作る
+        - "--source"
+        - "gitlab-notice-issues"   # 接続（トークン）と要求の間隔を借りる取得元
+        - "--json-file"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-notice-expire.json"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: get
+    depends: [create]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-notice-issues"
+        - "--consumer"
+        - "notice-expire"        # commit と同じ名前
+        - "--initial"            # 初回は、今ある issue も順に見る
+        - "emit"
+        - "--watch"
+        - "state"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: check
+    depends: [get]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "check-old-issue"
+        - "--change=${CHANGE}"
+        - "--days=${params.KEEP_DAYS}"
+    timeout_sec: 60
+    output: DECISION
+  - name: close
+    depends: [check]
+    preconditions:
+      - condition: "${DECISION}"
+        expected: "expire"
+      - condition: "${params.MODE}"
+        expected: "close"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "PUT"
+        - "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues/${CHANGE.key}"
+        - "--source"
+        - "gitlab-notice-issues"
+        - "--json"
+        - '{"state_event": "close"}'
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: delete
+    depends: [close]
+    preconditions:
+      - condition: "${DECISION}"
+        expected: "expire"
+      - condition: "${params.MODE}"
+        expected: "delete"
+    continue_on:
+      skipped: true             # 閉じられなかった・消せなかったときは commit せず、次の起動でやり直す
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "DELETE"
+        - "{{ env.GITLAB_NOTICE_PROJECT_URL | gitlab_project_api }}/issues/${CHANGE.key}"
+        - "--source"
+        - "gitlab-notice-issues"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [delete]
+    preconditions:              # wait のときは記録しない。MODE が close・delete 以外なら、期限が来ても記録しない
+      - condition: "${DECISION}${params.MODE}"
+        expected: "re:^(keep.*|expire(close|delete))$"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch-notice.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-notice-issues"
+        - "--consumer"
+        - "notice-expire"
+        - "${CHANGE.key}"
+    timeout_sec: 600
