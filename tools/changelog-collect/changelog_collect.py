@@ -28,18 +28,18 @@ def main(argv=None):
         fragments = []
         bodies = []
         for path in sorted(args.fragments_dir.glob("*.md")):
-            if path.name == "README.md" or not path.is_file():
+            if path.name == "README.md" or not path.is_file() or path.samefile(args.changelog):
                 continue
             body = path.read_text(encoding="utf-8").strip()
             if not body:
                 print(f"警告: {path.name} は空です", file=sys.stderr)
                 continue
-            heading = next((line for line in body.split("\n") if line.startswith("### ")), None)
+            headings = [line for line in body.split("\n") if line.startswith("### ")]
+            heading = headings[0] if headings else None
             if heading in existing_headings:
                 print(f"警告: {path.name} の見出しは取り込み済みです: {heading}", file=sys.stderr)
                 continue
-            if heading is not None:
-                existing_headings.add(heading)
+            existing_headings.update(headings)
             fragments.append(path)
             bodies.append(body)
 
