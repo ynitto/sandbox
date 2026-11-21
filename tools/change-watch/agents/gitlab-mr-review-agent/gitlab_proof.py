@@ -123,9 +123,14 @@ def fetch_request(gl, repo, iid, mr, head):
 
 def verifier_env():
     extra = {name.strip().upper() for name in os.environ.get("MR_REVIEW_PROOF_ENV_PASS", "").split(",")}
-    return {key: value for key, value in os.environ.items()
-            if key.upper() != "GITLAB_TOKEN" and not key.upper().startswith("MR_REVIEW_")
-            and (key.upper() in ENV_NAMES | extra or key.startswith("XDG_"))}
+    env = {key: value for key, value in os.environ.items()
+           if key.upper() != "GITLAB_TOKEN" and not key.upper().startswith("MR_REVIEW_")
+           and (key.upper() in ENV_NAMES | extra or key.startswith("XDG_"))}
+    # 依頼と返事は UTF-8 で受け渡すので、検証エージェントの標準入出力も UTF-8 に
+    # 固定する。Windows では既定がロケールの文字コードになり、日本語を含む
+    # 標準入力が文字化けし、標準出力は書いた時点で落ちることがある。
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def bounded_env(name, default, maximum):
