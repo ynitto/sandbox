@@ -400,6 +400,8 @@ class ExampleFlowTest(unittest.TestCase):
                       "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml": str(self.cfg),
                       "/home/you/.local/share/change-watch/agents/gitlab-issue-hub-agent/gitlab_hub.py": str(PROGRAM),
                       "/home/you/work/hub/on_request.py": str(HANDLER)}
+        for name in ("hub-update-note", "hub-description", "hub-description-note"):   # call に渡す JSON のファイル
+            self.paths[f"/home/you/.config/change-watch/gitlab-issue-hub-agent/{name}.json"] = str(self.tmp / "out" / f"{name}.json")
 
     def run_dag(self, name: str, **params) -> dict:
         import dagrun
@@ -441,10 +443,24 @@ class ExampleFlowTest(unittest.TestCase):
 
     def test_update_adds_a_comment(self):
         dag = "change-watch-issue-hub-update.yaml.example"
-        self.assertEqual(self.run_dag(dag, COMMENT="夜間バッチが終わりました\n/close"), {"compose": 0, "comment": 0})
+        done = {"compose": 0, "comment": 0}
+        self.assertEqual(self.run_dag(dag, COMMENT="夜間バッチが終わりました\n/close", COMMENT_FILE=""), done)
         self.assertEqual(self.gl.posted, ["夜間バッチが終わりました\n\\/close"])
-        self.assertEqual(self.run_dag(dag, COMMENT=""), {"compose": 0, "comment": None})   # 空なら書かない
+        self.assertEqual(self.run_dag(dag, COMMENT="", COMMENT_FILE=""), {"compose": 0, "comment": None})   # 空なら書かない
         self.assertEqual(len(self.gl.posted), 1)
+        # 長いコメントはファイルで渡す。本文の JSON はコマンド行に載せない（Windows の cmd は 8191 文字まで）。
+        long = "夜間バッチの結果です。\n" + "\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000))
+        source = self.tmp / "comment.txt"
+        source.write_text(long, encoding="utf-8")
+        import dagrun
+        seen = []
+        real = dagrun._argv
+        self.addCleanup(setattr, dagrun, "_argv", real)
+        dagrun._argv = lambda *a: seen.append(real(*a)) or seen[-1]
+        self.assertEqual(self.run_dag(dag, COMMENT="", COMMENT_FILE=str(source)), done)
+        self.assertEqual(self.gl.posted[-1], long)
+        self.assertLess(max(len(" ".join(argv)) for argv in seen), 2000)
+        dagrun._argv = real
         self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["get"], 0)
         self.gl.add("あとから付いたコメント")
         self.assertEqual(self.run_dag("change-watch-issue-hub.yaml.example")["request"], None)
@@ -583,6 +599,15 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual((self.gl.other_posted, len(self.gl.posted)), (["説明を更新しました"], 1))
         self.assertEqual(self.run_dag(dag, DESCRIPTION="", ISSUE_URL="", COMMENT="説明なし")["comment"], None)   # 空なら消さず、コメントもしない
         self.assertEqual(self.run_dag(dag, DESCRIPTION="x", ISSUE_URL="https://example.com/not-an-issue", COMMENT="")["target"], gh.USAGE)
+        long = "\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000))          # 長い説明も、コマンド行に載せずに書ける
+        compose = self.tmp / "out" / "hub-description.json"
+        self.assertEqual(run_main("description", f"--text={long}", "--out", str(compose))[:2], (0, f"{compose}\n"))
+        self.assertEqual(json.loads(compose.read_text(encoding="utf-8")), {"description": long})
+        self.assertEqual(run_main("fields", "title=【完了】", "--out", str(compose))[0], 0)
+        self.assertEqual(json.loads(compose.read_text(encoding="utf-8")), {"title": "【完了】"})
+        self.assertEqual(run_main("note", "--text=", "--out", str(self.tmp / "out" / "none.json")), (0, "", ""))   # 空なら書かない
+        self.assertFalse((self.tmp / "out" / "none.json").exists())
+        self.assertEqual(run_main("note", "--text=a", "--text-file", str(compose))[0], gh.USAGE)   # 2 つは渡せない
         self.assertEqual(len(self.gl.updates), 2)
         self.assertEqual(len(self.gl.posted), 1)
 

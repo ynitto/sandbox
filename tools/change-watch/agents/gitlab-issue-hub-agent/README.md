@@ -180,6 +180,16 @@
 dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
 ```
 
+長いコメントは、ファイル（UTF-8）に書いて `COMMENT_FILE` で渡す。コマンド行には長さの上限があり（Windows は 8191 文字）、
+長い文を `COMMENT` に入れると「command line is too long」で止まる。
+
+```bash
+dagu start change-watch-issue-hub-update -- COMMENT_FILE="/home/you/work/hub/comment.txt"
+```
+
+例のワークフローは、本文を `~/.config/change-watch/gitlab-issue-hub-agent/` のファイルに書いてから送る（本文をコマンド行に載せない）。
+自分でワークフローを書くときも、`note`・`description`・`fields` に `--out=<ファイル>` を付け、`call` に `--json-file=<ファイル>` で渡す。
+
 ラベル・題・説明・状態などを変えるなら、ワークフローに `change-watch --plugin gitlab_hub fields`（更新の JSON を `名前=値` から作る）と
 `change-watch call PUT` のステップを書く（項目は GitLab の issue の編集のもの: `title`・`add_labels`・`remove_labels`・`description`・`state_event` など）。
 何を書くかはワークフローで決める。
@@ -227,6 +237,7 @@ dagu start change-watch-issue-hub-description -- ISSUE_URL="https://gitlab.examp
 dagu start change-watch-issue-hub-description -- DESCRIPTION="夜間バッチが終わりました" COMMENT="説明を更新しました"
 ```
 
+長い説明は、引数ではなくワークフローの `compose` を `--text-file=<ファイル>` にして渡す（コマンド行には長さの上限がある）。
 前の説明に足したいときは、前の説明を含めた全文を渡す（ハブの issue なら、`get --source gitlab-hub-issue` で受け取った `${CHANGE.record.description}` が今の説明）。
 書き込む文の行頭の `/` は、コメントと同じく `\/` にして効かなくする。
 
@@ -291,6 +302,9 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
 | `check-old-note --change=<get の JSON> --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
+
+`note`・`description`・`fields` に `--out=<ファイル>` を付けると、JSON をそのファイルに書き、ファイルのパスだけを出す（`call` の `--json-file` に渡す）。
+長い文は、こうしてコマンド行に載せずに渡す。
 
 `note`・`description` は、本文が空なら何も出さず、`--` のあとのコマンドが失敗したらその終了コードで終わる。
 

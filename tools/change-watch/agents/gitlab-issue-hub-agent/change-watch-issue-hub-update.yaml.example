@@ -2,6 +2,9 @@
 # ~/.config/dagu/dags/change-watch-issue-hub-update.yaml に、この PC のパスにして置く）。
 # 予定では動かさない。ほかのワークフローやコマンド行から、足すコメントを COMMENT で渡して動かす:
 #   dagu start change-watch-issue-hub-update -- COMMENT="夜間バッチが終わりました"
+# 長いコメントはファイル（UTF-8）に書いて、COMMENT の代わりに COMMENT_FILE で渡す（コマンド行には長さの上限がある）:
+#   dagu start change-watch-issue-hub-update -- COMMENT_FILE="/home/you/work/hub/comment.txt"
+# 本文は JSON にしてファイルに書き、call にはそのファイルを渡す（長い本文をコマンド行に載せない）。
 # 何を書くかはワークフローが決める。ラベル・説明・状態などを変えるなら、compose を fields 名前=値（説明は description）にし、comment と同じ形で call PUT "{{ … | gitlab_issue_api }}" の
 # ステップを書く（--json に GitLab の issue の編集の項目: add_labels・remove_labels・description・title・state_event など）。
 # 変わったことは GitLab がこの issue を見ている人へメールで知らせ、それを受けて何をするかは Power Automate が決める。
@@ -14,6 +17,7 @@ dotenv:
   - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
 params:
   - COMMENT: ""                 # 足すコメント
+  - COMMENT_FILE: ""            # 足すコメントを書いたファイル（長いとき。COMMENT が空なら使う）
 steps:
   - name: compose
     action: exec
@@ -24,13 +28,16 @@ steps:
         - "gitlab_hub"
         - "note"
         - "--text=${params.COMMENT}"
+        - "--text-file=${params.COMMENT_FILE}"
+        - "--out"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-update-note.json"
     timeout_sec: 60
     output: NOTE
   - name: comment
     depends: [compose]
-    preconditions:              # 本文があるときだけ（COMMENT が空なら書かない）
+    preconditions:              # 本文があるときだけ（COMMENT も COMMENT_FILE も空なら書かない）
       - condition: "${NOTE}"
-        expected: 're:^\{"body"'
+        expected: "re:."
     action: exec
     with:
       command: "/home/you/.local/bin/change-watch"
@@ -46,8 +53,8 @@ steps:
         - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
         - "--source"
         - "gitlab-hub-notes"
-        - "--json"
-        - "${NOTE}"
+        - "--json-file"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/hub-update-note.json"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
