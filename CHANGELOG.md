@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### change-watch: ハブの issue に溜まった古いコメントを消す
+
+- gitlab-issue-hub-agent に、自分が書いた古いコメント（既定 7 日より前）を消す Dagu の例 `examples/change-watch-issue-hub-prune.yaml.example` と、消してよいかを決めるコマンド `check-old-note` を足す。ほかの人のコメントと変更の記録は消さない。
+
 ### skill-feedback-digest: スキルのフィードバックを週次集計する
 
 - レジストリを読み取り専用で集計し、改良提案の下書きを生成する。Dagu の週次実行例を同梱し、GitLab ハブ issue への投稿は既定で dry-run、実投稿は同日の重複を確認する。

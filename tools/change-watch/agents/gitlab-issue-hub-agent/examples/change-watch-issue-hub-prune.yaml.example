@@ -1,0 +1,111 @@
+# gitlab-issue-hub-agent: ハブの issue に溜まった古いコメントを消す例。インストーラは置かない。
+# ~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に、AUTHOR をトークンの持ち主のユーザー名に直す。
+# メールで知らせるためにコメントを足し続けると、issue にコメントが溜まる。メールは送り終えているので、古いものは消してよい。
+# 消すのは AUTHOR が書いた、KEEP_DAYS 日より古いコメントだけ（ほかの人のコメントと、ラベルの変更などの記録は消さない）。
+# 付けてすぐ消すと GitLab がメールを送る前に無くなることがあるので、KEEP_DAYS は 1 以上にする。
+# 5 分ごとに起動し、1 回の起動でコメントを古い順に 1 件見る（初回は今あるコメントも順に見る）:
+#   get      まだ見終えていないコメントを、古い順に 1 件受け取る
+#   check    消す（delete）・まだ待つ（wait）・消さない（keep）を決める（change-watch の check-old-note）
+#   delete   delete のときだけ、そのコメントを消す（change-watch call DELETE）
+#   commit   delete・keep なら見終えたと記録する。wait なら記録せず、次の起動でもう一度見る（後ろのコメントはそれより新しい）
+# check-old-note は gitlab_hub.py が change-watch に足すコマンド（--plugin gitlab_hub を付けて呼ぶ。設定は読まない）。
+description: "GitLab のハブの issue の、自分が書いた古いコメントを消す"
+schedule: "*/5 * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+params:
+  - AUTHOR: "hub-bot"           # 消してよいコメントの書き手（トークンの持ち主のユーザー名）
+  - KEEP_DAYS: "7"              # この日数より古いコメントを消す
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub-prune"            # commit と同じ名前
+        - "--initial"            # 初回は、今あるコメントも順に見る
+        - "emit"
+        - "--watch"
+        - "body"
+        - "--one"
+    timeout_sec: 720
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: check
+    depends: [get]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "check-old-note"
+        - "--change=${CHANGE}"
+        - "--author=${params.AUTHOR}"
+        - "--days=${params.KEEP_DAYS}"
+    timeout_sec: 60
+    output: DECISION
+  - name: delete
+    depends: [check]
+    preconditions:
+      - condition: "${DECISION}"
+        expected: "delete"
+    continue_on:
+      skipped: true             # 消さないときも commit へ進む（消せなかったときは commit せず、次の起動でやり直す）
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "DELETE"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes/${CHANGE.key}"
+        - "--source"
+        - "gitlab-hub-notes"
+    timeout_sec: 120
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit
+    depends: [delete]
+    preconditions:              # wait のときは記録しない
+      - condition: "${DECISION}"
+        expected: "re:^(delete|keep)$"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "hub-prune"
+        - "${CHANGE.key}"
+    timeout_sec: 600

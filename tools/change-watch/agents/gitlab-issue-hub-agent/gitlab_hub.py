@@ -29,6 +29,10 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> check-request [--kinds-file F] --text "..." | --text-file F | --change JSON | -- <コマンド> [引数...]
         依頼の書式を調べて、結果を JSON で出す。どの種別で何を動かすかはワークフローの preconditions が決める。
 
+    change-watch --plugin <このファイル> check-old-note --change JSON --author <ユーザー名> [--days 7]
+        get が出したコメントの変化を見て、消してよいかを 1 語で出す（古いコメントを消すワークフローの preconditions で分ける）:
+        delete（--author が書いた、--days 日より古いコメント）・wait（--author が書いたが、まだ新しい）・keep（それ以外。消さない）。
+
     これらのコマンドは設定を読まない（--config・--connections は要らない）。python3 <このファイル> note ... と直接呼んでも同じ。
 
 Dagu の引数に任意の文（改行・引用符）を JSON として渡せるようにし、書き込む文に混ざった GitLab のクイックアクション
@@ -39,6 +43,7 @@ Dagu の引数に任意の文（改行・引用符）を JSON として渡せる
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -309,6 +314,50 @@ def cmd_check_request(a) -> int:
     return OK
 
 
+def old_note(change: dict, author: str, days: int, now: datetime.datetime | None = None) -> str:
+    """コメントの変化を、消す（delete）・まだ待つ（wait）・消さない（keep）に分ける。
+    消すのは author が書いた、人のコメント（system でない）で、days 日より古いものだけ。日時を読めなければ消さない。"""
+    record = change.get("record")
+    if change.get("kind") not in ("appeared", "changed") or not isinstance(record, dict) or record.get("system") is not False:
+        return "keep"
+    writer = record.get("author")
+    if not isinstance(writer, dict) or writer.get("username") != author:
+        return "keep"
+    try:
+        created = datetime.datetime.fromisoformat(str(record.get("created_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return "keep"
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return "delete" if now - created > datetime.timedelta(days=days) else "wait"
+
+
+def cmd_check_old_note(a) -> int:
+    author = (a.author or "").strip()
+    if not author:
+        print("--author に、消してよいコメントの書き手（トークンの持ち主のユーザー名）を渡してください", file=sys.stderr)
+        return USAGE
+    try:
+        days = int(a.days)
+        if days < 1:
+            raise ValueError
+    except ValueError:
+        print("--days は 1 以上の整数で渡してください（付けてすぐ消すと、メールが送られないことがあります）", file=sys.stderr)
+        return USAGE
+    if not (a.change or "").strip():
+        return OK                           # 受け取った変化が無ければ何も出さない
+    try:
+        change = json.loads(a.change)
+        if not isinstance(change, dict):
+            raise TypeError
+    except (ValueError, TypeError, RecursionError):
+        print("--change は get が出した JSON で渡してください", file=sys.stderr)
+        return USAGE
+    print(old_note(change, author, days))
+    return OK
+
+
 def cmd_api_url(a) -> int:
     url = (a.url or "").strip() or os.environ.get("GITLAB_HUB_ISSUE_URL", "")
     try:
@@ -343,6 +392,7 @@ _CHECK = "依頼の書式を調べて、結果を JSON で出す（ワークフ�
 _NOTE = "コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）"
 _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-watch call PUT の --json に渡す）"
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
+_OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
 _API_URL = "issue の API の URL を出す（change-watch call の URL に渡す）"
 
 
@@ -363,6 +413,12 @@ def _fields_args(p) -> None:
     p.add_argument("pairs", nargs="+", metavar="名前=値", help="title=...・add_labels=...・description=...・state_event=close など")
 
 
+def _old_note_args(p) -> None:
+    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）")
+    p.add_argument("--author", default="", help="消してよいコメントの書き手（トークンの持ち主のユーザー名）")
+    p.add_argument("--days", default="7", help="この日数より古いコメントを消す（既定 7。1 以上）")
+
+
 def _api_url_args(p) -> None:
     p.add_argument("--url", default="", help="issue の URL（無いか空なら、環境変数 GITLAB_HUB_ISSUE_URL のハブの issue）")
 
@@ -375,6 +431,7 @@ def register(api) -> None:
     _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
     _fields_args(api.add_command("fields", lambda _cfg, _store, a: cmd_fields(a), _FIELDS, needs_config=False))
     _api_url_args(api.add_command("api-url", lambda _cfg, _store, a: cmd_api_url(a), _API_URL, needs_config=False))
+    _old_note_args(api.add_command("check-old-note", lambda _cfg, _store, a: cmd_check_old_note(a), _OLD_NOTE, needs_config=False))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -386,9 +443,10 @@ def main(argv: list[str] | None = None) -> int:
     _check_args(sub.add_parser("check-request", help=_CHECK))
     _fields_args(sub.add_parser("fields", help=_FIELDS))
     _api_url_args(sub.add_parser("api-url", help=_API_URL))
+    _old_note_args(sub.add_parser("check-old-note", help=_OLD_NOTE))
     a = p.parse_args(argv)
     return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
-            "check-request": cmd_check_request}[a.cmd](a)
+            "check-request": cmd_check_request, "check-old-note": cmd_check_old_note}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -62,6 +62,13 @@ examples/change-watch-issue-hub-description（インストーラは置かない�
   note     change-watch note --text=${params.COMMENT}                                       → NOTE
   comment  preconditions: ISSUE_API が ^https?://・NOTE が ^{"body"。change-watch call POST "${ISSUE_API}/notes" --json "${NOTE}"
            （GitLab は説明の変更だけではメールを送らないので、知らせたいときにコメントを足す）
+
+examples/change-watch-issue-hub-prune（インストーラは置かない。5 分ごと。AUTHOR=… KEEP_DAYS=…）
+  get      change-watch get --source gitlab-hub-notes --consumer hub-prune --initial emit --watch body --one   → CHANGE
+  check    change-watch check-old-note --change=${CHANGE} --author=… --days=…                → DECISION（delete・wait・keep）
+  delete   preconditions: DECISION が delete。change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"
+  commit   preconditions: DECISION が delete か keep。wait は記録せず、次の起動でもう一度見る
+           （get は key の小さい順に返すので、待っているコメントの後ろはそれより新しい。初回は emit で今あるコメントも見る）
 ```
 
 ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
