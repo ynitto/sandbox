@@ -75,6 +75,11 @@ examples/change-watch-issue-hub-prune（インストーラは置かない。5 �
 （Windows の CreateProcess は 32767 文字、cmd を通すと 8191 文字）、日本語を `\uXXXX` で書く JSON は本文の 6 倍ほどになるため、
 数千字のコメントで「command line is too long」になる。引数で受ける `COMMENT` も同じ上限を受けるので、長い文は `COMMENT_FILE` で渡す。
 
+本文のバイト列（`--text-file`・`-- <コマンド>` の標準出力）は、BOM があればそれに従い、無ければ UTF-8・`locale.getencoding()`・cp932 の順に
+厳密に読む。Windows のコマンドはパイプへ cp932 で出すので、UTF-8 の `errors="replace"` で読むと日本語がすべて U+FFFD になっていた。
+引数で渡された文は、Dagu（Go）が UTF-8 でないバイトを U+FFFD にしてから CreateProcessW に渡すため、こちらでは戻せない。
+U+FFFD を含む文は書かずに 2 で終わり、壊れた文を GitLab に残さない。
+
 ハブでない issue を引数で指すとき、`call` の URL の `{{ }}` は環境変数しか受けられない（Dagu の引数をフィルタに通せない）ので、
 `api-url` が API の URL を先に作って渡す。接続と要求の間隔は取得元 `gitlab-hub-issue` のものを借りる。
 

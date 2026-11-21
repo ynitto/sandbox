@@ -13,6 +13,8 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> note -- <コマンド> [引数...]     コマンドの標準出力
         issue に足すコメントの本文を {"body": "..."} の JSON で出す（change-watch call の --json に渡す）。
         本文が空なら何も出さない。コマンドが失敗したら何も出さず、その終了コードで終わる。
+        ファイル・コマンドの出力は UTF-8 で読み、読めなければ UTF-16（BOM つき）・この PC の文字コード（Shift_JIS など）で読む。
+        文字化けした文字（U+FFFD）を含む本文は書かず、2 で終わる（渡される前に文字が失われている）。
         --out <ファイル> を付けると、JSON をそのファイルに書き、標準出力にはファイルのパスだけを出す（call の --json-file に渡す）。
         長い文は JSON にするとコマンド行に収まらないことがある（Windows は 8191 文字まで）ので、ファイルで渡す。
         --text が空で --text-file があれば、ファイルの中身を使う（ワークフローの引数を両方書いておける）。
@@ -48,6 +50,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import locale
 import os
 import re
 import subprocess
@@ -113,18 +116,55 @@ def note_json(text: str, field: str = "body") -> str:
     return json.dumps({field: disarm(text.strip())})         # ASCII だけで出す（Windows のコンソールの文字コードに依らない）
 
 
+_BROKEN = "\ufffd"                        # 読めなかった文字の置き換え（ここまで来たら、元の文字はもう無い）
+
+
+def _encodings() -> list[str]:
+    """本文のバイト列を読む文字コードの順。UTF-8 を先に、読めなければこの PC の文字コード（日本語の Windows なら cp932）。
+    UTF-8 モードの Python でも、この PC の本来の文字コードを使う（locale.getencoding）。"""
+    native = getattr(locale, "getencoding", lambda: locale.getpreferredencoding(False))()
+    out: list[str] = []
+    for enc in ("utf-8", native, "cp932"):
+        if enc and enc.lower().replace("_", "-") not in [e.lower().replace("_", "-") for e in out]:
+            out.append(enc)
+    return out
+
+
+def decode(raw: bytes) -> tuple[str | None, str]:
+    """バイト列を文字にする。(文字, 使った文字コード)。BOM があればそれに従い、無ければ UTF-8・この PC の文字コード・cp932 の順に
+    試す。どれでも読めなければ (None, "")（読めない文字を黙って置き換えない）。"""
+    for bom, enc in ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+        if raw.startswith(bom):
+            try:
+                return raw.decode(enc), enc
+            except UnicodeError:
+                return None, ""
+    for enc in _encodings():
+        try:
+            return raw.decode(enc), enc
+        except (UnicodeError, LookupError):
+            continue
+    return None, ""
+
+
 def _run(command: list[str]) -> tuple[int, str]:
     try:
-        p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        p = subprocess.run(command, capture_output=True,
                            env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"))
     except OSError as e:
         print(f"コマンドを動かせません: {e}", file=sys.stderr)
         return NOT_FOUND, ""
     if p.stderr:
-        sys.stderr.write(p.stderr)          # Dagu のログに残す（コメントには書かない）
+        err, _ = decode(p.stderr)
+        sys.stderr.write(err if err is not None else p.stderr.decode("utf-8", "replace"))   # Dagu のログに残す（コメントには書かない）
     if p.returncode != 0:
         print(f"コマンドが終了コード {p.returncode} で終わりました", file=sys.stderr)
-    return p.returncode, p.stdout
+        return p.returncode, ""
+    text, _ = decode(p.stdout)
+    if text is None:
+        print("コマンドの出力を文字として読めません（UTF-8・Shift_JIS のどちらでもありません）", file=sys.stderr)
+        return USAGE, ""
+    return OK, text
 
 
 def _violation(code: str, field: str, line: int, message: str) -> dict:
@@ -288,11 +328,15 @@ def _read_text(a) -> tuple[int, str]:
         return OK, text
     if a.text_file:
         try:
-            with open(a.text_file, encoding="utf-8-sig") as f:
-                return OK, f.read()
-        except (OSError, UnicodeError) as e:
+            with open(a.text_file, "rb") as f:
+                text, _ = decode(f.read())
+        except OSError as e:
             print(f"本文のファイルを読めません: {e}", file=sys.stderr)
             return USAGE, ""
+        if text is None:
+            print("本文のファイルを文字として読めません（UTF-8・UTF-16・Shift_JIS のどれでもありません）", file=sys.stderr)
+            return USAGE, ""
+        return OK, text.replace("\r\n", "\n")
     return OK, a.text
 
 
@@ -302,7 +346,20 @@ def cmd_note(a) -> int:
         return code
     if not text.strip():
         return OK                           # 空なら何も出さない（ワークフローは書き込みのステップを飛ばす）
+    if _refuse_broken(text):
+        return USAGE
     return _emit(note_json(text, "description" if a.cmd == "description" else "body"), a.out)
+
+
+def _refuse_broken(text: str) -> bool:
+    """文字化け（U+FFFD）を含む文は書かない。渡される前に、UTF-8 でない文字が置き換えられている。"""
+    if _BROKEN not in text:
+        return False
+    line = text[:text.index(_BROKEN)].count("\n") + 1
+    print(f"本文の {line} 行目に文字化けした文字（U+FFFD）があるので書きません。本文が渡される前に、UTF-8 でない文字が"
+          "置き換えられています。前のステップの出力を ${…} で渡しているなら、ファイル（--text-file）か -- <コマンド> で"
+          "渡してください（Shift_JIS のファイル・出力も読めます）", file=sys.stderr)
+    return True
 
 
 def _emit(payload: str, out: str | None) -> int:
@@ -401,6 +458,8 @@ def cmd_fields(a) -> int:
             print(f"項目は 名前=値 で書いてください: {item!r}", file=sys.stderr)
             return USAGE
         out[key.strip()] = disarm(value) if key.strip() == "description" else value
+    if any(_refuse_broken(v) for v in out.values()):
+        return USAGE
     if not out:
         print("項目がありません（title=... のように渡してください）", file=sys.stderr)
         return USAGE

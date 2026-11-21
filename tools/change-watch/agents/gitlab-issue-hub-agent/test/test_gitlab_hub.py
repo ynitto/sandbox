@@ -201,10 +201,42 @@ class NoteTest(unittest.TestCase):
     def test_invalid_utf8_file_is_reported_without_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "body.txt"
-            path.write_bytes(b"\xff")
+            path.write_bytes(b"\x81 ")                     # UTF-8 でも Shift_JIS でもない
             code, out, err = run_main("note", "--text-file", str(path))
         self.assertEqual((code, out), (gh.USAGE, ""))
-        self.assertIn("本文のファイルを読めません", err)
+        self.assertIn("本文のファイルを文字として読めません", err)
+
+    def test_shift_jis_and_utf16_files_are_read_without_mojibake(self):
+        text = "夜間バッチが終わりました\n- 件数: 12 件"
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, raw in (("utf8.txt", text.encode("utf-8")), ("bom.txt", b"\xef\xbb\xbf" + text.encode("utf-8")),
+                              ("sjis.txt", text.encode("cp932")),
+                              ("utf16.txt", text.replace("\n", "\r\n").encode("utf-16")),   # PowerShell 5 の Out-File の既定
+                              ("crlf.txt", text.replace("\n", "\r\n").encode("cp932"))):
+                with self.subTest(name=name):
+                    path = Path(tmp) / name
+                    path.write_bytes(raw)
+                    code, out, err = run_main("note", "--text-file", str(path))
+                    self.assertEqual((code, json.loads(out)["body"]), (0, text), err)
+
+    def test_shift_jis_command_output_is_read_without_mojibake(self):
+        # Windows の多くのコマンド（PowerShell・bat など）は、パイプへ Shift_JIS で出す
+        code, out, err = run_main("note", "--", sys.executable, "-c",
+                                  "import sys; sys.stdout.buffer.write('結果: 正常\\n'.encode('cp932'))")
+        self.assertEqual((code, json.loads(out)["body"]), (0, "結果: 正常"), err)
+        code, out, err = run_main("note", "--", sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\x81 ')")
+        self.assertEqual((code, out), (gh.USAGE, ""))
+        self.assertIn("コマンドの出力を文字として読めません", err)
+
+    def test_mojibake_is_refused_instead_of_posted(self):
+        # 前のステップの出力を ${…} で渡すと、Dagu が UTF-8 でない文字を U+FFFD にしてから渡してくる
+        for argv in (("note", "--text=夜間\nバッチ\ufffd\ufffd"), ("description", "--text=\ufffd"),
+                     ("fields", "title=\ufffd完了")):
+            with self.subTest(argv=argv):
+                code, out, err = run_main(*argv)
+                self.assertEqual((code, out), (gh.USAGE, ""))
+                self.assertIn("文字化けした文字（U+FFFD）", err)
+        self.assertIn("2 行目", run_main("note", "--text=夜間\nバッチ\ufffd")[2])
 
     def test_command_output_becomes_the_text(self):
         code, out, _ = run_main("note", "--", sys.executable, "-c", "import sys; print('結果: ' + sys.argv[1]); print('/close')", "{}")
