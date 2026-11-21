@@ -1,0 +1,22 @@
+{
+  "pipeline": {
+    "id": 42,
+    "project_id": 7,
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ref": "main",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/demo/project/-/pipelines/42"
+  },
+  "jobs": [
+    {
+      "id": 101,
+      "name": "build",
+      "stage": "build",
+      "failure_reason": "script_failure",
+      "web_url": "https://gitlab.example.com/demo/project/-/jobs/101"
+    }
+  ],
+  "traces": {
+    "101": "fatal: No space left on device\n"
+  }
+}

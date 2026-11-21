@@ -1,0 +1,7 @@
+{
+  "category": "dependency",
+  "patterns": [
+    "pip-no-matching-distribution",
+    "pytest-failed"
+  ]
+}

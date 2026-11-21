@@ -1,0 +1,22 @@
+{
+  "pipeline": {
+    "id": 42,
+    "project_id": 7,
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ref": "main",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/demo/project/-/pipelines/42"
+  },
+  "jobs": [
+    {
+      "id": 101,
+      "name": "test",
+      "stage": "test",
+      "failure_reason": "script_failure",
+      "web_url": "https://gitlab.example.com/demo/project/-/jobs/101"
+    }
+  ],
+  "traces": {
+    "101": "FAILED tests/test_cart.py::test_empty_cart\n"
+  }
+}
