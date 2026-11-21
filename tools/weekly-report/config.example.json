@@ -1,0 +1,9 @@
+{
+  "gitlab_url": "https://gitlab.example.com",
+  "token_env": "GITLAB_TOKEN",
+  "projects": ["platform/application", 123],
+  "hub_issue_url": "https://gitlab.example.com/platform/operations/-/issues/42",
+  "period_days": 7,
+  "include_open": false,
+  "post_enabled": false
+}

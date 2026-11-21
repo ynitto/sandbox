@@ -1,0 +1,16 @@
+# ~/.config/dagu/dags/weekly-report.yaml にコピーし、パスを環境に合わせる。
+description: "GitLab の週次レポートとリリースノートの下書きを生成する"
+schedule: "0 9 * * 1"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/weekly-report/weekly-report.env"
+steps:
+  - name: weekly-report
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/work/repo/tools/weekly-report/weekly_report.py"
+        - "--config"
+        - "/home/you/.config/weekly-report/config.json"
