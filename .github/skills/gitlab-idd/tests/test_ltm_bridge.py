@@ -314,6 +314,20 @@ class LearningLoopTest(unittest.TestCase):
                          (2, 1, ["quality"]))
         self.assertEqual(self.history().trail(42)["pending"]["retro_cycles"], [])
 
+    def test_scripts_use_utf8_io_under_legacy_locale(self):
+        # Windows のロケール文字コード（cp1252 等）を模し、子の標準入出力が
+        # そのままだと日本語・絵文字で落ちる環境でも、橋渡し側が UTF-8 に
+        # 固定して正常に終わることを確かめる（Windows CI の失敗の再現条件）。
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
+            self.responses(save_memory=(0, "✅ 保存しました [home]: /home/user/memory.md", ""))
+            self.assertEqual(self.run_save(), 0)
+            self.assertEqual(self.output()["status"], "ok")
+            self.used()
+            self.approve()
+            self.responses(rate_memory=(1, "", "ID が見つかりません"))
+            self.assertEqual(self.auto(), 0)
+            self.assertEqual(self.output()["applied"][0]["result"], "not-found")
+
     def test_save_failure_keeps_lost_learning(self):
         self.responses(save_memory=(2, "", "write failed"))
         self.assertEqual(self.run_save(), 3)

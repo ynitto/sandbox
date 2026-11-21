@@ -205,6 +205,10 @@ def run_script(path, argv, *, rating=False, decode=None):
             proc = subprocess.run(
                 [sys.executable, str(path), *argv], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=120,
+                # 出力は UTF-8 として読むので、子の標準入出力も UTF-8 に固定する。
+                # Windows では既定がロケールの文字コードになり、日本語や絵文字を
+                # 出力した時点で子が UnicodeEncodeError で落ちてしまう。
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             )
             result = Run(proc.returncode, attempts, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired as exc:
