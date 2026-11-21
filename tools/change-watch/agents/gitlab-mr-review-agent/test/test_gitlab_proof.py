@@ -99,6 +99,14 @@ class StructureTest(unittest.TestCase):
 
 
 class ProofUnitTest(unittest.TestCase):
+    def test_verifier_env_forces_utf8_io(self):
+        # 検証エージェントの標準入出力は、親の環境や Windows のロケール文字コードに
+        # 関わらず UTF-8 に固定される（日本語の受け渡しが壊れる CI 失敗の回帰防止）。
+        with mr.mock.patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
+            self.assertEqual(proof.verifier_env()["PYTHONIOENCODING"], "utf-8")
+        with mr.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(proof.verifier_env()["PYTHONIOENCODING"], "utf-8")
+
     @unittest.skipUnless(os.name == "posix", "POSIX のプロセスグループが必要")
     def test_stop_group_falls_back_when_killpg_is_denied(self):
         process = mr.mock.Mock(pid=123)

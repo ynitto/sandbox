@@ -777,7 +777,10 @@ def cmd_verify(iid: str, argv: list[str], out=print, err=None) -> int:
                  "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "USER", "LOGNAME")
     env = {name: os.environ[name] for name in env_names if name in os.environ}
     try:
-        result = subprocess.run(argv, shell=False, cwd=repo.worktree, env=env, timeout=timeout,
+        # 作業フォルダは解決済みのパスで渡す。Windows では TEMP 由来の短い名前
+        # （8.3 形式、例: RUNNER~1）を含むパスだと、実行側が見える現在フォルダの
+        # 表記が正規のパスと食い違うため。
+        result = subprocess.run(argv, shell=False, cwd=repo.worktree.resolve(), env=env, timeout=timeout,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
