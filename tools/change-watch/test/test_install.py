@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -117,9 +118,10 @@ class AgentInstallTest(unittest.TestCase):
     """--agent: エージェントのプログラム・設定の雛形・ワークフローを、どのエージェントも同じ決まりの場所に置く。"""
 
     def setUp(self):
-        self.env = Env(self)
-        self.home = self.env.tmp / "home"
-        self.bin = self.env.tmp / "bin"
+        tmp = tempfile.TemporaryDirectory(prefix="changewatch-install-test-")
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name) / "home"
+        self.bin = Path(tmp.name) / "bin"
         self.home.mkdir()
         self.osenv = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home))
 
@@ -152,7 +154,9 @@ class AgentInstallTest(unittest.TestCase):
                 self.assertIn(f"change-watch-{n}-maintenance.yaml", [f.name[:-len(".example")] for f in workflows])
                 for f in workflows:
                     text = (dags / f.name[:-len(".example")]).read_text(encoding="utf-8")
-                    self.assertIn(f"{(cfg_root / n / 'change-watch.yaml').as_posix()}", text.replace("\\", "/"))
+                    config = ("gitlab-mr-review-agent.env" if f.name == "change-watch-mr-iac.yaml.example"
+                              else "change-watch.yaml")
+                    self.assertIn((cfg_root / n / config).as_posix(), text.replace("\\", "/"))
                 cfg = (cfg_root / n / "change-watch.yaml").read_text(encoding="utf-8")
                 self.assertIn(f"state_dir: ~/.local/state/change-watch/{n}", cfg)
         # 置き換えずに残るのは、作業フォルダなど自分で決めるものだけ
@@ -182,6 +186,11 @@ class AgentInstallTest(unittest.TestCase):
         self.install("install", "--agent", "gitlab-mr-review-agent")
         cfg = self.home / ".config" / "change-watch" / "gitlab-mr-review-agent" / "change-watch.yaml"
         prog = self.agents_dir() / "gitlab-mr-review-agent" / "gitlab_mr.py"
+        self.assertTrue(prog.with_name("gitlab_iac.py").is_file())
+        self.assertTrue((self.home / ".config" / "dagu" / "dags" / "change-watch-mr-iac.yaml").is_file())
+        app = self.bin / ("change-watch.pyz" if os.name == "nt" else "change-watch")
+        p = run([sys.executable, str(app), "--plugin", "gitlab_iac", "iac", "check", "--help"], env=self.osenv)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         cfg.write_text("# 直した設定\n", encoding="utf-8")
         prog.write_text("# 古い版\n", encoding="utf-8")
         out = self.install("install", "--agent", "gitlab-mr-review-agent")
