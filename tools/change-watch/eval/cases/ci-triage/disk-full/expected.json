@@ -1,0 +1,6 @@
+{
+  "category": "infrastructure",
+  "patterns": [
+    "disk-full"
+  ]
+}
