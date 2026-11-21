@@ -1,0 +1,42 @@
+# Dagu の DAG ディレクトリにコピーし、パスと対象プロジェクトを環境に合わせる。
+# Dagu のタイムゾーンは UTC を想定。初回は post_enabled: false のまま出力を確認し、その後投稿を有効にする。
+description: "前月の GitLab 効率メトリクスを収集し、月次レポートを生成する"
+schedule: "0 9 1 * *"
+type: graph
+hist_retention_days: 30
+dotenv:
+  - "/home/you/.config/efficiency-report/efficiency-report.env"
+steps:
+  - name: collect
+    action: exec
+    with:
+      command: /bin/sh
+      args:
+        - "-ec"
+        - |
+          state_dir=/home/you/.local/state/efficiency-report
+          mkdir -p "$state_dir"
+          first=$(date -u +%Y-%m-01)
+          last=$(date -u -d "$first 1 day ago" +%F)
+          month=$(printf "%.7s" "$last")
+          tmp=$(mktemp "$state_dir/collect.XXXXXX")
+          trap 'rm -f "$tmp"' EXIT
+          python3 /home/you/work/repo/.github/skills/gitlab-efficiency-metrics/scripts/efficiency.py \
+            collect --projects group/project --since "$month-01" \
+            --until "$last"T23:59:59.999999Z --format json > "$tmp"
+          mv "$tmp" "$state_dir/collect-$month.json"
+          printf '%s\n' "$month"
+    output: EFFICIENCY_REPORT_MONTH
+  - name: report
+    depends: [collect]
+    action: exec
+    with:
+      command: python3
+      args:
+        - "/home/you/work/repo/tools/efficiency-report/efficiency_report.py"
+        - "--config"
+        - "/home/you/.config/efficiency-report/config.json"
+        - "--month"
+        - "${EFFICIENCY_REPORT_MONTH}"
+        - "--input"
+        - "/home/you/.local/state/efficiency-report/collect-${EFFICIENCY_REPORT_MONTH}.json"
