@@ -11,6 +11,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - gitlab-idd の ltm_bridge と gitlab-mr-review-agent の proof で、子プロセスの標準入出力を UTF-8 に固定し、Windows のロケール文字コードで日本語・絵文字の受け渡しが壊れる問題を修正する。
 - gitlab-mr-review-agent の verify で作業フォルダを解決済みのパスで渡し、Windows の短い名前（8.3 形式）で現在フォルダの表記が食い違う問題を修正する。
 
+### change-watch: IaC変更のリスク検査を追加
+
+- gitlab-mr-review-agent に companion プラグイン `iac` を追加。MR 差分の IaC（Terraform / Bicep / ARM / CloudFormation）変更を決定的ルールで検査し、公開範囲の拡大・IAM ワイルドカード・ネットワーク変更を検出したら警告コメントと追加承認ラベルを付ける。初期設定は dry-run
+
 ### change-watch: 判断待ちの滞留を可視化して催促する
 
 - gitlab-decision-stagnation-agent を追加。承認・レビュー待ちの MR と判断系ラベルの Issue を集約し、滞留日数つきのサマリをハブ Issue へ定期投稿する。しきい値超過は担当者メンションつきで目立たせる。初期設定は dry-run
