@@ -32,7 +32,7 @@
 
 `--plugin <名前>` で読み込むプラグインは、`register(api)` を持つ 1 つの `.py` ファイル。インストーラで入れたエージェントのプログラムは
 名前だけで指定でき（`--plugin gitlab_hub`。`.py` は付けても付けなくてもよい）、change-watch が置き場所から探す。ほかの場所のものは `.py` のパスで書く。設定のテンプレートで使うフィルタ
-（gitlab-issue-hub-agent の `gitlab_issue_api` など）と、エージェントに固有のコマンド（同じく `note`、gitlab-mr-review-agent の `mr` など）を足す。
+（gitlab-issue-hub-agent の `gitlab_issue_api` など）と、エージェントに固有のコマンド（同じく `note`、gitlab-mr-review-agent の `mr`・`proof`・`iac` など）を足す。
 ワークフローは、エージェントに固有の処理も change-watch を入り口にして呼ぶ。本体の DB や取得の仕組みには直接触らない。
 
 | 口 | 足すもの | 使うところ |
