@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ---
 
 ## [Unreleased]
+### change-watch: issue の説明を書き換えたことをメールで知らせる
+
+- gitlab-issue-hub-agent の説明を書き換える例に `COMMENT` を足す。GitLab は説明の変更だけではメールを送らないので、渡すと書き換えた issue にコメントも足す。
+- README に、どの変化でメールが届くかの表を足す。
+
 ### efficiency-report: エージェント活用の効果を月次で共有する
 
 - GitLab の集計済みメトリクスから削減見積もりと改善の示唆をまとめ、ハブ issue に月 1 件投稿できる Dagu 例を追加する。初期設定は dry-run。
