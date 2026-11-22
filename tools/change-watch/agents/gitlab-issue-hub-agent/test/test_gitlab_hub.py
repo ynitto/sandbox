@@ -19,6 +19,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 try:
     import yaml
@@ -47,6 +48,157 @@ def run_main(*argv) -> tuple[int, str, str]:
     with redirect_stdout(out), redirect_stderr(err):
         code = gh.main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+class BundleTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.state = Path(temporary.name) / "nested" / "bundle.json"
+        self.start = datetime.datetime(2026, 11, 22, 12, tzinfo=datetime.timezone.utc)
+
+    def bundle(self, command, *args, minutes=0):
+        handler = "cmd_" + command.replace("-", "_")
+        now = self.start + datetime.timedelta(minutes=minutes)
+        original = getattr(gh, handler)
+        with patch.object(gh, handler, lambda a: original(a, now=now)):
+            return run_main(command, "--state-file", str(self.state), *args)
+
+    def add(self, text, repo="group/project", kind="ci", **kwargs):
+        return self.bundle("bundle-add", f"--repo={repo}", f"--kind={kind}", f"--text={text}", **kwargs)
+
+    def pending(self):
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["version"], 1)
+        return state["bundles"]
+
+    def test_groups_and_flushes_expired_bundles_in_one_comment(self):
+        self.assertEqual(self.add("最初の通知\n/close"), (0, "", ""))
+        self.assertEqual(self.add("次の通知", minutes=9), (0, "", ""))
+        self.assertEqual(self.add("別の repo", repo="other"), (0, "", ""))
+        self.assertEqual(self.add("別の種別", kind="release", minutes=9), (0, "", ""))
+        pending = self.pending()
+        self.assertEqual(set(pending), {"group/project\nci", "other\nci", "group/project\nrelease"})
+        self.assertEqual(len(pending["group/project\nci"]["items"]), 2)
+        self.assertEqual(self.bundle("bundle-flush", minutes=9), (0, "", ""))
+        code, out, err = self.bundle("bundle-flush", minutes=10)
+        self.assertEqual((code, err), (0, ""))
+        body = json.loads(out)["body"]
+        for expected in ("group/project / ci（2件）", "other / ci（1件）", "最初の通知",
+                         "\\/close", "次の通知", "別の repo", self.start.isoformat(),
+                         (self.start + datetime.timedelta(minutes=9)).isoformat()):
+            self.assertIn(expected, body)
+        self.assertNotIn("別の種別", body)
+        self.assertEqual(set(self.pending()), {"group/project\nrelease"})
+
+    def test_add_rolls_over_expired_bundle(self):
+        self.assertEqual(self.add("old"), (0, "", ""))
+        code, out, err = self.add("new", minutes=10)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("old", json.loads(out)["body"])
+        self.assertNotIn("new", out)
+        bundle = self.pending()["group/project\nci"]
+        at = (self.start + datetime.timedelta(minutes=10)).isoformat()
+        self.assertEqual(bundle, {"first_at": at, "items": [{"at": at, "text": "new"}]})
+
+    def test_empty_flush_all_and_output_file(self):
+        self.assertEqual(self.add(" \n"), (0, "", ""))
+        self.assertFalse(self.state.exists())
+        self.assertEqual(self.add("pending"), (0, "", ""))
+        out = self.state.with_name("note.json")
+        self.assertEqual(self.bundle("bundle-flush", "--flush-all", "--out", str(out)), (0, f"{out}\n", ""))
+        self.assertIn("pending", json.loads(out.read_text(encoding="utf-8"))["body"])
+        self.assertEqual(self.pending(), {})
+        self.assertEqual(self.bundle("bundle-flush", "--flush-all", "--out", str(out)), (0, "", ""))
+
+    def test_output_cannot_overwrite_state(self):
+        self.assertEqual(self.add("kept"), (0, "", ""))
+        before = self.state.read_bytes()
+        code, out, err = self.bundle("bundle-flush", "--flush-all", "--out", str(self.state))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("--out と --state-file", err)
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_rollover_removes_output_if_state_save_fails(self):
+        self.assertEqual(self.add("old"), (0, "", ""))
+        before = self.state.read_bytes()
+        out = self.state.with_name("note.json")
+
+        def fail_save(path, bundles):
+            self.assertIn("old", json.loads(out.read_text(encoding="utf-8"))["body"])
+            raise OSError("state save failed")
+
+        with patch.object(gh, "_save_bundles", side_effect=fail_save):
+            code, stdout, err = self.bundle(
+                "bundle-add", "--repo=group/project", "--kind=ci", "--text=new",
+                "--out", str(out), minutes=10,
+            )
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertIn("state save failed", err)
+        self.assertFalse(out.exists())
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_corrupt_bundle_is_discarded_individually(self):
+        self.assertEqual(self.add("kept"), (0, "", ""))
+        valid = self.pending()
+        state = {"version": 1, "bundles": {**valid, "broken": {}}}
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        code, out, err = self.add("new", repo="another")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("警告", err)
+        self.assertIn("'broken'", err)
+        pending = self.pending()
+        self.assertEqual(set(pending), {"group/project\nci", "another\nci"})
+        self.assertEqual(pending["group/project\nci"], valid["group/project\nci"])
+
+    def test_corrupt_state_is_replaced(self):
+        self.state.parent.mkdir()
+        for broken in ("{", '{"version": 1, "bundles": {"r\\nk": {"first_at": "bad", "items": []}}}'):
+            with self.subTest(broken=broken):
+                self.state.write_text(broken, encoding="utf-8")
+                code, out, err = self.add("kept")
+                self.assertEqual((code, out), (0, ""))
+                self.assertIn("警告", err)
+                self.assertEqual(self.pending()["group/project\nci"]["items"][0]["text"], "kept")
+
+    def test_broken_text_and_failed_output_preserve_pending_state(self):
+        self.assertEqual(self.add("kept"), (0, "", ""))
+        before = self.state.read_bytes()
+        code, out, _ = self.add("broken \ufffd", minutes=10)
+        self.assertEqual((code, out), (2, ""))
+        code, out, _ = self.bundle("bundle-flush", "--flush-all", "--out", str(self.state.parent))
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_invalid_arguments_exit_with_status_2(self):
+        for flag, values in (("repo", ("", " \t", "r\np")), ("kind", ("", " \t", "ci\rtest")),
+                             ("window-minutes", ("0", "-1", "1.5"))):
+            for value in values:
+                args = {"repo": "r", "kind": "ci", flag: value}
+                with self.subTest(flag=flag, value=value), self.assertRaises(SystemExit) as raised:
+                    self.bundle("bundle-add", *(f"--{key}={val}" for key, val in args.items()), "--text=notice")
+                self.assertEqual(raised.exception.code, 2)
+        with self.assertRaises(SystemExit) as raised:
+            self.bundle("bundle-flush", "--window-minutes=0")
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(self.state.exists())
+
+    def test_plugin_registration_and_custom_window(self):
+        command = [sys.executable, str(CHANGE_WATCH), "--plugin", str(PROGRAM)]
+        added = subprocess.run(
+            [*command, "bundle-add", "--state-file", str(self.state), "--repo=r", "--kind=ci",
+             "--", sys.executable, "-c", "print('from command')"],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(added.stdout, "")
+        received = datetime.datetime.fromisoformat(self.pending()["r\nci"]["first_at"])
+        self.start = received + datetime.timedelta(minutes=1)
+        code, out, err = self.bundle("bundle-flush", "--window-minutes=1")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("from command", json.loads(out)["body"])
+        flushed = subprocess.run([*command, "bundle-flush", "--state-file", str(self.state), "--flush-all"],
+                                 capture_output=True, text=True, check=True)
+        self.assertEqual(flushed.stdout, "")
 
 
 class FakeGitLab:

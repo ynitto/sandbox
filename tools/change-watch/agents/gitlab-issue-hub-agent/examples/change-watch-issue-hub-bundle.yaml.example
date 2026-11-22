@@ -1,0 +1,46 @@
+# ~/.config/dagu/dags/ にコピーし、/home/you を自分の場所に直す。
+# 送り手の bundle-add と同じユーザー・状態ファイル・窓の設定で動かす。
+description: "期限切れの通知をまとめてハブの issue にコメントする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+steps:
+  - name: flush
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "bundle-flush"
+        - "--out=/home/you/.local/state/change-watch/gitlab-issue-hub-agent/hub-bundle-note.json"
+    timeout_sec: 60
+    output: NOTE
+  - name: comment
+    depends: [flush]
+    preconditions:
+      - condition: "${NOTE}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "call"
+        - "POST"
+        - "{{ env.GITLAB_HUB_ISSUE_URL | gitlab_issue_api }}/notes"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--json-file=${NOTE}"
+    timeout_sec: 120
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

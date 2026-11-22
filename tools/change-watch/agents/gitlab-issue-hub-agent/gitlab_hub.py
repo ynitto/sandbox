@@ -19,6 +19,11 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
         長い文は JSON にするとコマンド行に収まらないことがある（Windows は 8191 文字まで）ので、ファイルで渡す。
         --text が空で --text-file があれば、ファイルの中身を使う（ワークフローの引数を両方書いておける）。
 
+    change-watch --plugin <このファイル> bundle-add --repo REPO --kind KIND [--window-minutes N] [--state-file F] [--out F] --text "..." | --text-file F | -- <コマンド>
+        通知を保留する。同じ repo・kind の保留が期限切れなら、その分のコメント JSON を出してから新しい通知を保留する。
+    change-watch --plugin <このファイル> bundle-flush [--window-minutes N] [--state-file F] [--out F] [--flush-all]
+        期限切れの保留をまとめてコメント JSON を 1 つ出す。窓は既定で 10 分、--flush-all ならすべて出す。
+
     change-watch --plugin <このファイル> fields title="【完了】${CHANGE.record.title}" add_labels=完了
         issue の更新の JSON（{"title": "...", "add_labels": "..."}）を出す（change-watch call PUT の --json に渡す）。
         値はすべて文字列。Dagu の引数に、引用符を含む題などをそのまま渡せる。
@@ -67,6 +72,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 
 OK = 0
@@ -397,6 +403,13 @@ def _emit(payload: str, out: str | None) -> int:
     if not out:
         print(payload)
         return OK
+    code = _write_output(payload, out)
+    if code == OK:
+        print(out)
+    return code
+
+
+def _write_output(payload: str, out: str) -> int:
     try:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
@@ -404,8 +417,162 @@ def _emit(payload: str, out: str | None) -> int:
     except OSError as e:
         print(f"--out のファイルに書けません: {e}", file=sys.stderr)
         return USAGE
-    print(out)
     return OK
+
+
+_BUNDLE_STATE = "~/.local/state/change-watch/gitlab-issue-hub-agent/bundle.json"
+
+
+def _bundle_label(value: str) -> bool:
+    return bool(value.strip()) and value.splitlines() == [value]
+
+
+def _bundle_time(value: str) -> datetime.datetime:
+    timestamp = datetime.datetime.fromisoformat(value)
+    if timestamp.utcoffset() != datetime.timedelta(0):
+        raise ValueError("UTC の日時が必要です")
+    return timestamp
+
+
+def _load_bundles(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f)
+        if type(state["version"]) is not int or state["version"] != 1:
+            raise ValueError("version")
+        bundles = state["bundles"]
+        if not isinstance(bundles, dict):
+            raise ValueError("bundles")
+    except FileNotFoundError:
+        return {}
+    except (ValueError, KeyError, TypeError, RecursionError) as e:
+        print(f"警告: bundle の状態を読めないため空として扱います: {path} ({e})", file=sys.stderr)
+        return {}
+
+    valid = {}
+    for key, bundle in bundles.items():
+        try:
+            repo, kind = key.split("\n")
+            if not (_bundle_label(repo) and _bundle_label(kind)):
+                raise ValueError("repo / kind")
+            _bundle_time(bundle["first_at"])
+            items = bundle["items"]
+            if not isinstance(items, list) or not items:
+                raise ValueError("items")
+            for item in items:
+                _bundle_time(item["at"])
+                if not isinstance(item["text"], str):
+                    raise ValueError("text")
+        except (ValueError, KeyError, TypeError) as e:
+            print(f"警告: bundle のキー {key!r} を破棄します: {path} ({e})", file=sys.stderr)
+            continue
+        valid[key] = bundle
+    return valid
+
+
+def _write_bundle_file(path: str, payload: str) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as f:
+            temporary = f.name
+            f.write(payload)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+
+
+def _save_bundles(path: str, bundles: dict) -> None:
+    _write_bundle_file(path, json.dumps({"version": 1, "bundles": bundles}))
+
+
+def _bundle_expired(bundle: dict, minutes: int, now: datetime.datetime) -> bool:
+    age = now - _bundle_time(bundle["first_at"])
+    return age.total_seconds() >= minutes * 60
+
+
+def _bundle_comment(bundles: dict) -> str:
+    sections = []
+    for key, bundle in bundles.items():
+        repo, kind = key.split("\n")
+        items = bundle["items"]
+        notifications = [f"**{item['at']}**\n\n{item['text'].strip()}" for item in items]
+        heading = f"### {repo} / {kind}（{len(items)}件）"
+        sections.append(heading + "\n\n" + "\n\n---\n\n".join(notifications))
+    return "\n\n".join(sections)
+
+
+def _update_bundles(path: str, bundles: dict, ready: dict, out: str | None) -> int:
+    body = _bundle_comment(ready)
+    if _refuse_broken(body):
+        return USAGE
+    payload = note_json(body) if ready else ""
+    if out and os.path.normcase(os.path.realpath(out)) == os.path.normcase(os.path.realpath(path)):
+        print("--out と --state-file には別のファイルを指定してください", file=sys.stderr)
+        return USAGE
+    if payload and out:
+        try:
+            _write_bundle_file(out, payload)
+        except OSError as e:
+            print(f"--out のファイルに書けません: {e}", file=sys.stderr)
+            return USAGE
+    try:
+        _save_bundles(path, bundles)
+    except OSError:
+        if payload and out:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+        raise
+    if payload:
+        print(out or payload)
+    return OK
+
+
+def cmd_bundle_add(a, now: datetime.datetime | None = None) -> int:
+    code, text = _read_text(a)
+    if code != OK or not text.strip():
+        return code
+    if _refuse_broken(text):
+        return USAGE
+    path = os.path.expanduser(a.state_file)
+    key = f"{a.repo}\n{a.kind}"
+    try:
+        bundles = _load_bundles(path)
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        at = now.astimezone(datetime.timezone.utc).isoformat()
+        bundle = bundles.get(key)
+        ready = {}
+        if bundle is not None and _bundle_expired(bundle, a.window_minutes, now):
+            ready[key] = bundle
+            bundle = None
+        if bundle is None:
+            bundle = bundles[key] = {"first_at": at, "items": []}
+        bundle["items"].append({"at": at, "text": text})
+        return _update_bundles(path, bundles, ready, a.out)
+    except OSError as e:
+        print(f"bundle の状態ファイルを処理できません: {e}", file=sys.stderr)
+        return USAGE
+
+
+def cmd_bundle_flush(a, now: datetime.datetime | None = None) -> int:
+    path = os.path.expanduser(a.state_file)
+    try:
+        bundles = _load_bundles(path)
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        ready = {key: bundle for key, bundle in bundles.items()
+                 if a.flush_all or _bundle_expired(bundle, a.window_minutes, now)}
+        if not ready:
+            return OK
+        pending = {key: bundle for key, bundle in bundles.items() if key not in ready}
+        return _update_bundles(path, pending, ready, a.out)
+    except OSError as e:
+        print(f"bundle の状態ファイルを処理できません: {e}", file=sys.stderr)
+        return USAGE
 
 
 def cmd_issue(a) -> int:
@@ -579,6 +746,8 @@ def cmd_fields(a) -> int:
 
 _CHECK = "依頼の書式を調べて、結果を JSON で出す（ワークフローの preconditions で種別ごとに分ける）"
 _NOTE = "コメントの本文を {\"body\": ...} で出す（change-watch call の --json に渡す）"
+_BUNDLE_ADD = "通知を保留し、同じ repo・kind の期限切れの通知があればコメント JSON を出す"
+_BUNDLE_FLUSH = "期限切れの通知をまとめてコメント JSON を出す"
 _DESCRIPTION = "issue の説明を {\"description\": ...} で出す（change-watch call PUT の --json に渡す）"
 _FIELDS = "issue の更新の JSON を 名前=値 から出す（change-watch call PUT の --json に渡す）"
 _OLD_NOTE = "コメントの変化を見て、消してよいか（delete・wait・keep）を出す（古いコメントを消すワークフローの preconditions で分ける）"
@@ -594,6 +763,31 @@ def _text_args(p, cmd: str) -> None:
     p.add_argument("--text-file", help="本文のファイル（UTF-8）")
     p.add_argument("--out", help=_OUT)
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- のあとに書いたコマンドの標準出力を本文にする")
+
+
+def _bundle_minutes(value: str) -> int:
+    minutes = int(value)
+    if minutes < 1:
+        raise argparse.ArgumentTypeError("1 以上の整数を指定してください")
+    return minutes
+
+
+def _bundle_label_arg(value: str) -> str:
+    if not _bundle_label(value):
+        raise argparse.ArgumentTypeError("空文字、空白だけの値、改行を含む値は指定できません")
+    return value
+
+
+def _bundle_args(p, cmd: str) -> None:
+    p.add_argument("--window-minutes", type=_bundle_minutes, default=10, help="保留する分数（既定 10。1 以上）")
+    p.add_argument("--state-file", default=_BUNDLE_STATE, help="保留を保存する JSON ファイル")
+    if cmd == "bundle-add":
+        p.add_argument("--repo", required=True, type=_bundle_label_arg, help="リポジトリ")
+        p.add_argument("--kind", required=True, type=_bundle_label_arg, help="通知の種別")
+        _text_args(p, cmd)
+    else:
+        p.add_argument("--out", help=_OUT)
+        p.add_argument("--flush-all", action="store_true", help="窓に関わらずすべての保留を出す")
 
 
 def _check_args(p) -> None:
@@ -641,6 +835,8 @@ def register(api) -> None:
     api.add_filter("gitlab_project_api", gitlab_project_api)
     _issue_args(api.add_command("issue", lambda _cfg, _store, a: cmd_issue(a), _ISSUE, needs_config=False))
     _text_args(api.add_command("note", lambda _cfg, _store, a: cmd_note(a), _NOTE, needs_config=False), "note")
+    _bundle_args(api.add_command("bundle-add", lambda _cfg, _store, a: cmd_bundle_add(a), _BUNDLE_ADD, needs_config=False), "bundle-add")
+    _bundle_args(api.add_command("bundle-flush", lambda _cfg, _store, a: cmd_bundle_flush(a), _BUNDLE_FLUSH, needs_config=False), "bundle-flush")
     _text_args(api.add_command("description", lambda _cfg, _store, a: cmd_note(a), _DESCRIPTION, needs_config=False), "description")
     _check_args(api.add_command("check-request", lambda _cfg, _store, a: cmd_check_request(a), _CHECK, needs_config=False))
     _fields_args(api.add_command("fields", lambda _cfg, _store, a: cmd_fields(a), _FIELDS, needs_config=False))
@@ -654,6 +850,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="gitlab_hub.py", description="issue に書くもの（コメントの本文・説明・更新の項目）を JSON で出す")
     sub = p.add_subparsers(dest="cmd", required=True)
     _text_args(sub.add_parser("note", help=_NOTE), "note")
+    _bundle_args(sub.add_parser("bundle-add", help=_BUNDLE_ADD), "bundle-add")
+    _bundle_args(sub.add_parser("bundle-flush", help=_BUNDLE_FLUSH), "bundle-flush")
     _text_args(sub.add_parser("description", help=_DESCRIPTION), "description")
     _issue_args(sub.add_parser("issue", help=_ISSUE))
     _check_args(sub.add_parser("check-request", help=_CHECK))
@@ -664,7 +862,8 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
     return {"note": cmd_note, "description": cmd_note, "api-url": cmd_api_url, "fields": cmd_fields,
             "check-request": cmd_check_request, "check-old-note": cmd_check_old_note,
-            "issue": cmd_issue, "check-old-issue": cmd_check_old_issue}[a.cmd](a)
+            "issue": cmd_issue, "check-old-issue": cmd_check_old_issue,
+            "bundle-add": cmd_bundle_add, "bundle-flush": cmd_bundle_flush}[a.cmd](a)
 
 
 if __name__ == "__main__":
