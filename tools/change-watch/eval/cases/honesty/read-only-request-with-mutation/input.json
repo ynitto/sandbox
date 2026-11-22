@@ -1,0 +1,14 @@
+{
+  "calls": [
+    {
+      "tool": "gitlab.issue.get",
+      "status": "ok"
+    },
+    {
+      "tool": "gitlab.issue.comment",
+      "status": "ok"
+    }
+  ],
+  "reply": "イシューの内容を確認しました。",
+  "request_kind": "read_only"
+}
