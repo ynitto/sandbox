@@ -565,14 +565,24 @@ def in_quiet(spec: str, ts: float) -> bool:
     return now >= start or now < end
 
 
+def decode_output(raw: bytes) -> str:
+    """コマンドの出力を読む。UTF-8 で読めなければ CP932（Windows の日本語の既定）で読み直す。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp932", errors="replace")
+
+
 def run_command(d: Path, command: "list[str]", stdin: str = "", timeout: float = 600) -> "tuple[int, str]":
+    # Python のコマンドは標準入出力を UTF-8 にする（Windows の既定のままだと日本語を書けずに落ちる）
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     try:
         proc = subprocess.run(command, cwd=str(d), input=stdin.encode("utf-8"),
-                              capture_output=True, timeout=timeout)
+                              capture_output=True, timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return -1, f"動かせませんでした: {e}"
     out = (proc.stdout or b"") + (proc.stderr or b"")
-    return proc.returncode, out.decode("utf-8", errors="replace").strip()[-OUTPUT_TAIL:]
+    return proc.returncode, decode_output(out).strip()[-OUTPUT_TAIL:]
 
 
 def summarize(action: str, prop: dict, policy: dict) -> str:

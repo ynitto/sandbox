@@ -253,3 +253,15 @@ import unittest.mock  # noqa: E402
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecodeTest(unittest.TestCase):
+    def test_decode_output_falls_back_to_cp932(self):
+        self.assertEqual(dot.decode_output("置きました".encode("utf-8")), "置きました")
+        self.assertEqual(dot.decode_output("置きました".encode("cp932")), "置きました")
+
+    def test_command_writes_japanese_in_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 子の Python は PYTHONIOENCODING を見る。Windows の既定（cp1252 など）でも日本語を書ける
+            code, out = dot.run_command(Path(tmp), [sys.executable, "-c", "print('置きました')"])
+        self.assertEqual((code, out), (0, "置きました"))
