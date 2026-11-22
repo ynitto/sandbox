@@ -62,6 +62,7 @@ KNOWN_ACTIONS = {
     "run": ("name",),              # policy.json の commands に登録したコマンドを動かす
 }
 LEVELS = ("auto", "ask", "deny")
+PROACTIVE_KINDS = ("note", "ask", "wait")
 
 DEFAULT_POLICY = {
     "actions": {"hub.comment": "auto"},
@@ -71,6 +72,9 @@ DEFAULT_POLICY = {
     "quiet_hours": "",
     "wake_per_day": 24,
     "done_check": [],
+    "proactive_per_day": 0,
+    "proactive_idle_min": 120,
+    "tools": {},
 }
 
 GOAL_TEMPLATE = """# {name}
@@ -334,6 +338,7 @@ def cmd_event(a) -> int:
                 return EXIT_OK
             result = take_reply(d, state, load_policy(d), author,
                                 text, {"from": "hub", "author": author, "id": record.get("id")}, ts)
+            state["last_event_ts"] = ts
             if state.get("status") in ("done", "review"):
                 state["status"] = "active"       # 終えた目標に話しかけたら、また動かす
             save_state(d, state)
@@ -351,6 +356,7 @@ def cmd_event(a) -> int:
     with locked(d):
         state = load_state(d)
         path = put_event(d, state, {"from": a.source, "text": text.strip()}, ts)
+        state["last_event_ts"] = ts
         if state.get("status") in ("done", "review"):
             state["status"] = "active"
         save_state(d, state)
@@ -396,6 +402,25 @@ def wake_reasons(d: Path, state: dict, ts: float) -> "list[str]":
     if state.get("status") == "review":
         return [r for r in reasons if r == "events"]
     return reasons
+
+
+def proactive_reason(state: dict, policy: dict, ts: float) -> "list[str]":
+    """起こす理由が無いとき、手の空いた時間の調べもの（読み取りだけ）をさせるか。"""
+    limit = int(policy.get("proactive_per_day") or 0)
+    if limit <= 0 or state.get("status") != "active" or not state.get("last_wake"):
+        return []
+    if int((state.get("proactive") or {}).get(today(ts)) or 0) >= limit:
+        return []
+    if in_quiet(str(policy.get("quiet_hours") or ""), ts):
+        return []
+    idle = float(policy.get("proactive_idle_min") or 0) * 60
+    last = max(float(state.get("last_wake_ts") or 0), float(state.get("last_event_ts") or 0))
+    if ts - last < idle:
+        return []                                 # 利用者とのやりとりが最近あった
+    nxt = state.get("next_wake")
+    if nxt is not None and float(nxt) - ts < idle:
+        return []                                 # もうすぐ起きる予定がある
+    return ["proactive"]
 
 
 def read_notes(d: Path, limit: int = NOTE_LINES) -> "list[str]":
@@ -457,6 +482,13 @@ def build_prompt(d: Path, state: dict, policy: dict, events: "list[dict]", reaso
         out.append("## 承認を待っている提案（同じものを出し直さない）")
         out.extend(f"- {x['id']} {x.get('summary', '')}（{x.get('status')}）" for x in pending)
     out.append("")
+    if reasons == ["proactive"]:
+        out.append("## 今回は調べものの回")
+        out.append("利用者はいまこの目標に触れていません。手が空いた時間に、読むだけで進められることを調べます。")
+        out.append("- 読むのはこのフォルダと、許された資料だけ。ファイルを作ってよいのは notes/ と outbox/ だけ。")
+        out.append("- 書ける提案は メモ（note）・質問（ask）・次に起きる時刻（wait）だけ。報告・コマンド・完了は書かない（書いても捨てられる）。")
+        out.append("- 調べることが無ければ、メモを 1 件だけ書いて終える。")
+        out.append("")
     out.append("## やり方")
     out.append("1. 目標とメモと出来事を読み、今回進められることを進める。調べる・下書きを作るのはこのフォルダの中で行う。")
     out.append("2. 外へは何も書かない（メール・チャット・issue・push などは直接しない）。外へ出したいことは提案として outbox/ に書く。")
@@ -505,7 +537,7 @@ def _tick(d: Path, ts: float) -> int:
         restore_inflight(d, state)
         append_journal(d, {"kind": "tick", "result": "stale", "why": "取りかかり中のまま古くなったので出来事を戻した"}, ts)
 
-    reasons = wake_reasons(d, state, ts)
+    reasons = wake_reasons(d, state, ts) or proactive_reason(state, policy, ts)
     if not reasons:
         save_state(d, state)
         return EXIT_OK
@@ -530,6 +562,9 @@ def _tick(d: Path, ts: float) -> int:
     (d / WORK / "prompt.md").write_text(build_prompt(d, state, policy, events, reasons, ts), encoding="utf-8")
     state["wakes"] = {day: used + 1}              # 今日の分だけ残す
     state["last_wake"] = iso(ts)
+    state["last_wake_ts"] = ts
+    if reasons == ["proactive"]:
+        state["proactive"] = {day: int((state.get("proactive") or {}).get(day) or 0) + 1}
     if "due" in reasons:
         state["next_wake"] = None
     state["inflight"] = {"since": ts, "reasons": reasons, "tries": int(state.get("pending_tries") or 0)}
@@ -608,9 +643,12 @@ def approval_comment(state: dict, entry: dict) -> str:
     return "\n".join(lines)
 
 
-def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: "list[str]", to_run: "list[dict]") -> dict:
+def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: "list[str]", to_run: "list[dict]",
+           proactive: bool = False) -> dict:
     """1 件の提案を片付け、journal に残す中身を返す。動かすものは to_run に足す（ロックの外で動かす）。"""
     kind = prop.get("kind")
+    if proactive and kind not in PROACTIVE_KINDS:
+        return {"result": "denied", "why": "調べものの回では、メモ・質問・時刻のほかは提案できない"}
     if kind == "note":
         body = str(prop.get("body") or "").strip()
         if not body:
@@ -808,6 +846,7 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
         append_journal(d, {"kind": "act", "result": "retry", "why": "提案が 1 件も無かった", "tries": tries}, ts)
         return
 
+    proactive = ((state.get("inflight") or {}).get("reasons") or []) == ["proactive"]
     done_dir = d / WORK / "outbox-done"
     done_dir.mkdir(parents=True, exist_ok=True)
     for p in proposals:
@@ -817,7 +856,7 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
             entry, prop = {"result": "denied", "why": f"JSON が読めない: {e}"}, None
         else:
             if isinstance(prop, dict):
-                entry = handle(d, state, policy, prop, ts, comments, to_run)
+                entry = handle(d, state, policy, prop, ts, comments, to_run, proactive)
             else:
                 entry, prop = {"result": "denied", "why": "JSON がオブジェクトでない"}, None
         append_journal(d, {"kind": "proposal", "file": p.name, "proposal": prop, **entry}, ts)
@@ -827,6 +866,242 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
         p.unlink()
     state["inflight"] = None
     state.pop("pending_tries", None)
+
+
+# ---------------------------------------------------------------- hook（Copilot の preToolUse）
+
+HOOK_FILE = "agent-dots.json"                 # 目標のフォルダの .github/hooks/ に置く
+PROTECTED = ("policy.json", "state.json", "journal.jsonl", WORK, ".github")
+JOB_TMP = (JOB_BOX, "tmp")                    # 受け箱のうち、エージェントが報告を書く場所
+PROACTIVE_WRITABLE = (("notes",), ("outbox",), JOB_TMP)
+
+SHELL_TOOLS = {"bash", "powershell", "pwsh", "shell", "sh", "cmd", "terminal", "run_in_terminal", "execute", "exec"}
+WRITE_TOOLS = {"edit", "create", "write", "write_file", "create_file", "str_replace", "insert", "delete", "rename",
+               "move", "apply_patch", "edit_file", "multi_edit", "notebook_edit"}
+READ_TOOLS = {"view", "read", "read_file", "glob", "grep", "ls", "list", "list_dir", "search", "find", "rg"}
+WEB_TOOLS = {"web_fetch", "fetch", "web_search", "browser", "url_fetch", "http"}
+SAFE_TOOLS = {"report_intent", "think", "update_todo", "todo", "todo_write", "task_complete"}
+PATH_KEYS = ("path", "file_path", "filePath", "filename", "file", "target", "destination", "dest", "new_path", "source")
+WRITE_KEYS = ("content", "file_text", "new_str", "old_str", "new_string", "old_string", "text", "patch", "edits")
+SHELL_KEYS = ("command", "cmd", "script")
+SHELL_META = re.compile(r"[;|`<>\r\n]|&&|\$\(")
+JOB_COMMAND = re.compile(r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+"?[^"]*copilot_app_job\.py"?\s+(next|done)(\s|$)', re.I)
+
+
+def find_dot_from(start: Path) -> "Path | None":
+    """start とその親から、目標のフォルダ（state.json と policy.json がある）を探す。"""
+    try:
+        here = start.resolve()
+    except OSError:
+        return None
+    for folder in (here, *here.parents):
+        if (folder / "state.json").is_file() and (folder / "policy.json").is_file():
+            state = read_json(folder / "state.json", None)
+            if isinstance(state, dict) and state.get("name"):
+                return folder
+    return None
+
+
+def tool_args(payload: dict) -> dict:
+    raw = payload.get("toolArgs", payload.get("tool_input", payload.get("toolInput", {})))
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+    return raw if isinstance(raw, dict) else {"_raw": str(raw)}
+
+
+def inside(base: Path, target: Path) -> "tuple[str, ...] | None":
+    """target が base の中なら、base からの相対の部品。外なら None。"""
+    try:
+        return target.resolve().relative_to(base.resolve()).parts
+    except (OSError, ValueError):
+        return None
+
+
+def patch_paths(patch: str) -> "list[str]":
+    return re.findall(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", patch, re.M) + \
+        re.findall(r"^\*\*\* Move to:\s*(.+?)\s*$", patch, re.M)
+
+
+def arg_paths(args: dict) -> "list[str]":
+    paths = [str(args[k]) for k in PATH_KEYS if isinstance(args.get(k), str) and args.get(k)]
+    for key in ("paths", "files"):
+        if isinstance(args.get(key), list):
+            paths += [str(x) for x in args[key] if isinstance(x, str)]
+    for key in ("patch", "input", "_raw"):
+        if isinstance(args.get(key), str):
+            paths += patch_paths(args[key])
+    return paths
+
+
+def kind_of(name: str, args: dict) -> str:
+    base = name.lower().rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+    if base in SAFE_TOOLS:
+        return "safe"
+    if base == "str_replace_editor":
+        return "read" if str(args.get("command") or "") == "view" else "write"
+    if base in SHELL_TOOLS:
+        return "shell"
+    if base in WRITE_TOOLS:
+        return "write"
+    if base in READ_TOOLS:
+        return "read"
+    if base in WEB_TOOLS:
+        return "web"
+    if any(ch in name for ch in "/:") or "__" in name or "-" in name:
+        return "other"                            # MCP のツールなど、外へつながるかもしれないもの
+    if any(k in args for k in SHELL_KEYS):
+        return "shell"
+    if "url" in args:
+        return "web"
+    if arg_paths(args):
+        return "write" if any(k in args for k in WRITE_KEYS) else "read"
+    return "other"
+
+
+def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, policy: dict) -> "str | None":
+    """この道が使えなければ理由を返す。"""
+    target = Path(raw)
+    if not target.is_absolute():
+        target = cwd / target
+    parts = inside(d, target)
+    if not write:
+        if parts is not None:
+            return None
+        for folder in (policy.get("tools") or {}).get("read_allow") or []:
+            if inside(Path(folder), target) is not None:
+                return None
+        return f"目標のフォルダの外は読めません: {raw}"
+    if parts is None:
+        return f"目標のフォルダの外には書けません: {raw}"
+    if not parts:
+        return f"目標のフォルダそのものは変えられません: {raw}"
+    if tuple(parts[:2]) == JOB_TMP:
+        return None
+    if parts[0] in PROTECTED or parts[0] == JOB_BOX:
+        return f"このファイルは変えられません（動かし方の記録）: {raw}"
+    if proactive and not any(tuple(parts[:len(w)]) == w for w in PROACTIVE_WRITABLE):
+        return f"調べものの回では notes/ と outbox/ のほかには書けません: {raw}"
+    return None
+
+
+def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str | None":
+    """ツールを止めるなら理由を返す。通すなら None。"""
+    tools = policy.get("tools") or {}
+    name = str(payload.get("toolName") or payload.get("tool_name") or payload.get("toolname") or "")
+    args = tool_args(payload)
+    proactive = ((state.get("inflight") or {}).get("reasons") or []) == ["proactive"]
+    if name in (tools.get("deny") or []):
+        return f"このツールは止めています: {name}"
+    if name in (tools.get("allow") or []):
+        return None
+    kind = kind_of(name, args)
+    if kind == "safe":
+        return None
+    if kind in ("read", "write"):
+        paths = arg_paths(args)
+        if kind == "write" and not paths:
+            return f"書き込み先が分からないので止めました: {name}"
+        for raw in paths or ["."]:
+            why = check_path(d, cwd, raw, kind == "write", proactive, policy)
+            if why:
+                return why
+        return None
+    if kind == "shell":
+        command = next((str(args[k]) for k in SHELL_KEYS if isinstance(args.get(k), str)), str(args.get("_raw") or ""))
+        mode = str(tools.get("shell") or "allowlist")
+        if mode == "allow" and not proactive:
+            return None
+        body = command.strip()
+        body = body[1:].lstrip() if body.startswith("&") else body      # PowerShell の呼び出し演算子
+        patterns = [JOB_COMMAND] + ([] if proactive else [re.compile(x) for x in tools.get("shell_allow") or []])
+        if mode != "deny" and not SHELL_META.search(body) and any(pt.search(body) for pt in patterns):
+            return None
+        return "このコマンドは許していません（policy.json の tools.shell_allow に足すと動かせます）: " + command[:120]
+    if kind == "web":
+        allow = [str(h).lower() for h in tools.get("web_allow") or []]
+        if "*" in allow:
+            return None
+        url = str(args.get("url") or args.get("uri") or "")
+        host = re.sub(r"^[a-z]+://", "", url.lower()).split("/", 1)[0].split("@")[-1].split(":")[0]
+        if host and any(host == h or host.endswith("." + h) for h in allow):
+            return None
+        return f"この Web は許していません（policy.json の tools.web_allow に足すと読めます）: {host or name}"
+    return f"このツールは許していません（policy.json の tools.allow に足すと使えます）: {name}"
+
+
+def cmd_hook(a) -> int:
+    """Copilot の preToolUse から呼ばれる。標準入力にフックの JSON を受け、止めるときだけ JSON を出す。"""
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    cwd = Path(str(payload.get("cwd") or os.getcwd()))
+    d = Path(a.dir) if a.dir else find_dot_from(cwd)
+    if d is None:
+        return EXIT_OK                            # 目標のフォルダの外のセッションには何もしない
+    ts = now_ts()
+    try:
+        state = load_state(d)
+        why = decide(d, cwd, payload, state, load_policy(d))
+    except Exception as e:                        # 判定できないときは止める（通すほうが危ない）
+        why = f"フックの判定に失敗したので止めました: {e}"
+    name = str(payload.get("toolName") or payload.get("tool_name") or "")
+    try:
+        with (d / WORK / "hook.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": iso(ts), "tool": name, "decision": "deny" if why else "allow",
+                                "why": why or ""}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    if why:
+        print(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": why}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def hook_command(script: Path, python: str, shell: str) -> str:
+    if shell == "powershell":
+        return f"& '{python}' '{script}' hook"
+    return f"'{python}' '{script}' hook"
+
+
+def hooks_json(python: str) -> dict:
+    script = Path(__file__).resolve()
+    return {"version": 1, "hooks": {"preToolUse": [{
+        "type": "command",
+        "bash": hook_command(script, python, "bash"),
+        "powershell": hook_command(script, python, "powershell"),
+        "timeoutSec": 10,
+    }]}}
+
+
+def cmd_hooks(a) -> int:
+    python = a.python or sys.executable
+    data = hooks_json(python)
+    if a.plugin:
+        root = Path(a.plugin)
+        plugin = root / "plugins" / "agent-dots"
+        write_json(plugin / "hooks.json", data)
+        write_json(plugin / "plugin.json", {"name": "agent-dots", "version": "1.0.0", "hooks": "hooks.json",
+                                            "description": "目標のフォルダの中だけで動くよう、ツールを止めるフック"})
+        write_json(root / ".github" / "plugin" / "marketplace.json", {
+            "name": "agent-dots", "owner": {"name": "agent-dots"},
+            "plugins": [{"name": "agent-dots", "source": "./plugins/agent-dots", "strict": False}]})
+        print(f"プラグインを置きました: {root}")
+        print("Copilot アプリの Customize → Plugins → 歯車 → マーケットプレイスの追加で、このフォルダを足し、agent-dots を入れてください。")
+        print("プラグインはすべてのプロジェクトで動きますが、目標のフォルダの外では何もしません。")
+        return EXIT_OK
+    if not a.dir:
+        print("--dir か --plugin を指定してください", file=sys.stderr)
+        return EXIT_USAGE
+    d = Path(a.dir)
+    load_state(d)
+    path = d / ".github" / "hooks" / HOOK_FILE
+    write_json(path, data)
+    print(f"フックを置きました: {path}")
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------- status
@@ -885,6 +1160,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dir", required=True, help="目標のフォルダ")
         p.add_argument("--now", type=float, help=argparse.SUPPRESS)
         p.set_defaults(func=func)
+
+    p = sub.add_parser("hook", help="Copilot の preToolUse から呼ばれる（範囲の外のツールを止める）")
+    p.add_argument("--dir", help="目標のフォルダ（既定はフックの cwd から探す）")
+    p.set_defaults(func=cmd_hook)
+
+    p = sub.add_parser("hooks", help="フックの設定を置く")
+    p.add_argument("--dir", help="目標のフォルダ（.github/hooks/ に置く）")
+    p.add_argument("--plugin", help="Copilot アプリのプラグインとして置くフォルダ")
+    p.add_argument("--python", help="フックを動かす Python（既定はこのコマンドを動かした Python）")
+    p.set_defaults(func=cmd_hooks)
 
     p = sub.add_parser("status", help="いまの状態を出す")
     p.add_argument("--dir", required=True, help="目標のフォルダ")

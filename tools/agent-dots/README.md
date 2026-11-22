@@ -44,11 +44,17 @@ Dagu（毎分）
    python C:\tools\copilot-app-jobs\copilot_app_job.py prompt --dir C:\work\dots\estimate --stay 50
    ```
 
-4. [`dags/agent-dots-tick.example.yaml`](./dags/agent-dots-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
+4. ツールを止めるフックを置きます（下の「ツールを止める」）。
+
+   ```powershell
+   python C:\tools\agent-dots\dot.py hooks --dir C:\work\dots\estimate
+   ```
+
+5. [`dags/agent-dots-tick.example.yaml`](./dags/agent-dots-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
    名前・`DOT`・パスを直します。目標ごとに 1 つ置きます。
-5. [`dags/agent-dots-listen.example.yaml`](./dags/agent-dots-listen.example.yaml) を 1 つだけ置き、`DOTS`（目標のフォルダを並べた
+6. [`dags/agent-dots-listen.example.yaml`](./dags/agent-dots-listen.example.yaml) を 1 つだけ置き、`DOTS`（目標のフォルダを並べた
    親フォルダ）とパスを直します。目標がいくつあっても 1 つで足ります。
-6. 一度ハブの issue の今のコメントを読み飛ばします（今あるコメントを覚えるだけで、何もしません）。
+7. 一度ハブの issue の今のコメントを読み飛ばします（今あるコメントを覚えるだけで、何もしません）。
 
    ```powershell
    change-watch --plugin gitlab_hub --config <設定> --connections <接続設定> get --source gitlab-hub-notes --consumer dots --no-jitter
@@ -118,6 +124,57 @@ Dagu（毎分）
   まとめて書きます。空ならいつでも書きます。
 - `wake_per_day`：1 日に起きてよい回数。使い切ると、その日は起きません（0 なら上限なし）。
 - `done_check`：完了の検査。目標のフォルダで動かし、終了コード 0 で完了にします。空なら、完了は人が確かめます。
+- `proactive_per_day`・`proactive_idle_min`・`tools`：下の「手の空いた時間に調べる」と「ツールを止める」。
+
+## 手の空いた時間に調べる
+
+起こす理由が無くても、利用者とのやりとりが `proactive_idle_min` 分（既定 120）無ければ、1 日 `proactive_per_day` 回
+（既定 0 = しない）まで、目標を起こして調べものをさせます。
+
+```json
+{"proactive_per_day": 2, "proactive_idle_min": 120}
+```
+
+- この回は読むだけです。書ける提案はメモ・質問・次に起きる時刻だけで、報告・コマンド・完了は捨てます。
+- フックが、ファイルを作れる先を `notes/` と `outbox/` に絞り、`tools.shell_allow` のコマンドも止めます。
+- `quiet_hours` の間と、決めた時刻がすぐ先にあるときは起こしません。`wake_per_day` の回数にも数えます。
+
+## ツールを止める（フック）
+
+`dot.py hooks --dir <目標のフォルダ>` は、目標のフォルダの `.github/hooks/agent-dots.json` に、Copilot がツールを使う前に
+呼ぶフック（`preToolUse`）を置きます。フックは `policy.json` の `tools` と照らして、次のものを止めます。
+
+| ツール | 通すもの | 足し方 |
+|---|---|---|
+| ファイルを読む | 目標のフォルダの中 | `tools.read_allow` にフォルダを足す |
+| ファイルを書く | 目標のフォルダの中。ただし `policy.json`・`state.json`・`journal.jsonl`・`.dot/`・`.github/`・受け箱は変えられない（受け箱の `tmp/` に報告を書くのは通す） | 足せない |
+| コマンド | 受け箱とのやりとり（`copilot_app_job.py next` / `done`）だけ。`;`・`&&`・パイプ・リダイレクトなどでつないだものは止める | `tools.shell_allow` に正規表現を足す。`tools.shell` を `allow` にすると全部通す、`deny` にすると全部止める |
+| Web | なし | `tools.web_allow` にホスト名を足す（`*` で全部） |
+| そのほか（MCP のツールなど） | なし | `tools.allow` にツールの名前を足す。`tools.deny` に書いたツールは必ず止める |
+
+```json
+{
+  "tools": {
+    "read_allow": ["C:/work/specs"],
+    "shell_allow": ["^git (status|log|diff)\\b"],
+    "web_allow": ["docs.example.com"]
+  }
+}
+```
+
+止めたときは、理由がエージェントに伝わります。通したもの・止めたものは `.dot/hook.jsonl` に 1 行ずつ残ります
+（ツールの名前と理由だけ。中身は残しません）。判定に失敗したときは止めます。
+
+**フックが効いているかを最初に確かめてください。** Copilot アプリでこのフォルダを開き、「C:\Windows に test.txt を
+作って」と頼みます。断られ、`.dot/hook.jsonl` に `deny` の行が増えれば効いています。増えなければ、アプリがプロジェクトの
+フックを読んでいません。そのときはプラグインとして入れます（すべてのプロジェクトで動きますが、目標のフォルダの外では
+何もしません）。
+
+```powershell
+python C:\tools\agent-dots\dot.py hooks --plugin C:\tools\agent-dots-plugin
+```
+
+出てきたフォルダを、アプリの Customize → Plugins → 歯車 → マーケットプレイスの追加で足し、`agent-dots` を入れます。
 
 ## 様子を見る
 
@@ -136,12 +193,16 @@ python C:\tools\agent-dots\dot.py status --dir C:\work\dots\estimate
 | `outbox/` | エージェントの提案（片付けると `.dot/outbox-done/` へ移る） |
 | `notes/` | エージェントの自分へのメモ |
 | `journal.jsonl` | 記録 |
+| `.dot/hook.jsonl` | フックが通したツール・止めたツール |
+| `.github/hooks/agent-dots.json` | フックの設定（`dot.py hooks` が置く） |
 
 ## 気をつけること
 
-- **エージェントはフォルダの中では何でもできます。** 外へ書かないように依頼文で伝えていますが、Copilot アプリの
-  ツールを止めてはいません。目標のフォルダに、触られて困るものを置かないでください。ハブの issue へ書けるトークンを
-  アプリから見える場所に置かないでください。
+- **フックが止めるのは、Copilot が使うツールだけです。** 許したコマンド（`tools.shell_allow`・`commands`）の中で何が
+  起きるかまでは見ません。目標のフォルダに触られて困るものを置かず、ハブの issue へ書けるトークンをアプリから
+  見える場所に置かないでください。
+- ツールの名前と引数の形は Copilot の版で変わることがあります。知らないツールは止めるので、何かが動かなくなったら
+  `.dot/hook.jsonl` を見て `tools.allow` に足してください。
 - 自動実行は、PC が起きていてアプリが開いているときだけ動きます。
 - 完了の条件を検査にできるなら `done_check` を書きます。書かなければ、終わったかどうかは人が決めます。
 - `commands` に登録するのは、入力を受けても困らないコマンドだけにします。目標は `input` の中身を自由に書けます。
