@@ -211,6 +211,38 @@ change-watch が issue の URL から作る）。コメントを見るなら `ge
 
 コメントを足すと GitLab がメールで知らせるので、それを受けて何をするかは Power Automate のフローで決める（題や説明を変えただけでは届かない）。
 
+## 通知をまとめて送る（bundle モード）
+
+同じリポジトリ・種別の通知を最初の受信から既定で 10 分間保留する。窓内の通知は期限を延長しない。
+送り手の Dagu ワークフローでは、`note` の代わりに次のように `bundle-add` を呼ぶ。
+
+```bash
+change-watch --plugin gitlab_hub bundle-add --repo=group/project --kind=ci \
+  --window-minutes=10 --text-file=/home/you/work/ci-result.txt \
+  --out=/home/you/.local/state/change-watch/gitlab-issue-hub-agent/sender-note.json
+```
+
+本文は `note` と同じく `--text`、`--text-file`、または `-- <コマンド>` で渡せる。本文が空なら保留しない。
+`--repo` と `--kind` は空文字や改行を含まない値を指定する。同じ組の保留がすでに期限切れなら、`bundle-add` は古い分のコメントを出し、
+新しい通知から次の窓を始める。送り手側も、`preconditions` で標準出力にパスがある場合だけ、そのパスを
+`call POST "<issue の API>/notes" --json-file=<ファイル>` に渡す。送り手ごとに別の `--out` を使う。
+
+[毎分の掃き出し例](examples/change-watch-issue-hub-bundle.yaml.example) を Dagu の DAG ディレクトリにコピーし、
+`/home/you` を実際のパスに直す。`bundle-flush` は期限切れの組をすべて 1 つのコメントにまとめる。各組の見出しには件数が付き、
+各通知には UTC の受信時刻が付く。期限切れがなければ標準出力は空になり、投稿ステップを飛ばす。
+手動で窓内の通知も出すには `change-watch --plugin gitlab_hub bundle-flush --flush-all` を使う。
+窓を変える場合は、送り手と掃き出しの両方に同じ `--window-minutes`（1 以上の整数）を指定する。
+
+状態は既定で `~/.local/state/change-watch/gitlab-issue-hub-agent/bundle.json` に置く。`--state-file` で変える場合は両方に同じパスを指定する。
+状態はバージョン 1 の JSON で、`bundles` のキーは repo と kind を改行でつないだ文字列。値は最初の受信時刻 `first_at` と
+受信時刻 `at` および本文 `text` を持つ `items` の配列を含む。時刻は UTC の ISO 8601 で保存する。
+JSON が壊れているなど状態全体を解釈できない場合は、標準エラーに警告を出して空として扱う。個々のキーやバンドルの内容が壊れている場合は、そのキーだけを警告付きで破棄し、正常なバンドルは保持する。U+FFFD を含む本文は終了コード 2 で拒否し、保留済みの通知は状態に残す。
+
+同一 DAG 内のステップは逐次実行される前提で、一時ファイルと `os.replace` による保存の原子性で十分とする。
+同じ状態ファイルを使う複数の DAG でも状態の読み書きが重ならないように実行を調整する。並行して更新すると後の保存で先の更新が失われることがある。
+掃き出した通知はコメント JSON を作る時点で保留から外れる。投稿が失敗した場合は、出力ファイルが残っている間に再投稿できる。
+実 Dagu・実 GitLab での動作は未検証。
+
 ## 決めた issue の説明を書き換える例（`examples/change-watch-issue-hub-description.yaml.example`）
 
 issue の説明を、渡した文に丸ごと入れ替える。インストーラは置かないので、`~/.config/dagu/dags/` にコピーして `/home/you` を自分の場所に直す。
