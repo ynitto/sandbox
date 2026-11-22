@@ -1,6 +1,7 @@
 # 常駐型の自律エージェント（Muse / dots 型）を Copilot アプリと kiro-cli で組む — 導線の検討
 
-> 作成 2026-11-22 ／ 状態: 検討（未実装・承認待ち）。既存の OSS を土台にせず自作で組むことは決定済み（§10）
+> 作成 2026-11-22 ／ 状態: D0 実装済み（`tools/agent-dots/`）、D1 以降は未着手。既存の OSS を土台にせず自作で組む（§10）。
+> 決定（2026-11-22）: 個人用・人との接点はハブの issue・最初の体は Copilot アプリ（§9 の 1〜3）。§11 に D0 で決めた細部
 > 対象: 新規（仮称 `agent-dots`）と、既存の `copilot-app-jobs` / `agent-loop` / `change-watch` / Dagu /
 > `statemachine-use` / `ltm-use` / `moltbook-use` / `gitlab-issue-hub-agent` / `agent-app`
 > 上位文書: [`agent-tools-concept.md`](../designs/agent-tools-concept.md)（柱 2「人の判断を最少で最良に」、柱 3「資源効率」）
@@ -81,7 +82,7 @@ gitlab-issue-agent / gitlab-mr-review-agent が「検出は change-watch、条�
 ```text
 dots/<名前>/
   goal.md            目標・完了の条件・期限（人が書く。最初の会話でエージェントが下書きする）
-  policy.yaml        境界：読んでよい先、auto でやってよい作用、ask にする作用、禁止、1 日の枠
+  policy.json        境界：読んでよい先、auto でやってよい作用、ask にする作用、禁止、1 日の枠
   plan.yaml          計画（statemachine-use の YAML。plan → confirm → apply の骨格を流用）
   state.json         いまのステート・次に起きる時刻・待っている承認（dot だけが書く）
   notes/             自分へのメモ（目標の中だけで使う。横断の知見は ltm-use / moltbook へ）
@@ -96,7 +97,9 @@ dots/<名前>/
 - 複数 PC で動かすなら、`dots/` を git の状態リポジトリに置き、agent-project の CAS（同時に 1 ノードだけが
   その dot を進める）を借りる。最初は 1 台で始め、この節は後回しでよい。
 
-### 3.1 境界（policy.yaml）の形
+### 3.1 境界（policy.json）の形
+
+下は全段階を見通した形を読みやすく YAML で書いたもの。D0 の実際の形（JSON・`actions` / `wake_per_day` / `done_check`）は §11 と `tools/agent-dots/README.md` にある。
 
 ```yaml
 read:                    # 読んでよい先（ここに無いものは読まない。Muse の教訓）
@@ -158,14 +161,14 @@ quiet_hours: "22:00-07:00"   # この間は ask を溜めて朝にまとめて�
 | 向いている dot | Office の文書・Windows 側のフォルダ・社内の Web（Playwright）・自発の調べ物 | コード・GitLab の issue / MR・イベントで即応したいもの |
 | 権限の絞り方 | 自動実行のプロジェクトを dot フォルダに限る + `preToolUse` で境界外を止める | `agents/kiro.json` の読み取りモード + `preToolUse` |
 
-**同じ目標フォルダの契約の上で、走らせる体を dot ごとに選べる**形にする（`policy.yaml` か `goal.md` の頭に
+**同じ目標フォルダの契約の上で、走らせる体を dot ごとに選べる**形にする（`policy.json` か `goal.md` の頭に
 `runner: copilot-app | kiro`）。体の差は `dot` の起こし方の 2 分岐だけに閉じ込め、目標・境界・提案・ゲートは共通にする。
 これは `agents/*.json` で CLI を差し替える既存の考え方（[`agent-cli-plugin-design.md`](../designs/agent-cli-plugin-design.md)）の延長である。
 
 ## 6. 人から見た導線
 
 1. **目標を渡す。** agent-app で「新しい目標を教える」か、ハブの issue に書く。エージェントは 1 回の会話で
-   `goal.md`（完了の条件つき）と `policy.yaml` の下書き、最初の計画を出す。
+   `goal.md`（完了の条件つき）と `policy.json` の下書き、最初の計画を出す。
 2. **一度だけ承認する。** 見るのは「完了の条件」と「聞かずにやってよいこと」の 2 つだけ。以後の細かい確認は
    境界で決まっているので来ない（柱 2: 人の判断は最少の回数で）。
 3. **放っておく。** dot は変化・期限・返事のときだけ起き、手が空けば読み取りで調べてメモを溜める。
@@ -212,10 +215,10 @@ quiet_hours: "22:00-07:00"   # この間は ask を溜めて朝にまとめて�
 
 | もの | 中身 | 規模の目安 |
 |---|---|---|
-| `tools/agent-dots/dot.py`（仮） | `tick`（起こす判定と依頼文の組み立て）・`act`（境界のゲート）・`answer`（返事の取り込み）・`status` | 標準ライブラリのみ。copilot-app-jobs と同じ作り |
+| `tools/agent-dots/dot.py` | `tick`（起こす判定と依頼文の組み立て）・`act`（境界のゲート）・`event`（返事の取り込み）・`status` | 標準ライブラリのみ。copilot-app-jobs と同じ作り |
 | 目標フォルダの雛形と `schemas/dot-*.schema.json` | `goal` / `policy` / `outbox` の JSON Schema | — |
 | Dagu の例 | `tick` を定期実行し、`act` を後続に置く DAG（change-watch の例と同じ形） | 1 ファイル |
-| `preToolUse` フック | `policy.yaml` の `deny` と読み取り先の外を止める。moltbook-retro のフックと同じ置き方 | 1 スクリプトを両 CLI で共有 |
+| `preToolUse` フック | `policy.json` の `deny` と読み取り先の外を止める。moltbook-retro のフックと同じ置き方 | 1 スクリプトを両 CLI で共有 |
 
 再利用するもの（作らない）: 受け箱（copilot-app-jobs）、tmux の駆動（agent-loop）、見張りと書き込み口
 （change-watch）、計画の実行（statemachine-use）、ハブの issue（gitlab-issue-hub-agent）、記憶（ltm-use）、
@@ -259,6 +262,20 @@ Hermes を使えば、常駐（gateway）・定期実行（cron と `--no-agent 
 
 Hermes から借りるのは考え方だけにする。検出はスクリプトで回してトークンを使わない（`--no-agent --script` と
 同じ）、作用の口を 1 つに絞る、の 2 点で、これは本書の `dot tick` / `dot act` にすでに入っている。
+
+## 11. D0 で決めた細部（2026-11-22）
+
+| 論点 | 決定 | 理由 |
+|---|---|---|
+| 境界のファイル | `policy.yaml` ではなく `policy.json` | 標準ライブラリだけで Windows の Python に置けるようにする（moltbook-retro のフックと同じ判断） |
+| D0 の作用 | `hub.comment` だけ。境界の段階は `auto` と `deny` だけ（`ask` の段は D1） | 書く先が利用者自身のハブだけなら、承認を挟む作用がまだ無い |
+| 質問 | 提案の `ask` をハブの issue に選択肢つきで書く。返事との対応づけ（ID）は D1 | 返事は次の出来事として届き、エージェントは直近の質問と並べて読める |
+| 呼びかけ | 利用者は 1 行目を `【名前】` で始めて書く。目標が書くコメントは `【名前より】` で始める | 自分のコメントに反応しない。ハブの `【依頼】` とも重ならない |
+| 返事の受け取り | ハブの取得元に受け手 `dots` を足し、Dagu のワークフロー 1 本で全目標に配る（名前でフォルダを探す） | 目標ごとに取得を増やさない |
+| 二重起動の防止 | 受け箱にこの目標の依頼（名前 `dot`）が残っている間と、`act` が片付けるまでは起こさない。3 時間を超えたら出来事を戻してやり直す | 時間内に終わらず遅れて終えた依頼の提案は、次の回の `act` が片付ける |
+| 提案が無い回 | 出来事を inbox に戻してやり直す（2 回まで、それを超えたら捨てて記録） | 失敗した回で返事を失わない。同じ回を回し続けない |
+| 完了 | `done_check` が通れば `done`。無ければ `review` にして人に確かめてもらい、返事が来たら `active` に戻す | エージェントの自己申告だけでは完了にしない |
+| 外への書き込みの強制 | D0 では依頼文で伝えるだけ。`preToolUse` フックでの強制は D2 | 書ける先（ハブのトークン）をアプリから見えない場所に置くことを README で求める |
 
 ## 参考
 

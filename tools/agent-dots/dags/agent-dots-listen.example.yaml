@@ -1,0 +1,85 @@
+# ハブの issue に付いた「【名前】…」のコメントを、その名前の目標の inbox に置く例（Windows）。目標がいくつあっても 1 つでよい。
+#   get     前回 commit してから新しく付いたコメントを 1 件受け取る（gitlab-issue-hub-agent と同じ取得元。受け手の名前は分ける）
+#   event   1 行目が【名前】のコメントなら、DOTS の下から同じ名前の目標を探して inbox に置く（ほかのコメントは何もしない）
+#   commit  見終えたと記録する
+# 目標が自分で書くコメントは「【名前より】」で始まるので、ここには当たらない。
+# パスは自分の場所に直す。change-watch と設定は gitlab-issue-hub-agent のインストーラが置いたもの（README の「用意」）。
+description: "ハブの issue への返事を、宛先の目標に届ける"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "C:/Users/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
+env:
+  - DOTS: "C:/work/dots"              # 目標のフォルダを並べた親フォルダ
+steps:
+  - name: get
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz"
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "C:/Users/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "C:/Users/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "dots"                 # commit と同じ名前。ハブのほかのワークフロー（hub）とは分ける
+        - "--one"
+    timeout_sec: 720
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: event
+    depends: [get]
+    preconditions:              # 新しく付いた、人が書いた、1 行目が【で始まるコメント（名前の照合は dot.py がする）
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+      - condition: "${CHANGE.record.system}"
+        expected: "false"
+      - condition: "${CHANGE.record.body}"
+        expected: "re:^【"
+    continue_on:
+      skipped: true
+      failure: true             # 置けなくても commit する（Dagu の履歴に失敗として残る）
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/agent-dots/dot.py"
+        - "event"
+        - "--root"
+        - "${DOTS}"
+        - "--change"
+        - "${CHANGE}"
+    timeout_sec: 60
+  - name: commit
+    depends: [event]
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/Users/you/AppData/Local/Programs/change-watch/change-watch.pyz"
+        - "--plugin"
+        - "gitlab_hub"
+        - "--config"
+        - "C:/Users/you/.config/change-watch/gitlab-issue-hub-agent/change-watch.yaml"
+        - "--connections"
+        - "C:/Users/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-hub-notes"
+        - "--consumer"
+        - "dots"
+        - "${CHANGE.key}"
+    timeout_sec: 600
