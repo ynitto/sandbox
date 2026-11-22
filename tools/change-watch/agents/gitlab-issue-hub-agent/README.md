@@ -289,7 +289,7 @@ dagu start change-watch-issue-hub-notice-expire -- TITLE="夜間バッチ" TEXT=
 |---|---|---|
 | `compose` → `create` | `change-watch issue … --out=<ファイル>` → `change-watch call POST "<プロジェクトの API>/issues" --json-file=<ファイル>` | 本文があれば issue を立てる |
 | `get` | `change-watch get --source gitlab-notice-issues --consumer notice-expire --initial emit --watch state --one` | 開いている issue を古い順に 1 件受け取る |
-| `check` | `change-watch check-old-issue --change=${CHANGE} --days=…` | 期限が来た（`expire`）・まだ待つ（`wait`）・何もしない（`keep`）を決める |
+| `check` | `change-watch check-old-issue --kind=${CHANGE.kind} --state=${CHANGE.record.state} --created-at=${CHANGE.record.created_at} --days=…` | 期限が来た（`expire`）・まだ待つ（`wait`）・何もしない（`keep`）を決める |
 | `close` / `delete` | `change-watch call PUT …/issues/<番号>`（閉じる）・`change-watch call DELETE …/issues/<番号>`（消す） | `expire` のとき、`MODE` に従って閉じるか消す |
 | `commit` | `change-watch commit --source gitlab-notice-issues --consumer notice-expire <番号>` | 片付けたか何もしないときに見終えたと記録する。`wait` なら記録せず、次の起動でもう一度見る |
 
@@ -309,7 +309,7 @@ dagu start change-watch-issue-hub-notice-expire -- TITLE="夜間バッチ" TEXT=
 | ステップ | 呼ぶもの | すること |
 |---|---|---|
 | `get` | `change-watch get --source gitlab-hub-notes --consumer hub-prune --initial emit --watch body --one` | まだ見終えていないコメントを、古い順に 1 件受け取る |
-| `check` | `change-watch check-old-note --change=${CHANGE} --author=… --days=…` | 消す（`delete`）・まだ待つ（`wait`）・消さない（`keep`）を決める |
+| `check` | `change-watch check-old-note --kind=${CHANGE.kind} --system=… --writer=… --created-at=… --author=… --days=…` | 消す（`delete`）・まだ待つ（`wait`）・消さない（`keep`）を決める |
 | `delete` | `change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"` | `delete` のときだけ、そのコメントを消す |
 | `commit` | `change-watch commit --source gitlab-hub-notes --consumer hub-prune ${CHANGE.key}` | `delete`・`keep` なら見終えたと記録する。`wait` なら記録せず、次の起動でもう一度見る |
 
@@ -357,9 +357,9 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 | `fields <名前>=<値> ...` | issue の更新（`title`・`add_labels`・`remove_labels`・`description`・`state_event` など） | `call PUT "<issue の API>" --json` |
 | `check-request`（`note` と同じ渡し方か `--change=<get の JSON>`） | 書式を調べた結果 | ワークフローの `preconditions` |
 | `issue --title=<題> [--labels=<ラベル>]`（本文の渡し方は `note` と同じ） | 新しい issue（題が空なら本文の 1 行目） | `call POST "<プロジェクトの API>/issues" --json-file` |
-| `check-old-issue --change=<get の JSON> [--days=7]` | その issue の期限が来たか（`expire`・`wait`・`keep`） | ワークフローの `preconditions` |
+| `check-old-issue --kind=… --state=… --created-at=… [--days=7]` | その issue の期限が来たか（`expire`・`wait`・`keep`） | ワークフローの `preconditions` |
 | `api-url [--url=<issue の URL>]` | その issue の API の URL（無ければハブの issue） | `call` の URL |
-| `check-old-note --change=<get の JSON> --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
+| `check-old-note --kind=… --system=… --writer=… --created-at=… --author=<ユーザー名> [--days=7]` | そのコメントを消してよいか（`delete`・`wait`・`keep`） | ワークフローの `preconditions` |
 
 `note`・`description`・`fields` に `--out=<ファイル>` を付けると、JSON をそのファイルに書き、ファイルのパスだけを出す（`call` の `--json-file` に渡す）。
 長い文は、こうしてコマンド行に載せずに渡す。
@@ -367,6 +367,9 @@ change-watch --plugin gitlab_hub note --text="夜間バッチが終わりまし�
 本文のファイルとコマンドの出力は UTF-8 で読み、読めなければ UTF-16（BOM つき）・Shift_JIS で読む（PowerShell の `Out-File` や
 Windows のコマンドの出力もそのまま渡せる）。文字化けした文字（`\ufffd`）を含む本文は書かずに止まる。前のステップの出力を
 `--text=${…}` で渡すと、Dagu が UTF-8 でない文字を渡す前に置き換えて失うので、ファイルか `-- <コマンド>` で渡す。
+
+`check-old-issue`・`check-old-note` には、受け取った変化の項目を 1 つずつ渡す（`--kind=${CHANGE.kind}` など）。
+`--change=${CHANGE}` でも渡せるが、受け取った JSON には issue の説明やコメントの本文が丸ごと入るので、長いと「command line is too long」で止まる。
 
 `note`・`description` は、本文が空なら何も出さず、`--` のあとのコマンドが失敗したらその終了コードで終わる。
 

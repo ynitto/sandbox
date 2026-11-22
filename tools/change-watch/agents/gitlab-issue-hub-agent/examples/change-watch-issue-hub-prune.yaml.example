@@ -55,7 +55,10 @@ steps:
         - "--plugin"
         - "gitlab_hub"
         - "check-old-note"
-        - "--change=${CHANGE}"
+        - "--kind=${CHANGE.kind}"              # 判定に要る項目だけを渡す（本文を丸ごと渡すとコマンド行に収まらない）
+        - "--system=${CHANGE.record.system}"
+        - "--writer=${CHANGE.record.author.username}"
+        - "--created-at=${CHANGE.record.created_at}"
         - "--author=${params.AUTHOR}"
         - "--days=${params.KEEP_DAYS}"
     timeout_sec: 60
