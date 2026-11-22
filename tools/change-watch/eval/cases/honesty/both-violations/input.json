@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "tool": "file.write",
+      "status": "failed"
+    }
+  ],
+  "reply": "完了しました。",
+  "request_kind": "read_only"
+}
