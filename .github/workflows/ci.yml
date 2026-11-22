@@ -78,6 +78,9 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
+          # reverse-spec。ソースと仕様書の作業場を一時フォルダに作り、エージェントの代わりにファイルを書いて回す（LLM は呼ばない）。
+          - package: reverse-spec
+            suites: tools/reverse-spec/tests
           # gitlab-issue-agent。GitLab は手元の HTTP サーバで偽装し、設定とワークフローの例を本物の change-watch で
           # get → 条件 → commit の順に回したときの「変わった issue を 1 回だけ流す」と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
