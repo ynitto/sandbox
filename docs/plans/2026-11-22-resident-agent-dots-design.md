@@ -1,6 +1,6 @@
 # 常駐型の自律エージェント（Muse / dots 型）を Copilot アプリと kiro-cli で組む — 導線の検討
 
-> 作成 2026-11-22 ／ 状態: 検討（未実装・承認待ち）
+> 作成 2026-11-22 ／ 状態: 検討（未実装・承認待ち）。既存の OSS を土台にせず自作で組むことは決定済み（§10）
 > 対象: 新規（仮称 `agent-dots`）と、既存の `copilot-app-jobs` / `agent-loop` / `change-watch` / Dagu /
 > `statemachine-use` / `ltm-use` / `moltbook-use` / `gitlab-issue-hub-agent` / `agent-app`
 > 上位文書: [`agent-tools-concept.md`](../designs/agent-tools-concept.md)（柱 2「人の判断を最少で最良に」、柱 3「資源効率」）
@@ -242,6 +242,24 @@ quiet_hours: "22:00-07:00"   # この間は ask を溜めて朝にまとめて�
    始める案（即応・フックが揃う）か。
 4. **名前。** 仮称 `agent-dots`。他社製品名を避けるなら `agent-resident` などに変える。
 
+## 10. 既存の OSS を土台にしない（2026-11-22 決定）
+
+常駐の体を [Hermes](https://github.com/NousResearch/hermes-agent) に任せる案を比べたうえで、**自作で組む**と決めた。
+
+Hermes を使えば、常駐（gateway）・定期実行（cron と `--no-agent --script`）・窓口（メールなど）・記憶
+（`MEMORY.md`）は手に入る。それでも採らない理由は次のとおり。
+
+| 理由 | 中身 |
+|---|---|
+| Copilot デスクトップアプリを動かせない | Hermes の copilot-acp が動かすのは Copilot の CLI。アプリには外から始める口が無く、受け箱（copilot-app-jobs）は Hermes を入れても残る |
+| kiro-cli が推論の中身に下がる | `kiro-acp` は本流に無い自作パッチ（`tools/hermes-kiro-acp`）で、追従の手間が続く。Kiro 自身のツールとフックを禁じるので、moltbook-retro と同じフックの置き方が使えない |
+| 肝心の部分は結局自作になる | 作用ごと・相手ごとの境界のゲート（`dot act`）と、完了の機械検査は Hermes に無い |
+| 同じ役が 2 つになる | 記憶（Hermes の `MEMORY.md` と ltm-use）、スキル（Hermes の自作スキルと git-skill-manager）の正が割れる |
+| 使える道具の制約 | kiro-cli / Copilot / MS365 Copilot だけが使える環境（copilot365-bridge の前提）でも同じ形で動かせる |
+
+Hermes から借りるのは考え方だけにする。検出はスクリプトで回してトークンを使わない（`--no-agent --script` と
+同じ）、作用の口を 1 つに絞る、の 2 点で、これは本書の `dot tick` / `dot act` にすでに入っている。
+
 ## 参考
 
 - Meta の Muse: [Introducing Muse](https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/)、
@@ -250,3 +268,5 @@ quiet_hours: "22:00-07:00"   # この間は ask を溜めて朝にまとめて�
   [TechCrunch](https://techcrunch.com/2026/10/26/how-openai-turned-its-coding-tools-into-dots-an-always-on-personal-assistant/)、
   [Digital Trends](https://www.digitaltrends.com/computing/openais-dots-push-ai-beyond-chatbots-with-always-on-agents-that-can-investigate-build-and-act-across-4000-apps/)
   （目標と境界を渡す、専用の計算機とブラウザ、自発の調べ物は読み取り専用、自分で動くか聞くかの規則）
+- Hermes: [Hermes Agent docs](https://hermes-agent.nousresearch.com/docs)、
+  リポジトリ内の検討 [`2026-06-10-hermes-gitlab-issue-gateway.md`](./2026-06-10-hermes-gitlab-issue-gateway.md)
