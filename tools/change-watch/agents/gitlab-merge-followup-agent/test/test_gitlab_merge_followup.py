@@ -59,10 +59,7 @@ class FakeGitLab:
 
             do_GET = do_POST = respond
 
-        try:
-            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        except PermissionError as exc:
-            test.skipTest(f"テスト用 HTTP ソケットを作成できません: {exc}")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{server.server_port}"
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
@@ -189,6 +186,15 @@ class FollowupTest(unittest.TestCase):
         self.assertCountEqual(issue_paths, ["/api/v4/projects/g%2Fp/issues/7",
                                            "/api/v4/projects/g%2Fp/issues/8",
                                            "/api/v4/projects/ops%2Fother/issues/7"])
+
+    def test_description_fallback_ignores_hidden_references(self):
+        self.fake.closes_status = 404
+        mr = dict(self.fake.mr, description="<!-- Issue template:\nCloses #8\n-->\nCloses #7")
+        with patch.object(FakeGitLab, "mr", mr), patch.object(followup, "build_opener", return_value=self.fake):
+            status, _, err = self.draft()
+            self.assertEqual(status, 0, err)
+        issues = json.loads(self.summary.read_text(encoding="utf-8"))["related_issues"]
+        self.assertEqual([issue["iid"] for issue in issues], [7])
 
     def test_issue_reference_keyword_forms(self):
         keywords = ("close", "closes", "closed", "closing", "fix", "fixes", "fixed", "fixing",

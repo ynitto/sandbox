@@ -151,6 +151,19 @@ class InitTest(Base):
 
 
 class FlowTest(Base):
+    def test_drift_detects_newly_excluded_file(self):
+        self.set_config(exclude=["src/orders.py"])
+        output = self.rspec("drift", code=1)
+        self.assertIn("消えた: 1\n  src/orders.py", output)
+
+    def test_gates_report_invalid_unit_category(self):
+        self.to_drafting()
+        path = self.out / "extraction" / "units.txt"
+        path.write_text(UNITS.replace(" module ", " typo ", 1), encoding="utf-8")
+        output = self.rspec("gates", code=1)
+        self.assertIn("不通過 G-DENOM", output)
+        self.assertIn("種類は", output)
+
     def test_full_flow_to_done(self):
         self.assertIn("対象の範囲を確かめる", self.rspec("step"))
         out = self.rspec("step", "OK")  # scope.md がまだ無い

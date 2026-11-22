@@ -213,6 +213,16 @@ class PatternsFileTest(unittest.TestCase):
         self.assertIn("（不明）", ci.classify(job(), "fallback", [p])["fix"])
 
 
+class PaginationTest(unittest.TestCase):
+    def test_invalid_next_page_is_an_error(self):
+        gl = ci.GitLab("https://gitlab.example.com", TOKEN, "group/project")
+        for invalid in ("1", "broken"):
+            with self.subTest(next_page=invalid):
+                with mock.patch.object(gl, "call", return_value=([job()], {"x-next-page": invalid})):
+                    with self.assertRaisesRegex(ValueError, "次ページ番号"):
+                        list(gl.paginate("/pipelines/1/jobs"))
+
+
 class TraceTest(unittest.TestCase):
     def test_masks(self):
         result = ci.clean_trace((FIXTURES / "secrets.log").read_bytes(), TOKEN, ["INTERNAL-[A-Z0-9]{12}"])
