@@ -498,6 +498,18 @@ class ExampleFlowTest(unittest.TestCase):
         for name in ("hub-update-note", "hub-description", "hub-description-note", "hub-notice", "hub-notice-expire"):   # call に渡す JSON のファイル
             self.paths[f"/home/you/.config/change-watch/gitlab-issue-hub-agent/{name}.json"] = str(self.tmp / "out" / f"{name}.json")
 
+    def longest_argv(self, run) -> int:
+        """run() のあいだに、例のステップに渡したコマンド行のいちばん長いもの（Windows は 8191 文字まで）。"""
+        import dagrun
+        seen = []
+        real = dagrun._argv
+        dagrun._argv = lambda *a: seen.append(real(*a)) or seen[-1]
+        try:
+            run()
+        finally:
+            dagrun._argv = real
+        return max(len(" ".join(argv)) for argv in seen)
+
     def run_dag(self, name: str, **params) -> dict:
         import dagrun
         dag = self.tmp / Path(name).name                                            # python3 はこの Python に（Windows に python3 が無いことがある）
@@ -807,6 +819,36 @@ class ExampleFlowTest(unittest.TestCase):
         self.assertEqual([run()["commit"] for _ in range(3)][-1], None)            # 片付け終えたら、もう何もしない
         self.assertEqual(len(self.gl.created), 1)
         self.assertEqual((self.gl.posted, self.gl.updates), ([], []))              # ハブの issue には書かない
+        # 長い知らせでも、片付けのステップには説明を渡さない（コマンド行に収まらなくなる）。
+        long = self.tmp / "long.txt"
+        long.write_text("\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000)), encoding="utf-8")
+        self.assertLess(self.longest_argv(lambda: run(TEXT_FILE=str(long))), 1000)
+        with self.gl.lock:
+            self.gl.created[max(self.gl.created)]["created_at"] = ago(9)
+        codes = {}
+        self.assertLess(self.longest_argv(lambda: codes.update(run())), 1000)
+        self.assertEqual(codes, result(0, None, 0, 0, 0, None, 0))                 # 長い説明の issue も閉じる
+
+    def test_prune_passes_only_the_fields_it_needs(self):
+        dag = "examples/change-watch-issue-hub-prune.yaml.example"
+        self.gl.add("\n".join(f"- 項目 {i}: 正常に終わりました" for i in range(2000)), author=BOT)   # 長い知らせ（2026-11-09）
+        codes = {}
+        self.assertLess(self.longest_argv(lambda: codes.update(self.run_dag(dag, AUTHOR="hub-bot", KEEP_DAYS="7"))), 1000)
+        self.assertEqual(codes, {"get": 0, "check": 0, "delete": 0, "commit": 0})
+        self.assertEqual(self.gl.notes, [])
+
+    def test_check_commands_take_fields(self):
+        args = ("--state=opened", "--created-at=2020-01-01T00:00:00Z")
+        self.assertEqual(run_main("check-old-issue", "--kind=appeared", *args), (0, "expire\n", ""))
+        self.assertEqual(run_main("check-old-issue", "--kind=removed", *args), (0, "keep\n", ""))
+        for empty in ("", "${CHANGE.kind}"):                                           # 受け取った変化が無ければ何も出さない
+            self.assertEqual(run_main("check-old-issue", f"--kind={empty}", *args), (0, "", ""))
+            self.assertEqual(run_main("check-old-note", f"--kind={empty}", "--author=hub-bot"), (0, "", ""))
+        note = ("--author=hub-bot", "--writer=hub-bot", "--created-at=2020-01-01T00:00:00Z")
+        self.assertEqual(run_main("check-old-note", "--kind=appeared", "--system=false", *note), (0, "delete\n", ""))
+        self.assertEqual(run_main("check-old-note", "--kind=appeared", "--system=true", *note), (0, "keep\n", ""))
+        self.assertEqual(run_main("check-old-note", "--kind=appeared", "--system=false", "--author=hub-bot",
+                                  "--writer=alice", "--created-at=2020-01-01T00:00:00Z"), (0, "keep\n", ""))
 
     def test_old_issue_decision(self):
         now = datetime.datetime(2026, 11, 21, tzinfo=datetime.timezone.utc)

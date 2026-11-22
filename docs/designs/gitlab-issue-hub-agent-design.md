@@ -65,7 +65,7 @@ examples/change-watch-issue-hub-description（インストーラは置かない�
 
 examples/change-watch-issue-hub-prune（インストーラは置かない。5 分ごと。AUTHOR=… KEEP_DAYS=…）
   get      change-watch get --source gitlab-hub-notes --consumer hub-prune --initial emit --watch body --one   → CHANGE
-  check    change-watch check-old-note --change=${CHANGE} --author=… --days=…                → DECISION（delete・wait・keep）
+  check    change-watch check-old-note --kind=${CHANGE.kind} --system=… --writer=… --created-at=… --author=… --days=…   → DECISION（delete・wait・keep）
   delete   preconditions: DECISION が delete。change-watch call DELETE "<issue の API>/notes/${CHANGE.key}"
   commit   preconditions: DECISION が delete か keep。wait は記録せず、次の起動でもう一度見る
            （get は key の小さい順に返すので、待っているコメントの後ろはそれより新しい。初回は emit で今あるコメントも見る）
@@ -81,7 +81,8 @@ examples/change-watch-issue-hub-notice-expire（インストーラは置かな�
   設定は examples/change-watch-notice.yaml.example（取得元 gitlab-notice-issues: 知らせ用プロジェクトの開いている issue。ハブとは別の設定・状態）
   compose → create   本文があれば issue を立てる（continue_on.skipped で、立てないときも片付けへ進む）
   get      change-watch get --source gitlab-notice-issues --consumer notice-expire --initial emit --watch state --one   → CHANGE
-  check    change-watch check-old-issue --change=${CHANGE} --days=…                        → DECISION（expire・wait・keep）
+  check    change-watch check-old-issue --kind=${CHANGE.kind} --state=${CHANGE.record.state} --created-at=${CHANGE.record.created_at} --days=…   → DECISION（expire・wait・keep）
+           （判定に要る項目だけを Dagu の JSON パスで渡す。--change=${CHANGE} は説明・本文を丸ごとコマンド行に載せ、長いと上限を超える）
   close    preconditions: DECISION が expire・MODE が close。call PUT …/issues/${CHANGE.key} --json '{"state_event": "close"}'
   delete   preconditions: DECISION が expire・MODE が delete。call DELETE …/issues/${CHANGE.key}（Owner が要る）
   commit   preconditions: DECISION が keep か、expire で MODE が close・delete。wait は記録せず、次の起動でもう一度見る

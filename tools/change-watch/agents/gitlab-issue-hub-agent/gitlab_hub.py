@@ -41,11 +41,12 @@ change-watch のプラグイン（register(api)）として、フィルタとコ
     change-watch --plugin <このファイル> check-request [--kinds-file F] --text "..." | --text-file F | --change JSON | -- <コマンド> [引数...]
         依頼の書式を調べて、結果を JSON で出す。どの種別で何を動かすかはワークフローの preconditions が決める。
 
-    change-watch --plugin <このファイル> check-old-note --change JSON --author <ユーザー名> [--days 7]
+    change-watch --plugin <このファイル> check-old-note --kind=${CHANGE.kind} --system=… --writer=… --created-at=… --author <ユーザー名> [--days 7]
+        （--change JSON でもよいが、get の JSON には本文が丸ごと入り、長いとコマンド行に収まらない）
         get が出したコメントの変化を見て、消してよいかを 1 語で出す（古いコメントを消すワークフローの preconditions で分ける）:
         delete（--author が書いた、--days 日より古いコメント）・wait（--author が書いたが、まだ新しい）・keep（それ以外。消さない）。
 
-    change-watch --plugin <このファイル> check-old-issue --change JSON [--days 7]
+    change-watch --plugin <このファイル> check-old-issue --kind=${CHANGE.kind} --state=… --created-at=… [--days 7]（--change JSON でもよい）
         get が出した issue の変化を見て、期限が来たかを 1 語で出す（古い issue を閉じる・消すワークフローの preconditions で分ける）:
         expire（開いていて、--days 日より前に立てた issue）・wait（開いているが、まだ新しい）・keep（それ以外。何もしない）。
 
@@ -500,11 +501,19 @@ def _change_arg(value) -> tuple[int, dict | None]:
     return OK, change
 
 
+_KINDS = ("appeared", "changed", "removed")
+
+
 def cmd_check_old_issue(a) -> int:
     days = _days_arg(a.days)
     if days is None:
         print("--days は 1 以上の整数で渡してください（立ててすぐ閉じると、メールが送られないことがあります）", file=sys.stderr)
         return USAGE
+    if a.kind is not None:                  # 項目ごとに渡す（説明をコマンド行に載せない）
+        if a.kind.strip() in _KINDS:        # 受け取った変化が無ければ何も出さない
+            print(old_issue({"kind": a.kind.strip(), "record": {"state": (a.state or "").strip(),
+                                                                "created_at": a.created_at}}, days))
+        return OK
     code, change = _change_arg(a.change)
     if change is not None:
         print(old_issue(change, days))
@@ -523,17 +532,18 @@ def cmd_check_old_note(a) -> int:
     except ValueError:
         print("--days は 1 以上の整数で渡してください（付けてすぐ消すと、メールが送られないことがあります）", file=sys.stderr)
         return USAGE
-    if not (a.change or "").strip():
-        return OK                           # 受け取った変化が無ければ何も出さない
-    try:
-        change = json.loads(a.change)
-        if not isinstance(change, dict):
-            raise TypeError
-    except (ValueError, TypeError, RecursionError):
-        print("--change は get が出した JSON で渡してください", file=sys.stderr)
-        return USAGE
-    print(old_note(change, author, days))
-    return OK
+    if a.kind is not None:                  # 項目ごとに渡す（本文をコマンド行に載せない）
+        if a.kind.strip() not in _KINDS:
+            return OK                       # 受け取った変化が無ければ何も出さない
+        change = {"kind": a.kind.strip(), "record": {"system": (a.system or "").strip() == "true",
+                                                     "author": {"username": (a.writer or "").strip()},
+                                                     "created_at": a.created_at}}
+        print(old_note(change, author, days))
+        return OK
+    code, change = _change_arg(a.change)
+    if change is not None:
+        print(old_note(change, author, days))
+    return code
 
 
 def cmd_api_url(a) -> int:
@@ -598,7 +608,11 @@ def _fields_args(p) -> None:
 
 
 def _old_note_args(p) -> None:
-    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）")
+    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）。長い本文はコマンド行に収まらないので、下の項目ごとに渡す")
+    p.add_argument("--kind", default=None, help="変化の種類（${CHANGE.kind}。空なら何も出さない）")
+    p.add_argument("--system", default="", help="記録のコメントか（${CHANGE.record.system}）")
+    p.add_argument("--writer", default="", help="コメントの書き手（${CHANGE.record.author.username}）")
+    p.add_argument("--created-at", default="", help="コメントを書いた日時（${CHANGE.record.created_at}）")
     p.add_argument("--author", default="", help="消してよいコメントの書き手（トークンの持ち主のユーザー名）")
     p.add_argument("--days", default="7", help="この日数より古いコメントを消す（既定 7。1 以上）")
 
@@ -610,7 +624,10 @@ def _issue_args(p) -> None:
 
 
 def _old_issue_args(p) -> None:
-    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）")
+    p.add_argument("--change", default="", help="get が出した JSON（空なら何も出さない）。長い説明はコマンド行に収まらないので、下の項目ごとに渡す")
+    p.add_argument("--kind", default=None, help="変化の種類（${CHANGE.kind}。空なら何も出さない）")
+    p.add_argument("--state", default="", help="issue の状態（${CHANGE.record.state}）")
+    p.add_argument("--created-at", default="", help="issue を立てた日時（${CHANGE.record.created_at}）")
     p.add_argument("--days", default="7", help="この日数より前に立てた issue を期限が来たとする（既定 7。1 以上）")
 
 

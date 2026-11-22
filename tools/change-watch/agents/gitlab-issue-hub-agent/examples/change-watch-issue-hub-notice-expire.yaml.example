@@ -110,7 +110,9 @@ steps:
         - "--plugin"
         - "gitlab_hub"
         - "check-old-issue"
-        - "--change=${CHANGE}"
+        - "--kind=${CHANGE.kind}"              # 判定に要る項目だけを渡す（説明を丸ごと渡すとコマンド行に収まらない）
+        - "--state=${CHANGE.record.state}"
+        - "--created-at=${CHANGE.record.created_at}"
         - "--days=${params.KEEP_DAYS}"
     timeout_sec: 60
     output: DECISION
