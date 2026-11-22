@@ -20,6 +20,7 @@ ISSUE_REFERENCE = re.compile(
     re.IGNORECASE,
 )
 MARKER = re.compile(r"【下書き】マージ後処理（MR ![1-9][0-9]*）")
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 class GitLabError(Exception):
@@ -114,7 +115,7 @@ def related_issues(gl, mr_path, project, description):
         if exc.status not in {404, 405, 501}:
             raise
         references = {}
-        for match in ISSUE_REFERENCE.finditer(description):
+        for match in ISSUE_REFERENCE.finditer(HTML_COMMENT.sub(" ", description)):
             ref = ((project, int(match["iid"])) if match["iid"] else
                    issue_reference(gl.url, match["url"].rstrip(".,;:!?")))
             if ref:
@@ -135,7 +136,7 @@ def one_line(value):
 def render(mr, issues, commits, project):
     iid = mr["iid"]
     title = one_line(mr["title"])
-    description = re.sub(r"<!--.*?-->", "", mr.get("description") or "", flags=re.DOTALL)
+    description = HTML_COMMENT.sub("", mr.get("description") or "")
     details = one_line(description)
     subjects = list(dict.fromkeys(one_line(commit["title"]) for commit in commits))
     changes = list(dict.fromkeys(text for text in (details, *subjects) if text and text != title))

@@ -693,7 +693,7 @@ def all_units(st: dict, cfg: dict = None) -> list:
 
 
 def in_scope(units: list) -> list:
-    return [u for u in units if u["category"] != OUT_OF_SCOPE]
+    return [u for u in units if u["category"] in CATEGORIES and UNIT_ID_RE.fullmatch(u["id"])]
 
 
 def generate_indexes(st: dict) -> None:
@@ -825,7 +825,7 @@ def drift_files(src: Path, inv: dict) -> dict:
     changed, removed = [], []
     for rel, info in inv["files"].items():
         path = src / rel
-        if not path.is_file():
+        if rel not in now_files or not path.is_file():
             removed.append(rel)
         elif hashlib.sha1(path.read_bytes()).hexdigest() != info["sha1"]:
             changed.append(rel)

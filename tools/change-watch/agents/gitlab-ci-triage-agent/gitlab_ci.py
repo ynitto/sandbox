@@ -839,10 +839,14 @@ class GitLab:
             require(isinstance(items, list), "GitLab の一覧の応答が不正です")
             yield from (items if limit is None else items[:limit - count])
             count += len(items)
+            if limit is not None and count >= limit:
+                return
             if "x-next-page" in headers:
                 next_page = headers["x-next-page"].strip()
-                if not next_page.isascii() or not next_page.isdecimal() or int(next_page) <= page:
+                if not next_page:
                     return
+                require(next_page.isascii() and next_page.isdecimal() and int(next_page) > page,
+                        "GitLab の次ページ番号が不正です")
                 page = int(next_page)
             elif len(items) < 100:
                 return
