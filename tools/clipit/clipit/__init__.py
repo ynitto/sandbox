@@ -1,0 +1,1 @@
+"""ClipIt clipboard manager."""
