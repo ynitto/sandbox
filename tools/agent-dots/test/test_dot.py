@@ -201,7 +201,8 @@ class DotTest(unittest.TestCase):
         self.tick()
         self.propose({"kind": "ask", "question": "A と B のどちらで進めますか", "options": ["A", "B"]})
         text = Path(self.act()).read_text(encoding="utf-8")
-        self.assertIn("質問: A と B のどちらで進めますか", text)
+        self.assertIn("質問 q1: A と B のどちらで進めますか", text)
+        self.assertIn("【見積り】q1 A", text)
         self.assertIn("- B", text)
         self.assertEqual(self.state()["questions"][-1]["options"], ["A", "B"])
 

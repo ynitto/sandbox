@@ -1,6 +1,6 @@
 # ハブの issue に付いた「【名前】…」のコメントを、その名前の目標の inbox に置く例（Windows）。目標がいくつあっても 1 つでよい。
 #   get     前回 commit してから新しく付いたコメントを 1 件受け取る（gitlab-issue-hub-agent と同じ取得元。受け手の名前は分ける）
-#   event   1 行目が【名前】のコメントなら、DOTS の下から同じ名前の目標を探して inbox に置く（ほかのコメントは何もしない）
+#   event   1 行目が【名前】のコメントなら、DOTS の下から同じ名前の目標を探して受け取る（承認・却下・質問への返事・ふつうの出来事）
 #   commit  見終えたと記録する
 # 目標が自分で書くコメントは「【名前より】」で始まるので、ここには当たらない。
 # パスは自分の場所に直す。change-watch と設定は gitlab-issue-hub-agent のインストーラが置いたもの（README の「用意」）。
@@ -59,7 +59,11 @@ steps:
         - "${DOTS}"
         - "--change"
         - "${CHANGE}"
-    timeout_sec: 60
+    timeout_sec: 300
+    retry_policy:              # ほかの処理が state.json を使っていた（終了コード 3）ときだけやり直す
+      limit: 5
+      interval_sec: 20
+      exit_code: [3]
   - name: commit
     depends: [event]
     preconditions:
