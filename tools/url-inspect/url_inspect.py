@@ -68,11 +68,12 @@ def assignment(argument):
     key, separator, value = argument.partition("=")
     if not separator:
         raise argparse.ArgumentTypeError("expected key=value")
-    return key, value
+    return decode(key, form=True), value
 
 
 def rebuild(url, params, args):
-    edited = [(key, value) for key, value in params if key not in args.drop]
+    drop_keys = {decode(key, form=True) for key in args.drop}
+    edited = [(key, value) for key, value in params if key not in drop_keys]
     for key, value in args.set:
         index = next((i for i, (name, _) in enumerate(edited) if name == key), len(edited))
         edited = [(name, old) for name, old in edited if name != key]
@@ -128,7 +129,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False))
         return
     for name, value in components.items():
-        if name == "port_is_default" or (name in {"username", "password"} and value is None):
+        if name == "port_is_default" or (name in {"username", "password", "port"} and value is None):
             continue
         suffix = " (既定)" if name == "port" and components["port_is_default"] else ""
         print(f"{name}: {'' if value is None else value}{suffix}")

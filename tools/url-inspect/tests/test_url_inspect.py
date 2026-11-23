@@ -37,6 +37,34 @@ class UrlInspectTests(unittest.TestCase):
         self.assertEqual(data["components"]["port"], 8080)
         self.assertFalse(data["components"]["port_is_default"])
 
+    def test_escaped_userinfo_and_rebuilt_url_spelling(self):
+        url = "HTTPS://user%2Fname@Example.com/path#section"
+        output = self.output("--add", "a=1", url)
+        self.assertIn("username: user%2Fname\n", output)
+        self.assertIn("host: example.com\n", output)
+        self.assertIn("rebuilt: HTTPS://user%2Fname@Example.com/path?a=1#section\n", output)
+
+    def test_port_defaults(self):
+        for url, host, port, is_default in (
+            ("ws://example.com/", "example.com", 80, True),
+            ("wss://example.com/", "example.com", 443, True),
+            ("ftp://example.com/", "example.com", 21, True),
+            ("http://[::1]/", "::1", 80, True),
+            ("http://[::1]:80/", "::1", 80, False),
+        ):
+            with self.subTest(url=url):
+                components = json.loads(self.output("--json", url))["components"]
+                self.assertEqual(components["host"], host)
+                self.assertEqual(components["port"], port)
+                self.assertIs(components["port_is_default"], is_default)
+
+    def test_missing_port_without_default(self):
+        url = "ssh://example.com/"
+        self.assertNotIn("port:", self.output(url))
+        components = json.loads(self.output("--json", url))["components"]
+        self.assertIsNone(components["port"])
+        self.assertIs(components["port_is_default"], False)
+
     def test_ordered_query_decoding(self):
         url = "https://example.com/?%61=x+y&a=x%20z&flag&empty="
         data = json.loads(self.output("--json", url))
@@ -61,6 +89,24 @@ class UrlInspectTests(unittest.TestCase):
         self.assertEqual(self.output("--encode", "a/b c+"), "a%2Fb%20c%2B\n")
         self.assertEqual(self.output("--encode", "a/b c", "--safe", "/"), "a/b%20c\n")
 
+    def test_drop_decodes_key(self):
+        url = "https://example.com/?a+b=1&a%20b=2&a%2Bb=3"
+        data = json.loads(self.output("--json", "--drop", "a+b", url))
+        self.assertEqual(data["rebuilt"], "https://example.com/?a%2Bb=3")
+
+    def test_set_and_add_decode_keys_and_preserve_values(self):
+        url = "https://example.com/?a+b=1&keep=2"
+        data = json.loads(self.output("--json", "--set", "a%20b=x+y%2F",
+                                     "--set", "new+key=3", "--add", "c%2Bd=4", url))
+        self.assertEqual(data["rebuilt"],
+                         "https://example.com/?a+b=x%2By%252F&keep=2&new+key=3&c%2Bd=4")
+
+    def test_decode_invalid_percent_escape(self):
+        result = self.invoke("--decode", "a+b%20c%")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "a+b%20c%\n")
+        self.assertIn("warning:", result.stderr)
+
     def test_bad_percent_encoding(self):
         result = self.invoke("--json", "https://example.com/?a=%GG%20&b=%FF")
         self.assertEqual(result.returncode, 0)
@@ -76,6 +122,7 @@ class UrlInspectTests(unittest.TestCase):
 
     def test_invalid_inputs(self):
         for args in [("example.com/path",), ("https:///path",), ("http://[::1",),
+                     ("http://::1/",), ("--safe", "/"),
                      ("http://example.com:65536",), ("http://example.com:no",),
                      ("https://example.com", "--set", "key"), ("--decode", "x", "http://x")]:
             with self.subTest(args=args):
