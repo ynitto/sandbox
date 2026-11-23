@@ -43,7 +43,19 @@ def _write_atomic(path, data):
             tmp.write(data)
             tmp.flush()
             os.fsync(tmp.fileno())
+        try:
+            os.chmod(tmp_path, 0o644)
+        except OSError:
+            pass
         os.replace(tmp_path, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
@@ -102,16 +114,22 @@ def _fetch_files(paths, dest, files, settle_seconds):
 def _fetch_once(args):
     source = args.source
     try:
+        if args.settle_seconds < 0:
+            raise ValueError("--settle-seconds に負数は指定できません")
         if not source.is_dir():
             raise ValueError(f"同期フォルダがありません: {source}")
         source_root = source.resolve()
-        outputs = [args.dest, args.state]
+        dest_root = args.dest.resolve()
+        metadata_paths = [args.state]
         if args.heartbeat is not None:
-            outputs.append(args.heartbeat)
-        for path in outputs:
-            resolved = path.resolve()
+            metadata_paths.append(args.heartbeat)
+        metadata_outputs = [(path, path.resolve()) for path in metadata_paths]
+        for path, resolved in [(args.dest, dest_root), *metadata_outputs]:
             if resolved == source_root or source_root in resolved.parents:
                 raise ValueError(f"出力先は同期フォルダの外に指定してください: {path}")
+        for path, resolved in metadata_outputs:
+            if resolved == dest_root or dest_root in resolved.parents:
+                raise ValueError(f"出力先は受信フォルダの外に指定してください: {path}")
 
         args.dest.mkdir(parents=True, exist_ok=True)
         args.state.parent.mkdir(parents=True, exist_ok=True)
@@ -120,7 +138,12 @@ def _fetch_once(args):
                               args.dest, files, args.settle_seconds)
         if result["fetched"]:
             _write_json(args.state, {"files": files})
-        if args.heartbeat is not None:
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"フェッチャの実行に失敗しました: {e}", file=sys.stderr)
+        return 2
+
+    if args.heartbeat is not None:
+        try:
             args.heartbeat.parent.mkdir(parents=True, exist_ok=True)
             _write_json(args.heartbeat, {
                 "last_run": _now(),
@@ -128,11 +151,10 @@ def _fetch_once(args):
                 "skipped_settling": len(result["skipped_settling"]),
                 "errors": len(result["errors"]),
             })
-    except (OSError, ValueError, RuntimeError) as e:
-        print(f"フェッチャの実行に失敗しました: {e}", file=sys.stderr)
-        return 2
+        except (OSError, ValueError, RuntimeError) as e:
+            result["heartbeat_error"] = str(e)
     print(json.dumps(result, ensure_ascii=False))
-    return 2 if result["errors"] else 0
+    return 2 if result["errors"] or "heartbeat_error" in result else 0
 
 
 def main(argv=None):

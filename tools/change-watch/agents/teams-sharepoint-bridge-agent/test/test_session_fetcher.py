@@ -49,9 +49,9 @@ class SessionFetcherTests(unittest.TestCase):
         os.utime(path, (stamp, stamp))
         return path
 
-    def fetch(self, *, heartbeat=False):
+    def fetch(self, *, heartbeat=False, settle_seconds=10):
         args = ["fetch-once", "--source", str(self.source), "--dest", str(self.dest),
-                "--state", str(self.state)]
+                "--state", str(self.state), "--settle-seconds", str(settle_seconds)]
         if heartbeat:
             args.extend(["--heartbeat", str(self.heartbeat)])
         return run_main(*args)
@@ -116,6 +116,26 @@ class SessionFetcherTests(unittest.TestCase):
         self.assertEqual(datetime.fromisoformat(heartbeat.pop("last_run")).tzinfo, timezone.utc)
         self.assertEqual(heartbeat, {"fetched": 1, "skipped_settling": 1, "errors": 0})
 
+    def test_rejects_state_inside_destination(self):
+        self.state = self.dest / "fetched.json"
+        code, _, err = self.fetch()
+        self.assertEqual(code, 2)
+        self.assertIn("出力先は受信フォルダの外に指定してください", err)
+        self.assertFalse(self.dest.exists())
+
+    def test_rejects_heartbeat_inside_destination(self):
+        self.heartbeat = self.dest / "status" / "heartbeat.json"
+        code, _, err = self.fetch(heartbeat=True)
+        self.assertEqual(code, 2)
+        self.assertIn("出力先は受信フォルダの外に指定してください", err)
+        self.assertFalse(self.dest.exists())
+
+    def test_rejects_negative_settle_seconds(self):
+        code, _, err = self.fetch(settle_seconds=-1)
+        self.assertEqual(code, 2)
+        self.assertIn("--settle-seconds に負数は指定できません", err)
+        self.assertFalse(self.dest.exists())
+
     def test_missing_source_does_not_write_heartbeat(self):
         self.source.rmdir()
         code, _, err = self.fetch(heartbeat=True)
@@ -140,6 +160,16 @@ class SessionFetcherTests(unittest.TestCase):
         copied.write_bytes(b"{}")
         self.assertEqual(self.fetch_ok()["fetched"], [NAME])
         self.assertEqual(copied.read_bytes(), BODY)
+
+    def test_rebuilds_missing_ledger(self):
+        self.write_source()
+        self.fetch_ok()
+        self.state.unlink()
+        self.assertEqual(self.fetch_ok()["fetched"], [NAME])
+        self.assertEqual((self.dest / NAME).read_bytes(), BODY)
+        entry = json.loads(self.state.read_text(encoding="utf-8"))["files"][NAME]
+        self.assertEqual(entry["sha256"], hashlib.sha256(BODY).hexdigest())
+        self.assertEqual(self.fetch_ok()["already"], 1)
 
     def test_only_copies_visible_top_level_json_in_name_order(self):
         for name in ("b.json", ".hidden.json", "request.txt", "a.json"):

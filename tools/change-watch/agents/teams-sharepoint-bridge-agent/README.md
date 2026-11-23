@@ -44,8 +44,10 @@ python3 session_fetcher.py fetch-once --source "<同期フォルダ>" --dest "<�
 Windows のコマンドプロンプトで、同期を行うユーザーのタスクを毎分実行するように登録する例。Python とスクリプトには実際の絶対パスを指定する。
 
 ```bat
-schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\pythonw.exe\" \"C:\sandbox\tools\change-watch\agents\teams-sharepoint-bridge-agent\session_fetcher.py\" fetch-once --source \"C:\Users\you\Example Org\Requests\" --dest C:\TeamsBridge\inbox --state C:\Users\you\.local\state\change-watch\teams-sharepoint-bridge-agent\fetched.json --settle-seconds 10 --heartbeat C:\TeamsBridge\status\heartbeat.json" /SC MINUTE /MO 1 /IT
+schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\sandbox\tools\change-watch\agents\teams-sharepoint-bridge-agent\session_fetcher.py\" fetch-once --source \"C:\Users\you\Example Org\Requests\" --dest C:\TeamsBridge\inbox --state C:\Users\you\.local\state\change-watch\teams-sharepoint-bridge-agent\fetched.json --settle-seconds 10 --heartbeat C:\TeamsBridge\status\heartbeat.json" /SC MINUTE /MO 1 /IT
 ```
+
+結果 JSON（標準出力）とエラーメッセージ（標準エラー）を確認する場合は、バッチファイルなどで `>> fetcher.log 2>&1` とリダイレクトしてログに残す（`pythonw.exe` では出力が捨てられる）。
 
 登録後、タスクスケジューラの画面（またはタスク XML）で、同期を行うユーザーのログオン時に開始し、1 分間隔で繰り返すトリガーに設定する。「既に実行中の場合は新しいインスタンスを開始しない」設定も同じ画面または XML で指定する。
 
