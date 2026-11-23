@@ -47,7 +47,7 @@ steps:
         - "--targets"
         - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
         - "--ledger"
-        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
+        - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
     output: ROUTE
   - name: submit
     depends: [check]
@@ -68,7 +68,7 @@ steps:
         - "--targets"
         - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
         - "--ledger"
-        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
+        - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
     timeout_sec: 45
   - name: record-invalid
     depends: [check]
@@ -89,7 +89,7 @@ steps:
         - "--targets"
         - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
         - "--log"
-        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/invalid.jsonl"
+        - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/invalid.jsonl"
   - name: commit
     depends: [submit, record-invalid]  # done / missing で両方を飛ばした場合も進む
     preconditions:

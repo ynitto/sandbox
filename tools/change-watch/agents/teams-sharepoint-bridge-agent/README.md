@@ -33,7 +33,7 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
 
 | コマンド | 動作 |
 |---|---|
-| `check-file --path F [--targets F] [--ledger F]` | 未提出なら `submit`、提出済みなら `done`、様式違反なら `invalid`、読めない依頼なら `missing` を出す |
+| `check-file --path F --targets F [--ledger F]` | 未提出なら `submit`、提出済みなら `done`、様式違反なら `invalid`、読めない依頼なら `missing` を出す |
 | `build-prompt --path F --targets F` | 検証して Copilot への依頼文を出す |
 | `submit --path F --targets F [--ledger F] [--jobs-py PATH] [--python CMD] [--dry-run]` | 受け箱に提出し、結果を JSON で出す。提出済みなら `already` を返す。`--dry-run` では依頼文とコマンドを JSON で確認できる |
 | `record-invalid --path F [--log F] [--targets F]` | 検証し直して、違反の理由を JSON Lines に追記する。宛先の検証も記録するときは `check-file` と同じ宛先表を渡す |
@@ -47,6 +47,8 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
 - 様式違反はログに記録してから `commit` する。修正は投稿側で行う。
 - 提出に失敗したら `commit` せず、翌分に同じ依頼を試す。提出済み台帳は `submitted.json` に保存する。台帳が壊れているときは処理を止める。
 - 提出してから台帳を更新するまでに止まったときは、受け箱の `pending`・`running`・`done` に残る依頼文を相関マーカーで照合し、台帳を補う。
+- 依頼本文と依頼者名に含まれる `teams-bridge:` は、ブリッジが全角コロンに置き換えて無効化する。
+- 台帳に記録する前に受け箱のジョブファイルが消えると、再試行で二重提出が起こりうる。受け箱の `done/` にあるジョブファイルはすぐに削除しない。
 - 既定の台帳は `~/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json`。コマンドの `--ledger` または
   環境変数 `TEAMS_BRIDGE_LEDGER` で変えられる。既定の違反ログは既定の台帳と同じフォルダの `invalid.jsonl`。
   Dagu の例で保存先を変えるときは、両方の `--ledger` と `--log` をそろえて直す。

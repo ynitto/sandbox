@@ -32,10 +32,10 @@ coalesce(body('HtmlToText'), '')
 if(contains(outputs('MailBody'), outputs('MarkerPrefix')), outputs('MailBody'), outputs('BodyText'))
 ~~~
 
-`MarkerStart`。
+`MarkerStart`。本物のマーカーは GitLab 側の本文の最後に置く。ブリッジが依頼本文中のマーカーを無効化し、復路でも最後の出現を選ぶことで誤検出に二重に備える。
 
 ~~~text
-indexOf(outputs('MarkerSource'), outputs('MarkerPrefix'))
+lastIndexOf(outputs('MarkerSource'), outputs('MarkerPrefix'))
 ~~~
 
 `MarkerStart` が負なら対象外として終了する。0 以上の分岐にだけ `MarkerTail` を置く。

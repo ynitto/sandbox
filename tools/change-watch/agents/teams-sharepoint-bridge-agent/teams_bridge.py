@@ -58,6 +58,8 @@ def _resolve_target(request, path):
     for field in ("dir", "gitlab_project"):
         if not _nonempty(target.get(field)):
             raise ValueError(f"宛先の {field} は空でない文字列で指定してください")
+    if not Path(target["dir"]).is_absolute():
+        raise ValueError("宛先の dir は絶対パスで指定してください")
     if target.get("mode") not in ("issue", "commit"):
         raise ValueError("宛先の mode は issue または commit にしてください")
     return target
@@ -78,6 +80,14 @@ def _validate(request, path, targets_path, resolved) -> list[str]:
     for field in _REQUIRED:
         if not _nonempty(request.get(field)):
             errors.append(f"{field} は空でない文字列で指定してください")
+
+    # マーカー（HTML コメント）の形を壊さないため、message_id を検証する。
+    message_id = request.get("message_id")
+    if _nonempty(message_id) and (
+        len(message_id) > 256 or any(char.isspace() for char in message_id)
+        or any(part in message_id for part in ("<", ">", "--"))
+    ):
+        errors.append("message_id は 256 文字以内で、空白・<・>・-- を含めないでください")
 
     posted_at = request.get("posted_at")
     if _nonempty(posted_at):
@@ -137,7 +147,13 @@ def _marker(request):
     return f'<!-- teams-bridge:request={request["request_id"]} teams-message={request["message_id"]} -->'
 
 
+def _escape_marker(value):
+    # 利用者の文が相関マーカーの形を作れないようにする。
+    return value.replace("teams-bridge:", "teams-bridge：")
+
+
 def _prompt(request, target):
+    request_id = request["request_id"]
     project = target["gitlab_project"]
     if target["mode"] == "issue":
         publish = f"結果を自分で GitLab のプロジェクト `{project}` に issue として上げてください"
@@ -146,11 +162,13 @@ def _prompt(request, target):
         publish = f"結果を GitLab のプロジェクト `{project}` にコミットして push してください"
         location = "コミットメッセージ"
     return (
-        f'依頼者: {request["author"]}\n'
+        f'依頼者: {_escape_marker(request["author"])}\n'
         f'投稿日時: {request["posted_at"]}\n'
         f'元の投稿の message_id: {request["message_id"]}\n\n'
-        f'--- 依頼本文 ---\n{request["text"]}\n--- 依頼本文ここまで ---\n\n'
-        f"{publish}。\n{location}に次の相関マーカーをそのまま必ず含めてください。\n"
+        f'--- 依頼本文（request_id: {request_id}） ---\n'
+        f'{_escape_marker(request["text"])}\n'
+        f'--- 依頼本文ここまで（request_id: {request_id}） ---\n\n'
+        f"{publish}。\n{location}の最後に次の相関マーカーをそのまま置いてください。\n"
         f"{_marker(request)}\n"
     )
 
@@ -196,16 +214,16 @@ def _write_ledger(path, ledger):
 
 
 def _existing_job(target, request):
-    # 台帳の更新前に停止しても、受け箱に残る依頼文の末尾のマーカーから照合できる。
+    # 台帳の更新前に停止しても、受け箱に残る依頼文のマーカーから照合できる。
     # Copilot が依頼を移す順に調べる。ジョブ名のラベルは切り詰められるため照合には使わない。
     box = Path(target["dir"]).resolve() / ".copilot-jobs"
-    marker = "\n" + _marker(request)
+    marker = _marker(request)
     for state in ("pending", "running", "done"):
         for path in (box / state).glob("*.md"):
             try:
-                if path.read_text(encoding="utf-8").rstrip("\n").endswith(marker):
+                if marker in path.read_text(encoding="utf-8", errors="replace"):
                     return path.stem
-            except (FileNotFoundError, UnicodeDecodeError):
+            except FileNotFoundError:
                 continue
     return None
 
@@ -266,6 +284,8 @@ def cmd_submit(args):
             return _submit(args, request, target, ledger_path)
         with _submission_lock(ledger_path):
             return _submit(args, request, target, ledger_path)
+    except BlockingIOError:
+        return _error("別の提出が進行中です。次回のサイクルで再試行されます")
     except (OSError, ValueError) as error:
         return _error(f"依頼を提出できません（{error}）")
 
@@ -295,7 +315,8 @@ _COMMANDS = {
 
 def _arguments(parser, name):
     parser.add_argument("--path", required=True, help="依頼の JSON ファイル")
-    parser.add_argument("--targets", required=name in ("build-prompt", "submit"), help="宛先表の JSON ファイル")
+    parser.add_argument("--targets", required=name in ("check-file", "build-prompt", "submit"),
+                        help="宛先表の JSON ファイル")
     if name in ("check-file", "submit"):
         parser.add_argument("--ledger", help="処理済み台帳の JSON ファイル")
     if name == "submit":
