@@ -49,6 +49,7 @@ class SessionFetcherTests(unittest.TestCase):
 
     def test_copies_new_file(self):
         self.write_source()
+        self.assertFalse(self.dest.exists())
         self.assertEqual(self.fetch_ok(), {"copied": [NAME], "errors": []})
         self.assertEqual((self.dest / NAME).read_bytes(), BODY)
 
@@ -86,6 +87,52 @@ class SessionFetcherTests(unittest.TestCase):
             self.assertEqual(self.fetch_ok()["copied"], [NAME])
             self.assertEqual((self.dest / NAME).read_bytes(), BODY)
 
+    def test_copies_updated_contents(self):
+        self.write_source()
+        self.fetch_ok()
+        updated = b'{"text": "updated"}'
+        (self.source / NAME).write_bytes(updated)
+        self.assertEqual(self.fetch_ok()["copied"], [NAME])
+        self.assertEqual((self.dest / NAME).read_bytes(), updated)
+
+    def test_discards_copy_when_source_changes_during_copy(self):
+        self.write_source()
+        copy = fetcher.shutil.copyfileobj
+        updated = b"{}"
+
+        def change_source(original, temporary):
+            copy(original, temporary)
+            (self.source / NAME).write_bytes(updated)
+
+        with patch.object(fetcher.shutil, "copyfileobj", side_effect=change_source):
+            code, out, err = self.fetch()
+        self.assertEqual(code, 2, err)
+        result = json.loads(out)
+        self.assertEqual(result["copied"], [])
+        self.assertEqual([error["file"] for error in result["errors"]], [NAME])
+        self.assertEqual(list(self.dest.iterdir()), [])
+        self.assertEqual(self.fetch_ok()["copied"], [NAME])
+        self.assertEqual((self.dest / NAME).read_bytes(), updated)
+
+    def test_cleans_up_stale_temporary_files(self):
+        self.dest.mkdir()
+        (self.dest / ".tmp-stale").write_bytes(b"partial")
+        directory = self.dest / ".tmp-folder"
+        directory.mkdir()
+        self.assertEqual(self.fetch_ok(), {"copied": [], "errors": []})
+        self.assertEqual(list(self.dest.iterdir()), [directory])
+
+    def test_destination_directory_blocks_replace_and_temporary_file_is_removed(self):
+        self.write_source()
+        directory = self.dest / NAME
+        directory.mkdir(parents=True)
+        code, out, err = self.fetch()
+        self.assertEqual(code, 2, err)
+        result = json.loads(out)
+        self.assertEqual(result["copied"], [])
+        self.assertEqual([error["file"] for error in result["errors"]], [NAME])
+        self.assertEqual(list(self.dest.iterdir()), [directory])
+
     def test_missing_source(self):
         self.source.rmdir()
         code, _, err = self.fetch()
@@ -118,7 +165,7 @@ class SessionFetcherTests(unittest.TestCase):
 
         def fail_one_copy(source, dest):
             if Path(dest) == self.dest / "a.json":
-                raise PermissionError("置き換えに失敗")
+                raise RuntimeError("置き換えに失敗")
             replace(source, dest)
 
         with patch.object(fetcher.os, "replace", side_effect=fail_one_copy):

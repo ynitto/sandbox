@@ -34,7 +34,9 @@ steps:
     depends: [get]
     preconditions:
       - condition: "${CHANGE.kind}"
-        expected: "appeared"
+        # 不完全な状態で届いた依頼を、内容の完成後に再検証する。
+        # 提出済みの依頼は台帳で done となり、二重提出されない。
+        expected: "re:(appeared|changed)"
     continue_on:
       skipped: true
     action: exec

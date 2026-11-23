@@ -27,8 +27,8 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
    Dagu を起動する環境の `TEAMS_BRIDGE_COPILOT_JOB` に `copilot_app_job.py` の絶対パスを設定する。
    リポジトリ内の `teams_bridge.py` を直接使うときは、未設定なら同じリポジトリのスクリプトを探す。
 5. Dagu のスケジューラを動かす。インストーラが `~/.config/dagu/dags/` に置く `change-watch-teams-bridge.yaml` は毎分起動し、
-   `get` で変化を 1 件受け取る。新しく現れたファイルだけを `check-file` に渡し、結果に応じて `submit` または
-   `record-invalid` を動かしてから `commit` する。処理済みや見つからない依頼、追加以外の変化も `commit` する。
+   `get` で変化を 1 件受け取る。現れたファイルと、内容が変わったファイルを `check-file` に渡し、結果に応じて `submit` または
+   `record-invalid` を動かしてから `commit` する。処理済みや見つからない依頼、削除も `commit` する。
    このソリューションに要る DAG 例は [dags/](dags/README.md) に一式そろえた（原本はこのフォルダの直下と各ツール側にあり、dags/ はコピー）。
 
 ### フェッチャ方式の設定
@@ -44,6 +44,11 @@ Windows のコマンドプロンプトで、同期を行うユーザーのタス
 ```bat
 schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\sandbox\tools\change-watch\agents\teams-sharepoint-bridge-agent\session_fetcher.py\" fetch-once --source \"C:\Users\you\Example Org\Requests\" --dest C:\TeamsBridge\inbox" /SC MINUTE /MO 1 /IT
 ```
+
+このコマンドライン例だけではログオン時の開始と多重起動防止が設定されない。
+[タスク定義の XML 例](session-fetcher-task.xml.example) を `session-fetcher-task.xml` にコピーし、
+両方の `UserId` を同期ユーザーのアカウントに、Python・スクリプト・同期フォルダ・受信フォルダのパスを実際の値に置き換えてインポートする。
+画面で設定する場合は、ログオン時に開始して 1 分間隔で無期限に繰り返し、既に実行中の場合は新しいインスタンスを開始しないようにする。
 
 結果 JSON（標準出力）とエラーメッセージ（標準エラー）を確認する場合は、バッチファイルなどで `>> fetcher.log 2>&1` とリダイレクトしてログに残す（`pythonw.exe` では出力が捨てられる）。
 
