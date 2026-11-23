@@ -28,7 +28,7 @@ flowchart TB
         sharepoint["SharePoint（依頼フォルダ）<br/>外部システム"]
         inbound["Power Automate（復路）<br/>レシピ: power-automate/reply/"]
     end
-    subgraph localpc["ローカル PC（Dagu が動く）"]
+    subgraph localpc["ローカル PC"]
         dagu["Dagu + change-watch<br/>tools/change-watch（folder 取得元）<br/>設定例: change-watch.yaml.example<br/>DAG 例: dags/change-watch-teams-bridge.yaml.example"]
         bridge["ブリッジエージェント<br/>teams_bridge.py"]
         inbox["copilot-app-jobs 受け箱<br/>copilot_app_job.py（tools/copilot-app-jobs）<br/>DAG 例: dags/copilot-app-job.example.yaml"]
@@ -52,7 +52,7 @@ flowchart TB
     inbound -->|"元の投稿へ返信"| teams
 ```
 
-各ブロックの2行目以降は、対応するプログラム・ファイルと Dagu 例（ファイル名はブリッジエージェント配下の `dags/` からの相対表記）。対応の一覧は §6 の表にまとめた。
+各ブロックの2行目以降は、対応するプログラム・ファイルと Dagu 例。DAG 例のファイル名はブリッジエージェント配下の `dags/` からの相対表記で、設定例の `change-watch.yaml.example` はエージェント直下に置く。対応の一覧は §6 の表にまとめた。
 
 1. 利用者が Teams の対象チャンネルに投稿する。
 2. Power Automate の往路フローが投稿を受け取り、SharePoint の依頼フォルダに `<request_id>.json` を作成する。
@@ -94,11 +94,11 @@ flowchart TB
 | SharePoint（依頼フォルダ） | 外部システム（SharePoint）。依頼 JSON の置き場所 | — | MS365 |
 | Power Automate（復路） | レシピ: ブリッジエージェント配下の `power-automate/reply/`（通知メールのマーカー抽出と返信） | — | MS365 |
 | Dagu + change-watch | 既存の [`tools/change-watch/`](../../tools/change-watch/)（`folder` 取得元）。設定例はブリッジエージェント配下の `change-watch.yaml.example`。Dagu が毎分起動し、`get` で新しい JSON を渡し、処理結果に応じて `commit` する（§7） | `dags/change-watch-teams-bridge.yaml.example`（毎分サイクル、必須） | ローカル PC |
-| ブリッジエージェント | `teams_bridge.py`（`tools/change-watch/agents/teams-sharepoint-bridge-agent/`）。JSON とファイル名を照合し、設定済みの宛先を選ぶ。相関マーカーを付けて提出し、処理済み台帳を持つ | 毎分サイクルの中で動く（上の行と同じ DAG 例） | ローカル PC |
+| ブリッジエージェント | `teams_bridge.py`（`tools/change-watch/agents/teams-sharepoint-bridge-agent/`）。JSON とファイル名を照合し、設定済みの宛先を選ぶ。相関マーカーを付けて提出し、処理済み台帳を持つ | `dags/change-watch-teams-bridge.yaml.example`（毎分サイクル、必須。ブリッジはこの中で動く） | ローカル PC |
 | copilot-app-jobs 受け箱 | `copilot_app_job.py`（既存の [`tools/copilot-app-jobs/`](../../tools/copilot-app-jobs/)）。対象フォルダの受け箱に依頼文を置く | `dags/copilot-app-job.example.yaml`（任意の参考。原本は `tools/copilot-app-jobs/dags/`） | ローカル PC |
 | Copilot アプリ | 外部システム。対象フォルダを開いた Copilot アプリの自動実行が受け箱を拾う | — | ローカル PC |
 | GitLab（リポジトリ・issue） | 外部システム（社内 GitLab）。Copilot が結果を issue / コミットとして上げる | — | 社内 GitLab |
-| GitLab 通知メール | 外部システム（GitLab が送る通知メール） | — | GitLab → MS365 |
+| GitLab 通知メール | 外部システム（GitLab が送る通知メール） | — | MS365（Outlook で受ける） |
 | 整理（gc）※図には無い部品 | change-watch の整理（gc）機能。古い取得結果や状態を片付ける | `dags/change-watch-teams-sharepoint-bridge-agent-maintenance.yaml.example`（必須） | ローカル PC |
 
 Dagu 例はブリッジエージェント配下の `dags/` に一式をそろえてある（この表の Dagu 例はすべてそのフォルダからのファイル名）。原本は各ツールの置き場所にあり、`dags/` はコピーで、ずれはエージェントのテストで検知する。
