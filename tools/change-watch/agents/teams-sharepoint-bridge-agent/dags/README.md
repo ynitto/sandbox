@@ -1,7 +1,7 @@
 # このソリューションの Dagu の DAG 例（一式）
 
 Teams → SharePoint → change-watch → Copilot アプリ → GitLab → 通知メール → Teams 返信、という橋渡しを動かすのに要る Dagu のワークフロー例を、ここに全部そろえた。
-設計は [docs/plans/2026-11-23-teams-sharepoint-bridge-design.md](../../../../docs/plans/2026-11-23-teams-sharepoint-bridge-design.md)。
+設計は [docs/plans/2026-11-23-teams-sharepoint-bridge-design.md](../../../../docs/plans/2026-11-23-teams-sharepoint-bridge-design.md)。全体の構成と流れは [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 | ファイル | 役割 | 間隔 | 必須 |
 |---|---|---|---|

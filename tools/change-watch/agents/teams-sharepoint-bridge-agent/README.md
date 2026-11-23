@@ -4,6 +4,8 @@ Teams の投稿から Power Automate が SharePoint に作った依頼 JSON を�
 このエージェントは依頼を検証し、宛先の Copilot アプリの受け箱へ相関マーカー付きの依頼文を提出する。
 Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Power Automate が Teams の元の投稿へ返信する。
 
+全体の構成（呼び出し元・呼び出すプログラム・設定ファイル・処理の概要）と流れは [ARCHITECTURE.md](ARCHITECTURE.md) にまとめた。
+
 ## 用意と動かし方
 
 1. OneDrive / SharePoint の同期クライアントで、SharePoint の依頼フォルダを Dagu が動く PC に同期する。
