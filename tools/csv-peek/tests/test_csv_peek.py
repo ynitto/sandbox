@@ -1,5 +1,6 @@
 import codecs
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -77,6 +78,16 @@ class CsvPeekTest(unittest.TestCase):
         self.assertEqual(summary["delimiter"], "\t")
         self.assertEqual(summary["headers"], ["名前", "点数"])
 
+    def test_cp932_from_file_and_stdin(self):
+        data = "name,city\n髙橋,東京\n".encode("cp932")
+        with self.assertRaises(UnicodeDecodeError):
+            data.decode("shift_jis")
+        for stdin in (False, True):
+            with self.subTest(stdin=stdin):
+                summary, _ = self.summary(data, stdin=stdin)
+                self.assertEqual(summary["encoding"], "cp932")
+                self.assertEqual(summary["sample_rows"], [["髙橋", "東京"]])
+
     def test_limit_ignores_later_malformed_input(self):
         data = b'a,b\n1,2\n3,4\n"\xff\n'
         summary, _ = self.summary(data, "--limit", "2", "--sample", "1")
@@ -106,12 +117,52 @@ class CsvPeekTest(unittest.TestCase):
         self.assertEqual(summary["sample_rows"], [["青\n赤", "1"], ["白", "0"]])
 
     def test_input_errors(self):
-        for data in (b"a,b\n\xff,1\n", b'a,b\n"open,1\n'):
+        for data in (b"a,b\n\x81,1\n", b'a,b\n"open,1\n'):
             with self.subTest(data=data):
                 result = self.run_cli(data)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("エラー", result.stderr.decode())
                 self.assertEqual(result.stdout, b"")
+
+    def test_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "missing.csv"
+            result = subprocess.run(
+                [sys.executable, str(CLI), str(source)], capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("エラー", result.stderr.decode())
+        self.assertIn("missing.csv", result.stderr.decode())
+        self.assertEqual(result.stdout, b"")
+
+    def test_output_encoding_error(self):
+        for options in ([], ["--json"]):
+            with self.subTest(options=options):
+                result = subprocess.run(
+                    [sys.executable, str(CLI), "-", *options],
+                    input="名前\n髙橋\n".encode(),
+                    env={**os.environ, "PYTHONIOENCODING": "ascii"},
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"ascii", result.stderr)
+                self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_broken_output_pipe(self):
+        reader, writer = os.pipe()
+        os.close(reader)
+        with os.fdopen(writer, "wb") as output:
+            result = subprocess.run(
+                [sys.executable, str(CLI), "-", "--json"],
+                input=b"name\nAlice\n",
+                stdout=output,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("出力できません", result.stderr.decode())
+        self.assertNotIn(b"Traceback", result.stderr)
 
 
 if __name__ == "__main__":

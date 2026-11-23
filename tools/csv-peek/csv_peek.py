@@ -4,6 +4,7 @@
 import argparse
 import codecs
 from collections import Counter
+from contextlib import suppress
 import csv
 from datetime import datetime, time
 from itertools import chain, islice
@@ -192,9 +193,13 @@ def inspect_csv(source, args, rewind):
     except UnicodeDecodeError:
         pass
     try:
-        return rewind(inspect)
+        return rewind(inspect, "shift_jis")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return rewind(inspect, "cp932")
     except UnicodeDecodeError as error:
-        raise ValueError(f"UTF-8 と Shift_JIS のどちらでもデコードできません ({error})") from error
+        raise ValueError(f"UTF-8、Shift_JIS、cp932 のいずれでもデコードできません ({error})") from error
 
 
 def cell_width(value):
@@ -262,9 +267,9 @@ def main():
     try:
         if args.file != "-":
             with open(args.file, "rb") as source:
-                def retry(inspect):
+                def retry(inspect, encoding):
                     source.seek(0)
-                    return inspect(source, "shift_jis")
+                    return inspect(source, encoding)
 
                 result = inspect_csv(source, args, retry)
         elif args.encoding:
@@ -274,10 +279,10 @@ def main():
                 cache.write(sys.stdin.buffer.read(len(codecs.BOM_UTF8)))
                 cache.seek(0)
 
-                def retry(inspect):
+                def retry(inspect, encoding):
                     cache.seek(0)
                     with io.BufferedReader(ReplayInput(sys.stdin.buffer, cache)) as source:
-                        return inspect(source, "shift_jis")
+                        return inspect(source, encoding)
 
                 with io.BufferedReader(ReplayInput(sys.stdin.buffer, cache)) as source:
                     result = inspect_csv(source, args, retry)
@@ -285,12 +290,21 @@ def main():
         print(f"エラー: {error}", file=sys.stderr)
         return 2
 
-    if result["uneven_row_count"]:
-        print(f"警告: 列数が揃っていない行: {result['uneven_row_count']} 件", file=sys.stderr)
-    if args.json:
-        print(json.dumps(result, ensure_ascii=False))
-    else:
-        display(result)
+    try:
+        if result["uneven_row_count"]:
+            print(f"警告: 列数が揃っていない行: {result['uneven_row_count']} 件", file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            display(result)
+        sys.stdout.flush()
+    except (OSError, ValueError) as error:
+        if isinstance(error, OSError):
+            # Prevent another failed flush during interpreter shutdown.
+            with suppress(OSError):
+                sys.stdout.close()
+        print(f"エラー: 出力できません ({error})", file=sys.stderr)
+        return 2
     return 0
 
 
