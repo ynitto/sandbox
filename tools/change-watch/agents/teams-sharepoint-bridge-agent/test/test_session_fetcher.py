@@ -114,6 +114,30 @@ class SessionFetcherTests(unittest.TestCase):
         self.assertEqual(self.fetch_ok()["copied"], [NAME])
         self.assertEqual((self.dest / NAME).read_bytes(), updated)
 
+    def test_discards_copy_when_source_is_replaced_with_same_size_and_timestamp(self):
+        self.write_source()
+        source = self.source / NAME
+        original = source.stat()
+        replacement = self.source / ".replacement"
+        updated = BODY.replace(b"text", b"note")
+        replacement.write_bytes(updated)
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        chmod = os.chmod
+
+        def replace_source(path, mode):
+            os.replace(replacement, source)
+            chmod(path, mode)
+
+        with patch.object(fetcher.os, "chmod", side_effect=replace_source):
+            code, out, err = self.fetch()
+        self.assertEqual(code, 2, err)
+        result = json.loads(out)
+        self.assertEqual(result["copied"], [])
+        self.assertEqual([error["file"] for error in result["errors"]], [NAME])
+        self.assertEqual(list(self.dest.iterdir()), [])
+        self.assertEqual(self.fetch_ok()["copied"], [NAME])
+        self.assertEqual((self.dest / NAME).read_bytes(), updated)
+
     def test_cleans_up_stale_temporary_files(self):
         self.dest.mkdir()
         (self.dest / ".tmp-stale").write_bytes(b"partial")

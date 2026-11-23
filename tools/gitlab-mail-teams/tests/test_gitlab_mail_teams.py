@@ -274,6 +274,17 @@ class UnknownFallbackTest(unittest.TestCase):
         self.assertEqual(event["summary"], "来週の定例は 15 時からに変更します。")
         self.assertEqual(event["received_at"], "2026-11-19T10:00:00+09:00")
 
+    def test_attached_email_does_not_override_html_body(self):
+        msg = EmailMessage()
+        msg["Subject"] = "GitLab notification"
+        msg.set_content("<p>Notification body</p>", subtype="html")
+        attached = EmailMessage()
+        attached.set_content("Attached email")
+        msg.add_attachment(attached)
+
+        event = gmt.parse_eml(msg.as_bytes())
+        self.assertEqual(event["summary"], "Notification body")
+
     def test_missing_date_gives_null_received_at(self):
         event = gmt.parse_eml(make_eml("hello", "body\n", date=None))
         self.assertIsNone(event["received_at"])
