@@ -7,10 +7,13 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import math
 from pathlib import Path
 import re
 import sys
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+TIME_CLAIMS = ("exp", "nbf", "iat", "auth_time")
 
 
 def decode_segment(segment):
@@ -27,22 +30,36 @@ def decode_segment(segment):
         raise ValueError("base64url の形式が不正です") from error
 
 
-def decode_object(segment):
+def decode_object(segment, *, allow_nonfinite_times=False):
     value = json.loads(decode_segment(segment).decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError("JSON がオブジェクトではありません")
-    formatted = json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False)
+    display_value = value.copy() if allow_nonfinite_times else value
+    if allow_nonfinite_times:
+        for claim in TIME_CLAIMS:
+            timestamp = value.get(claim)
+            if type(timestamp) is float and not math.isfinite(timestamp):
+                display_value[claim] = str(timestamp)
+    formatted = json.dumps(display_value, indent=2, ensure_ascii=False, allow_nan=False)
     formatted.encode("utf-8")
     return value, formatted
 
 
 def show_times(payload, zone, now):
-    for claim in ("exp", "nbf", "iat", "auth_time"):
+    for claim in TIME_CLAIMS:
         if claim not in payload:
             continue
         value = payload[claim]
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
         if type(value) not in (int, float):
             print(f"{claim}: 数値の UNIX 時刻ではありません")
+            continue
+        if type(value) is float and not math.isfinite(value):
+            print(f"{claim}: 有限の UNIX 時刻ではありません ({value})")
             continue
         try:
             date = datetime.fromtimestamp(value, tz=timezone.utc).astimezone(zone)
@@ -62,6 +79,9 @@ def main(argv=None, *, now=None):
     parser.add_argument("--tz", default="UTC", help="時刻表示の IANA タイムゾーン（既定値: UTC）")
     parser.add_argument("--secret", help="HS256 署名検証用の秘密文字列")
     args = parser.parse_args(argv)
+    if args.secret == "":
+        print("--secret に空文字列は指定できません", file=sys.stderr)
+        return 1
 
     try:
         zone = ZoneInfo(args.tz)
@@ -83,7 +103,7 @@ def main(argv=None, *, now=None):
         part_name = "Header"
         header, header_json = decode_object(parts[0])
         part_name = "Payload"
-        payload, payload_json = decode_object(parts[1])
+        payload, payload_json = decode_object(parts[1], allow_nonfinite_times=True)
         part_name = "署名"
         signature = decode_segment(parts[2])
     except (ValueError, RecursionError) as error:

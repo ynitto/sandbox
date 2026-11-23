@@ -61,6 +61,30 @@ class JwtInspectTests(unittest.TestCase):
         self.assertIn("exp: 1970-01-01T00:01:40+00:00", utc_output)
         self.assertNotIn("期限切れ", utc_output)
 
+    def test_string_time_claims(self):
+        token = make_token({"exp": "99", "nbf": "101", "iat": "0", "auth_time": "1"})
+        code, output, error = self.run_main(token)
+        self.assertEqual(code, 0)
+        self.assertEqual(error, "")
+        self.assertIn("exp: 1970-01-01T00:01:39+00:00", output)
+        self.assertIn("nbf: 1970-01-01T00:01:41+00:00", output)
+        self.assertIn("iat: 1970-01-01T00:00:00+00:00", output)
+        self.assertIn("auth_time: 1970-01-01T00:00:01+00:00", output)
+        self.assertIn("期限切れ", output)
+        self.assertIn("まだ有効になっていない", output)
+
+    def test_unusable_time_claims(self):
+        token = make_token({"exp": float("-inf"), "nbf": float("inf"),
+                            "iat": float("nan"), "auth_time": "unknown"})
+        code, output, error = self.run_main(token)
+        self.assertEqual(code, 0)
+        self.assertEqual(error, "")
+        self.assertIn("exp: 有限の UNIX 時刻ではありません (-inf)", output)
+        self.assertIn("nbf: 有限の UNIX 時刻ではありません (inf)", output)
+        self.assertIn("iat: 有限の UNIX 時刻ではありません (nan)", output)
+        self.assertIn("auth_time: 数値の UNIX 時刻ではありません", output)
+        self.assertNotIn("警告:", output)
+
     def test_invalid_tokens(self):
         cases = {
             "one.two": "パート数",
@@ -79,11 +103,21 @@ class JwtInspectTests(unittest.TestCase):
 
     def test_hs256_verification(self):
         token = make_token({"sub": "user"}, secret="秘密")
-        for secret, expected_code, result in (("秘密", 0, "OK"), ("wrong", 3, "NG")):
-            with self.subTest(result=result):
-                code, output, _ = self.run_main("--secret", secret, token)
-                self.assertEqual(code, expected_code)
-                self.assertIn(f"署名検証: {result}", output)
+        code, output, _ = self.run_main("--secret", "秘密", token)
+        self.assertEqual(code, 0)
+        self.assertIn("署名検証: OK", output)
+
+    def test_wrong_secret(self):
+        token = make_token({"sub": "user"}, secret="秘密")
+        code, output, _ = self.run_main("--secret", "wrong", token)
+        self.assertEqual(code, 3)
+        self.assertIn("署名検証: NG", output)
+
+    def test_empty_secret(self):
+        code, output, error = self.run_main("--secret", "", make_token({}, secret=""))
+        self.assertEqual(code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("--secret に空文字列は指定できません", error)
 
     def test_unsupported_algorithm(self):
         code, output, _ = self.run_main("--secret", "test", make_token({}, alg="none"))
@@ -113,8 +147,12 @@ class JwtInspectTests(unittest.TestCase):
             code, output, _ = self.run_main("--file", str(path), make_token({"sub": "argument"}))
             self.assertEqual(code, 0)
             self.assertIn('"sub": "argument"', output)
-            code, _, error = self.run_main("--file", str(path.with_name("missing.txt")))
+    def test_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.txt"
+            code, output, error = self.run_main("--file", str(path))
             self.assertEqual(code, 1)
+            self.assertEqual(output, "")
             self.assertIn("エラー", error)
 
 
