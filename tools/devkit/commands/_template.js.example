@@ -1,0 +1,32 @@
+"use strict";
+
+// 新しいコマンドの雛形。
+// このファイルを commands/<名前>.js にコピーして中身を書き換えると、
+// devkit のサブコマンドとして自動的に登録される（登録リストの編集は不要）。
+// 先頭が "_" のファイルは自動発見の対象外なので、この雛形自体は登録されない。
+
+const { ArgParser } = require("../core/args");
+
+function run(argv, io) {
+  const parser = new ArgParser({
+    prog: "devkit example",
+    usage: "devkit example [--json] <対象>",
+    description: "雛形コマンドの説明。",
+  });
+  parser.addFlag("--json", { key: "json", help: "JSON 形式で出力する" });
+  parser.addPositional("target", { metavar: "対象" });
+  const args = parser.parse(argv);
+
+  // 終了コードの約束: 0=正常、1=チェック不一致、2=入力・使用法エラー。
+  // 使用法エラーは UsageError を投げる（args.js が自動で処理する）。
+  // 入力エラーなどは io.err(...) に理由を書いて 2 を返す。
+  io.out(`対象: ${args.target}\n`);
+  return 0;
+}
+
+module.exports = {
+  name: "example", // サブコマンド名（devkit example ...）
+  help: "雛形コマンド（1行説明）", // devkit --help の一覧に出る
+  usage: "devkit example [--json] <対象>",
+  run,
+};
