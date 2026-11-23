@@ -86,6 +86,11 @@ function checkTarget(t, where, errors) {
   unknownKeys(t, TARGET_KEYS, where, errors);
   const primary = ['css', 'role', 'label', 'text', 'placeholder', 'testId', 'alt', 'title'].filter((k) => t[k] !== undefined);
   if (primary.length !== 1) errors.push(`${where}: 対象の指定（css / role / label / text / placeholder / testId / alt / title）はちょうど 1 つ書きます`);
+  for (const key of primary) {
+    if (typeof t[key] !== 'string' || !t[key].trim()) errors.push(`${where}.${key}: 空でない文字列で書きます`);
+  }
+  if (t.exact !== undefined && typeof t.exact !== 'boolean') errors.push(`${where}.exact: true か false で書きます`);
+  if (t.nth !== undefined && !Number.isInteger(t.nth)) errors.push(`${where}.nth: 整数で書きます`);
 }
 
 function checkMocks(mocks, where, errors) {
@@ -98,7 +103,9 @@ function checkMocks(mocks, where, errors) {
     if (!isPlainObject(m)) return errors.push(`${w}: オブジェクトで書きます`);
     unknownKeys(m, MOCK_KEYS, w, errors);
     if (typeof m.url !== 'string' || !m.url) errors.push(`${w}: url（例: "**/api/users"）が要ります`);
-    if (m.status !== undefined && !Number.isInteger(m.status)) errors.push(`${w}: status は整数です`);
+    if (m.status !== undefined && !(Number.isInteger(m.status) && m.status >= 100 && m.status <= 599)) errors.push(`${w}.status: 100 以上 599 以下の整数で書きます`);
+    if (m.times !== undefined && !(Number.isInteger(m.times) && m.times >= 0)) errors.push(`${w}.times: 0 以上の整数で書きます`);
+    if (m.delayMs !== undefined && !(Number.isFinite(m.delayMs) && m.delayMs >= 0)) errors.push(`${w}.delayMs: 0 以上のミリ秒を数で書きます`);
   });
 }
 
@@ -141,7 +148,10 @@ function checkStep(step, where, errors) {
       if (typeof v !== 'string') errors.push(`${w}: ページで実行する JavaScript を文字列で書きます`);
       break;
     case 'wait':
-      if (typeof v === 'number') break;
+      if (typeof v === 'number') {
+        if (!Number.isFinite(v) || v < 0) errors.push(`${w}: 待つミリ秒は 0 以上の数で書きます`);
+        break;
+      }
       if (isPlainObject(v) && (v.url !== undefined || v.load !== undefined || v.hidden !== undefined || v.visible !== undefined)) {
         unknownKeys(v, ['url', 'load', 'visible', 'hidden'], w, errors);
         if (v.visible !== undefined) checkTarget(v.visible, `${w}.visible`, errors);
@@ -162,7 +172,10 @@ function checkStep(step, where, errors) {
       const needsTargetBool = (v.visible === true || v.hidden === true);
       if ((needsTarget.length || needsTargetBool) && v.target === undefined) errors.push(`${w}: ${[...needsTarget, needsTargetBool ? 'visible/hidden: true' : ''].filter(Boolean).join(', ')} には target が要ります`);
       if (v.target !== undefined) checkTarget(v.target, `${w}.target`, errors);
-      if (v.count !== undefined && !Number.isInteger(v.count)) errors.push(`${w}.count: 整数です`);
+      if (v.count !== undefined && !(Number.isInteger(v.count) && v.count >= 0)) errors.push(`${w}.count: 0 以上の整数です`);
+      for (const key of ['enabled', 'disabled', 'checked']) {
+        if (v[key] !== undefined && typeof v[key] !== 'boolean') errors.push(`${w}.${key}: true か false で書きます`);
+      }
       break;
     }
     case 'screenshot':
@@ -170,6 +183,7 @@ function checkStep(step, where, errors) {
       if (!isPlainObject(v)) { errors.push(`${w}: 名前（文字列）か { name, fullPage, target, path } で書きます`); break; }
       unknownKeys(v, ['name', 'fullPage', 'target', 'path', 'mask'], w, errors);
       if (typeof v.name !== 'string' || !v.name) errors.push(`${w}: name が要ります`);
+      if (v.fullPage !== undefined && typeof v.fullPage !== 'boolean') errors.push(`${w}.fullPage: true か false で書きます`);
       if (v.target !== undefined) checkTarget(v.target, `${w}.target`, errors);
       if (v.mask !== undefined) {
         if (!Array.isArray(v.mask)) errors.push(`${w}.mask: 対象の配列で書きます`);
@@ -204,7 +218,9 @@ function checkSetupLike(obj, where, errors) {
 
 function checkViewport(v, where, errors) {
   if (v === undefined) return;
-  if (!isPlainObject(v) || !Number.isInteger(v.width) || !Number.isInteger(v.height)) errors.push(`${where}.viewport: { width, height } を整数で書きます`);
+  if (!isPlainObject(v) || !Number.isInteger(v.width) || v.width <= 0 || !Number.isInteger(v.height) || v.height <= 0) {
+    errors.push(`${where}.viewport: { width, height } を正の整数で書きます`);
+  }
 }
 
 // 読んだデータを検査し、既定値を補った suite を返す。エラーがあれば errors に並べる。
