@@ -32,7 +32,7 @@ npm test
 2. パッケージ版では `resources/helper/clipit-helper.exe` を使用します。
 3. 開発時はアプリディレクトリ内の `helper/clipit_helper.py` を Python で直接起動します。
 
-Python コマンドは `CLIPIT_HELPER_PYTHON` で指定できます。既定は Windows では `python`、その他では `python3` です。貼り付け先の追跡は Windows で行います。OCR を使う場合は Windows の日本語または英語の OCR 対応言語パックと、Python の `helper/requirements-ocr.txt` に記載された依存関係が必要です。
+Python コマンドは `CLIPIT_HELPER_PYTHON` で指定できます。既定は Windows では `python`、その他では `python3` です。貼り付け先の追跡は Windows で行います。ヘルパーとのやり取りは標準入出力の JSON で、ウィンドウハンドル（HWND）は桁落ちを避けるため10進文字列で受け渡します。OCR を使う場合は Windows の日本語または英語の OCR 対応言語パックと、Python の `helper/requirements-ocr.txt` に記載された依存関係が必要です。
 
 ### devkit の探索順
 

@@ -63,6 +63,7 @@ async function inspectToken(token) {
 `run(["jwt", token])` のように、コマンド名を含む引数列も渡せます。
 実行結果の `stdoutBuffer` には、捕捉した標準出力が Buffer で入ります。
 全コマンドの出力が API の戻り値で取得できます（`csv` の集計結果を含む）。
+終了コード `1` はコマンド固有の失敗と、API 側で捕捉した予期しない例外の両方を表します（区別が必要な場合は `stderr` の内容を見てください）。`options.stdin` に string / Buffer 以外を渡すなど API の使い方が不正な場合は、結果オブジェクトではなく TypeError が投げられます。
 
 ## 終了コード
 

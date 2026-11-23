@@ -83,6 +83,25 @@ test("runCommand captures csv output written synchronously", async () => {
   assert.match(stdout, /a/);
 });
 
+test("runCommand rejects an invalid stdin type as a usage error", async () => {
+  await assert.rejects(() => runCommand("jwt", [], { stdin: null }), TypeError);
+  await assert.rejects(() => runCommand("jwt", [], { stdin: 42 }), /options\.stdin/);
+  assert.throws(() => runCommand("jwt", "not-an-array"), TypeError);
+  await assert.rejects(() => runCommand("jwt", [42]), TypeError);
+});
+
+test("runCommand passes a copy of env so commands cannot pollute the host", async (t) => {
+  t.mock.method(jwt, "run", async (_argv, io) => {
+    io.env.DEVKIT_API_TEST_MARKER = "polluted";
+    return 0;
+  });
+  const env = { PATH: process.env.PATH };
+  const { code } = await runCommand("jwt", [], { env });
+  assert.equal(code, 0);
+  assert.equal(env.DEVKIT_API_TEST_MARKER, undefined);
+  assert.equal(process.env.DEVKIT_API_TEST_MARKER, undefined);
+});
+
 test("runCommand preserves output written before an unexpected exception", async (t) => {
   // 実ファイルを追加せず、自動発見されるコマンドから例外を発生させる。
   t.mock.method(jwt, "run", async (_argv, io) => {

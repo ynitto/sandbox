@@ -199,6 +199,7 @@ function performHistoryKey(event) {
 
 byId("edit-tags").onclick = () => {
   const clip = selectedClip();
+  if (!clip) return;
   editingId = clip.id;
   byId("tag-input").value = clip.tags.join(", ");
   tagForm.hidden = false;
@@ -210,7 +211,11 @@ tagForm.onsubmit = perform(async () => {
   await request(api.updateClip(id, { tags: byId("tag-input").value.split(",") }));
   if (editingId === id) closeTags();
 });
-byId("pin").onclick = perform(() => request(api.updateClip(selectedId, { pinned: !selectedClip().pinned })));
+byId("pin").onclick = perform(() => {
+  const clip = selectedClip();
+  if (!clip) return;
+  return request(api.updateClip(clip.id, { pinned: !clip.pinned }));
+});
 byId("delete-clip").onclick = perform(() => request(api.deleteClip(selectedId)));
 
 async function saveText(text, message, reveal = false) {

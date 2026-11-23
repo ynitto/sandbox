@@ -12,9 +12,25 @@ class Store {
     this.images = path.join(dir, "images");
     this.path = path.join(dir, "clips.json");
     fs.mkdirSync(this.images, { recursive: true });
-    const data = fs.existsSync(this.path)
-      ? JSON.parse(fs.readFileSync(this.path, "utf8"))
-      : {};
+    let data = {};
+    if (fs.existsSync(this.path)) {
+      try {
+        data = JSON.parse(fs.readFileSync(this.path, "utf8"));
+        if (data === null || typeof data !== "object" ||
+            !Array.isArray(data.clips ?? []) || !Array.isArray(data.notes ?? [])) {
+          throw new Error("保存データの形式が不正です");
+        }
+      } catch {
+        // 壊れた保存ファイルは退避して空から始める（元ファイルは残す）。
+        const backup = `${this.path}.corrupt-${new Date().toISOString().replaceAll(":", "-")}`;
+        try {
+          fs.renameSync(this.path, backup);
+        } catch {
+          // 退避できなくても起動は続ける。
+        }
+        data = {};
+      }
+    }
     this.clips = data.clips ?? [];
     this.notes = data.notes ?? [];
   }
@@ -23,12 +39,25 @@ class Store {
     const temporary = path.join(this.directory, `.${randomUUID()}.tmp`);
     try {
       fs.writeFileSync(temporary, JSON.stringify({ clips, notes }, null, 2), "utf8");
-      fs.renameSync(temporary, this.path);
+      this.#renameWithRetry(temporary, this.path);
     } finally {
       fs.rmSync(temporary, { force: true });
     }
     this.clips = clips;
     this.notes = notes;
+  }
+
+  // Windows ではウイルス対策等のロックで置換が一時的に EPERM/EBUSY になることがある。
+  #renameWithRetry(from, to) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(from, to);
+        return;
+      } catch (error) {
+        if (!["EPERM", "EEXIST", "EBUSY"].includes(error.code) || attempt >= 4) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+    }
   }
 
   imagePath(clip) {
@@ -86,7 +115,9 @@ class Store {
   }
 
   updateClip(id, changes) {
-    this.#save(this.clips.map((clip) => clip.id === id ? { ...clip, ...changes } : clip), this.notes);
+    // id / kind / sha256 は画像ファイルや重複判定と結びつくため変更させない。
+    const { id: _id, kind: _kind, sha256: _sha256, ...safe } = changes;
+    this.#save(this.clips.map((clip) => clip.id === id ? { ...clip, ...safe } : clip), this.notes);
   }
 
   deleteClip(id) {

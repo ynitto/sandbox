@@ -56,6 +56,7 @@ test("helper exchanges UTF-8 JSON and reports protocol failures", async (t) => {
   await assert.rejects(client.run("error", {}), /処理エラー/);
   await assert.rejects(client.run("invalid", {}), /JSON/);
   await assert.rejects(createHelperClient(resolved, { timeoutMs: 100 }).run("wait", {}), /タイムアウト/);
+  await assert.rejects(client.run("wait", {}, { timeoutMs: 100 }), /タイムアウト/);
   await assert.rejects(
     createHelperClient({ command: path.join(dir, "missing"), args: [] }).run("success", {}),
     /起動できませんでした/,

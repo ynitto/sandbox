@@ -17,7 +17,7 @@ function listCommands() {
 /**
  * @typedef {object} RunOptions
  * @property {string | Buffer} [stdin] 標準入力。既定は空の Buffer。
- * @property {NodeJS.ProcessEnv} [env] 環境変数。既定は process.env。
+ * @property {NodeJS.ProcessEnv} [env] 環境変数。既定は process.env。浅い複製がコマンドへ渡る。
  * @property {string} [cwd] 作業ディレクトリ。既定は process.cwd()。
  * @property {boolean} [stdinIsTTY=false] 標準入力を端末として扱うかどうか。
  */
@@ -39,6 +39,9 @@ function listCommands() {
  * @returns {Promise<RunResult>} CLI と同じ終了コードと捕捉した出力。予期しない例外では 1。
  */
 function runCommand(name, argv = [], options = {}) {
+  if (typeof name !== "string" || !Array.isArray(argv)) {
+    throw new TypeError("name は文字列、argv は文字列の配列で指定してください");
+  }
   return run([name, ...argv], options);
 }
 
@@ -49,11 +52,17 @@ function runCommand(name, argv = [], options = {}) {
  * @returns {Promise<RunResult>} CLI と同じ終了コードと捕捉した出力。予期しない例外では 1。
  */
 async function run(argv = [], options = {}) {
+  if (!Array.isArray(argv) || argv.some((arg) => typeof arg !== "string")) {
+    throw new TypeError("argv は文字列の配列で指定してください");
+  }
+  const { stdin = "", env, cwd = process.cwd(), stdinIsTTY = false } = options;
+  if (typeof stdin !== "string" && !Buffer.isBuffer(stdin)) {
+    throw new TypeError("options.stdin は string または Buffer で指定してください");
+  }
   const stdoutChunks = [];
   const stderrChunks = [];
   let code;
   try {
-    const { stdin = "", env = process.env, cwd = process.cwd(), stdinIsTTY = false } = options;
     const stdinBuffer = Buffer.isBuffer(stdin) ? stdin : Buffer.from(stdin, "utf8");
     code = await main(argv, {
       out(text) {
@@ -72,7 +81,8 @@ async function run(argv = [], options = {}) {
         return stdinBuffer;
       },
       stdinIsTTY,
-      env,
+      // コマンドが env を書き換えてもホストプロセスを汚染しないよう複製を渡す。
+      env: { ...(env ?? process.env) },
       cwd,
     });
   } catch (error) {

@@ -1,4 +1,10 @@
-"""JSON command-line helper for ClipIt on Windows."""
+"""JSON command-line helper for ClipIt on Windows.
+
+プロトコル: 標準入力に JSON リクエスト、標準出力に
+{"ok": true, "result": {...}} / {"ok": false, "error": "..."} を返す。
+ウィンドウハンドル (HWND) は、JSON の数値では桁落ちしうるため
+10 進文字列でやり取りする。
+"""
 
 import asyncio
 import ctypes
@@ -123,12 +129,22 @@ async def _recognize(path):
 
 def dispatch(command, request):
     if command == "get-foreground":
-        return {"window": paste_target()}
+        window = paste_target()
+        handle = ctypes.cast(window, ctypes.c_void_p).value if window else None
+        return {"window": str(handle) if handle else None}
 
     if command == "paste":
-        window = request.get("window")
-        if type(window) is not int or not 0 < window < 1 << (8 * ctypes.sizeof(wintypes.HWND)):
-            raise ValueError("window には有効な HWND の整数値を指定してください。")
+        raw = request.get("window")
+        if isinstance(raw, bool):
+            window = None
+        elif isinstance(raw, int):
+            window = raw
+        elif isinstance(raw, str) and raw.isdigit():
+            window = int(raw)
+        else:
+            window = None
+        if window is None or not 0 < window < 1 << (8 * ctypes.sizeof(wintypes.HWND)):
+            raise ValueError("window には有効な HWND（10進文字列または整数）を指定してください。")
         if not activate_window(window):
             raise RuntimeError("貼り付け先を前面にできません。Ctrl+V で貼り付けてください。")
         send_paste(window)

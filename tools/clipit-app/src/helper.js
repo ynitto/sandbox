@@ -24,9 +24,10 @@ function resolveHelperCommand({ env = process.env, platform = process.platform, 
 }
 
 function createHelperClient(resolved, { spawnImpl = spawn, timeoutMs = 15000 } = {}) {
-  function run(subcommand, request) {
+  function run(subcommand, request, { timeoutMs: callTimeoutMs } = {}) {
     return new Promise((resolve, reject) => {
       if (!resolved) throw new Error("ClipIt ヘルパーが見つかりません。");
+      const limit = callTimeoutMs ?? timeoutMs;
       const input = JSON.stringify(request);
       let child;
       try {
@@ -41,36 +42,50 @@ function createHelperClient(resolved, { spawnImpl = spawn, timeoutMs = 15000 } =
       let stdout = "";
       let stderr = "";
       let inputError;
+      let settled = false;
+      let closed = false;
+      let escalation;
+      const settle = (action, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        action(value);
+      };
       const timer = setTimeout(() => {
-        reject(new Error(`ヘルパーがタイムアウトしました (${timeoutMs} ms)。`));
+        settle(reject, new Error(`ヘルパーがタイムアウトしました (${limit} ms)。`));
         child.kill();
-      }, timeoutMs);
+        // kill が効かないプロセスは少し待ってから強制終了する。
+        escalation = setTimeout(() => {
+          if (!closed) child.kill("SIGKILL");
+        }, 1000);
+        escalation.unref?.();
+      }, limit);
 
       child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
       child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
       child.stdin.on("error", (error) => { inputError = error; });
       child.once("error", (error) => {
-        clearTimeout(timer);
-        reject(new Error(`ヘルパーを起動できませんでした。 ${error.message}`, { cause: error }));
+        settle(reject, new Error(`ヘルパーを起動できませんでした。 ${error.message}`, { cause: error }));
       });
       child.once("close", (code, signal) => {
-        clearTimeout(timer);
+        closed = true;
+        clearTimeout(escalation);
         let response;
         try {
           response = JSON.parse(stdout);
         } catch (error) {
           const detail = stderr.trim() || inputError?.message || signal || `exit code ${code}`;
-          reject(new Error(`ヘルパーの出力が JSON ではありません。 ${detail}`, { cause: error }));
+          settle(reject, new Error(`ヘルパーの出力が JSON ではありません。 ${detail}`, { cause: error }));
           return;
         }
         if (response?.ok === false) {
-          reject(new Error(`ヘルパーの処理に失敗しました。 ${response.error ?? ""}`));
+          settle(reject, new Error(`ヘルパーの処理に失敗しました。 ${response.error ?? ""}`));
         } else if (response?.ok !== true || !Object.hasOwn(response, "result")) {
-          reject(new Error("ヘルパーの応答形式が不正です。"));
+          settle(reject, new Error("ヘルパーの応答形式が不正です。"));
         } else if (code !== 0) {
-          reject(new Error(`ヘルパーが異常終了しました。 ${stderr.trim() || signal || code}`));
+          settle(reject, new Error(`ヘルパーが異常終了しました。 ${stderr.trim() || signal || code}`));
         } else {
-          resolve(response.result);
+          settle(resolve, response.result);
         }
       });
       child.stdin.end(input, "utf8");

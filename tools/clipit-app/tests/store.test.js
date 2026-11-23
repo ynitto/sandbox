@@ -13,6 +13,31 @@ function temporaryStore(t) {
   return new Store(dir);
 }
 
+test("a corrupt clips.json is backed up and the store starts empty", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clipit-store-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "clips.json"), "{not json", "utf8");
+  const store = new Store(dir);
+  assert.deepEqual(store.clips, []);
+  assert.deepEqual(store.notes, []);
+  const backups = fs.readdirSync(dir).filter((name) => name.startsWith("clips.json.corrupt-"));
+  assert.equal(backups.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, backups[0]), "utf8"), "{not json");
+  store.addText("復旧後のクリップ");
+  assert.equal(new Store(dir).clips[0].text, "復旧後のクリップ");
+});
+
+test("updateClip cannot change id, kind or sha256", (t) => {
+  const store = temporaryStore(t);
+  const clip = store.addText("本文");
+  store.updateClip(clip.id, { id: "0".repeat(32), kind: "image", sha256: "x", pinned: true });
+  const updated = store.clips[0];
+  assert.equal(updated.id, clip.id);
+  assert.equal(updated.kind, "text");
+  assert.equal(updated.sha256, undefined);
+  assert.equal(updated.pinned, true);
+});
+
 test("text, metadata and notes persist, and exact duplicates move to the front", (t) => {
   const store = temporaryStore(t);
   assert.deepEqual(store.clips, []);

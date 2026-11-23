@@ -3,7 +3,6 @@
 const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
 const {
   app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, Tray,
 } = require("electron");
@@ -23,7 +22,6 @@ if (!app.requestSingleInstanceLock()) {
 
 function start() {
   const page = path.join(__dirname, "renderer", "index.html");
-  const pageUrl = pathToFileURL(page).href;
   let panel;
   let tray;
   let store;
@@ -40,13 +38,19 @@ function start() {
   let clipboardKey;
   let lastError = null;
   let notice = null;
+  let pendingShow = false;
+  let suppressBlurUntil = 0;
 
   function notify() {
     if (panel && !panel.isDestroyed()) panel.webContents.send("clips:changed");
   }
 
   function showPanel() {
-    if (!panel || panel.isDestroyed() || pasting) return;
+    if (!panel || panel.isDestroyed()) {
+      pendingShow = true;
+      return;
+    }
+    if (pasting) return;
     visibilityVersion++;
     const { x, y, width, height } = screen.getPrimaryDisplay().workArea;
     const panelHeight = Math.min(440, Math.floor(height / 2));
@@ -57,19 +61,37 @@ function start() {
   }
 
   function togglePanel() {
+    if (!panel || panel.isDestroyed() || pasting) return;
     if (panel.isVisible()) panel.hide();
     else showPanel();
   }
 
-  function imageKey(png) {
-    return "image:" + createHash("sha256").update(png).digest("hex");
+  // 画像の変化検知用の指紋。全体の PNG 化＋ハッシュは重いので、
+  // ビットマップの寸法と長さ＋等間隔に抜いた断片のハッシュで代用する。
+  // 保存時の重複判定は store 側で PNG 全体の sha256 を見るので、ここは粗くてよい。
+  function imageFingerprint(image) {
+    const { width, height } = image.getSize();
+    const bitmap = image.toBitmap();
+    const hash = createHash("sha256");
+    hash.update(`image:${width}x${height}:${bitmap.length}:`);
+    const SAMPLE = 32 * 1024;
+    const PARTS = 8;
+    if (bitmap.length <= SAMPLE * PARTS) {
+      hash.update(bitmap);
+    } else {
+      for (let i = 0; i < PARTS; i++) {
+        const start = Math.floor(((bitmap.length - SAMPLE) * i) / (PARTS - 1));
+        hash.update(bitmap.subarray(start, start + SAMPLE));
+      }
+    }
+    return "image:" + hash.digest("hex");
   }
 
   function writeClipboard(text, image) {
     if (image) {
       clipboard.writeImage(image);
       const written = clipboard.readImage();
-      clipboardKey = imageKey((written.isEmpty() ? image : written).toPNG());
+      clipboardKey = imageFingerprint(written.isEmpty() ? image : written);
     } else {
       clipboard.writeText(text);
       clipboardKey = text ? "text:" + text : null;
@@ -80,10 +102,10 @@ function start() {
     try {
       const text = clipboard.readText();
       const image = clipboard.readImage();
-      const png = image.isEmpty() ? null : image.toPNG();
-      const key = png ? imageKey(png) : text ? "text:" + text : null;
+      const hasImage = !image.isEmpty();
+      const key = hasImage ? imageFingerprint(image) : text ? "text:" + text : null;
       if (key === clipboardKey) return;
-      if (png) store.addImage(png);
+      if (hasImage) store.addImage(image.toPNG());
       else if (text) store.addText(text);
       clipboardKey = key;
       if (key !== null) notify();
@@ -101,9 +123,10 @@ function start() {
     foregroundPending = true;
     const version = visibilityVersion;
     try {
-      const { window } = await helper.run("get-foreground", {});
-      if (version === visibilityVersion && !pasting && Number.isSafeInteger(window) &&
-          window > 0 && window !== panelHandle) target = window;
+      // HWND は10進文字列で受け取る（数値では桁落ちしうるため）。
+      const { window } = await helper.run("get-foreground", {}, { timeoutMs: 3000 });
+      if (version === visibilityVersion && !pasting && typeof window === "string" &&
+          /^[1-9][0-9]*$/.test(window) && window !== panelHandle) target = window;
     } catch {
       if (version === visibilityVersion) target = null;
     } finally {
@@ -134,8 +157,9 @@ function start() {
 
   function handle(channel, action) {
     ipcMain.handle(channel, async (event, input) => {
-      const frame = event.senderFrame;
-      if (event.sender !== panel.webContents || frame !== panel.webContents.mainFrame || frame?.url !== pageUrl) {
+      // 呼び出し元は自前のパネルのメインフレームだけに限る。
+      // URL 比較は Windows のパス正規化で一致しないことがあるため使わない。
+      if (event.sender !== panel.webContents || event.senderFrame !== panel.webContents.mainFrame) {
         return { ok: false, error: "IPC の呼び出し元が無効です。" };
       }
       try {
@@ -216,6 +240,8 @@ function start() {
         notice = "クリップボードにコピーしました。Ctrl+V で貼り付けてください。";
       } finally {
         pasting = false;
+        // 貼り戻し直後に遅れて届く blur で、開き直したパネルが消えるのを防ぐ。
+        suppressBlurUntil = Date.now() + 500;
       }
     });
     handle("text:translate", ({ text }) => translate(text));
@@ -242,6 +268,7 @@ function start() {
     quitting = true;
     clearInterval(timer);
     globalShortcut.unregisterAll();
+    if (tray && !tray.isDestroyed()) tray.destroy();
   });
 
   app.whenReady().then(async () => {
@@ -270,9 +297,13 @@ function start() {
     });
     if (process.platform === "win32") {
       const handle = panel.getNativeWindowHandle();
-      panelHandle = handle.length === 8 ? Number(handle.readBigUInt64LE()) : handle.readUInt32LE();
+      panelHandle = handle.length === 8
+        ? handle.readBigUInt64LE().toString()
+        : String(handle.readUInt32LE());
     }
-    panel.on("blur", () => { if (!pasting) panel.hide(); });
+    panel.on("blur", () => {
+      if (!pasting && Date.now() >= suppressBlurUntil) panel.hide();
+    });
     panel.on("close", (event) => {
       if (quitting) return;
       event.preventDefault();
@@ -282,6 +313,10 @@ function start() {
     panel.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     registerHandlers();
     await panel.loadFile(page);
+    if (pendingShow) {
+      pendingShow = false;
+      showPanel();
+    }
 
     let trayError;
     try {
