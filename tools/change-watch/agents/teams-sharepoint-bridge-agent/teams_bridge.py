@@ -47,12 +47,10 @@ def _nonempty(value):
     return isinstance(value, str) and bool(value.strip())
 
 
-def _resolve_target(request, path):
-    config = _read_json(path)
-    if not isinstance(config, dict) or not isinstance(config.get("targets"), dict):
-        raise ValueError("宛先表の targets はオブジェクトである必要があります")
-    name = request.get("target", config.get("default"))
-    target = config["targets"].get(name) if isinstance(name, str) else None
+_TAG = re.compile(r"^\s*(?:#([A-Za-z0-9_.-]{1,64})|【([^】\s]{1,64})】)")
+
+
+def _check_target(target):
     if not isinstance(target, dict):
         raise ValueError("指定された名前に対応する宛先がありません")
     for field in ("dir", "gitlab_project"):
@@ -63,6 +61,57 @@ def _resolve_target(request, path):
     if target.get("mode") not in ("issue", "commit"):
         raise ValueError("宛先の mode は issue または commit にしてください")
     return target
+
+
+def _keyword_hits(text, words):
+    low = text.lower()
+    return [w for w in words if isinstance(w, str) and w.strip() and w.lower() in low]
+
+
+def _resolve_target(request, path):
+    """宛先を決める。決まる順: 投稿の 1 行目の #名前・【名前】 → フローの target → チャンネル → キーワード
+    → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。"""
+    config = _read_json(path)
+    if not isinstance(config, dict) or not isinstance(config.get("targets"), dict):
+        raise ValueError("宛先表の targets はオブジェクトである必要があります")
+    targets = config["targets"]
+    hub = config.get("hub")
+    if hub is not None and (not _nonempty(hub) or not Path(hub).is_absolute()):
+        raise ValueError("宛先表の hub は絶対パスで指定してください")
+    text = request.get("text") if isinstance(request.get("text"), str) else ""
+    first = next((line for line in text.splitlines() if line.strip()), "")
+
+    def one(name, reason):
+        return {"name": name, "reason": reason, "target": _check_target(targets.get(name)), "hub": hub}
+
+    tag = _TAG.match(first)
+    if tag and (tag.group(1) or tag.group(2)) in targets:
+        name = tag.group(1) or tag.group(2)
+        return one(name, f"投稿で指定（{tag.group(0).strip()}）")
+    if "target" in request:
+        return one(request["target"], "フローで指定")
+    pool = list(targets)
+    channel = request.get("channel_id")
+    by_channel = [n for n in pool if isinstance(targets[n], dict) and channel in (targets[n].get("channels") or [])]
+    if len(by_channel) == 1:
+        return one(by_channel[0], "投稿したチャンネル")
+    if by_channel:
+        pool = by_channel
+    hits = {n: _keyword_hits(text, targets[n].get("keywords") or []) for n in pool if isinstance(targets[n], dict)}
+    best = max((len(h) for h in hits.values()), default=0)
+    winners = [n for n, h in hits.items() if len(h) == best]
+    if best > 0 and len(winners) == 1:
+        return one(winners[0], "キーワード（" + "・".join(hits[winners[0]]) + "）")
+    if best > 0:
+        pool = winners
+    default = config.get("default")
+    if hub and len(pool) > 1:
+        choices = {n: _check_target(targets[n]) for n in pool}
+        return {"auto": True, "choices": choices, "default": default if default in choices else pool[0], "hub": hub,
+                "reason": "ハブのセッションが選ぶ"}
+    if len(pool) == 1 and pool != list(targets):
+        return one(pool[0], "候補が 1 つに絞れた")
+    return one(default, "既定の宛先")
 
 
 def _validate(request, path, targets_path, resolved) -> list[str]:
@@ -106,7 +155,7 @@ def _validate(request, path, targets_path, resolved) -> list[str]:
     elif targets_path is not None:
         try:
             resolved.update(_resolve_target(request, targets_path))
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, TypeError) as error:
             errors.append(f"宛先を解決できません（{error}）")
     return errors
 
@@ -152,8 +201,7 @@ def _escape_marker(value):
     return value.replace("teams-bridge:", "teams-bridge：")
 
 
-def _prompt(request, target):
-    request_id = request["request_id"]
+def _publish(request, target, name, reason):
     project = target["gitlab_project"]
     if target["mode"] == "issue":
         publish = f"結果を自分で GitLab のプロジェクト `{project}` に issue として上げてください"
@@ -162,15 +210,36 @@ def _prompt(request, target):
         publish = f"結果を GitLab のプロジェクト `{project}` にコミットして push してください"
         location = "コミットメッセージ"
     return (
+        f"{publish}。\n{location}の最後に、次の 2 行をそのまま置いてください。\n"
+        f"宛先: {name}（{reason}）\n"
+        f"{_marker(request)}\n"
+    )
+
+
+def _body(request):
+    request_id = request["request_id"]
+    return (
         f'依頼者: {_escape_marker(request["author"])}\n'
         f'投稿日時: {request["posted_at"]}\n'
         f'元の投稿の message_id: {request["message_id"]}\n\n'
         f'--- 依頼本文（request_id: {request_id}） ---\n'
         f'{_escape_marker(request["text"])}\n'
-        f'--- 依頼本文ここまで（request_id: {request_id}） ---\n\n'
-        f"{publish}。\n{location}の最後に次の相関マーカーをそのまま置いてください。\n"
-        f"{_marker(request)}\n"
+        f'--- 依頼本文ここまで（request_id: {request_id}） ---\n'
     )
+
+
+def _prompt(request, resolved):
+    """宛先が決まっていれば依頼文の全体。ハブに選ばせるときは本文だけ（宛先ごとの続きは候補に持たせる）。"""
+    if resolved.get("auto"):
+        return _body(request)
+    return _body(request) + "\n" + _publish(request, resolved["target"], resolved["name"], resolved["reason"])
+
+
+def _choices(request, resolved):
+    return {"default": resolved["default"], "choices": {
+        name: {"dir": target["dir"], "description": str(target.get("description") or ""),
+               "append": _publish(request, target, name, "ハブのセッションが選んだ")}
+        for name, target in resolved["choices"].items()}}
 
 
 def cmd_build_prompt(args):
@@ -213,12 +282,17 @@ def _write_ledger(path, ledger):
             tmp_path.unlink(missing_ok=True)
 
 
-def _existing_job(target, request):
+def _box_dir(resolved):
+    """依頼を置く受け箱のフォルダ。ハブがあればハブ、無ければ宛先のフォルダ。"""
+    return resolved.get("hub") or resolved["target"]["dir"]
+
+
+def _existing_job(resolved, request):
     # 台帳の更新前に停止しても、受け箱に残る依頼文のマーカーから照合できる。
     # Copilot が依頼を移す順に調べる。ジョブ名のラベルは切り詰められるため照合には使わない。
-    box = Path(target["dir"]).resolve() / ".copilot-jobs"
+    box = Path(_box_dir(resolved)).resolve() / ".copilot-jobs"
     marker = _marker(request)
-    for state in ("pending", "running", "done"):
+    for state in ("pending", "running", "dispatched", "done"):
         for path in (box / state).glob("*.md"):
             try:
                 if marker in path.read_text(encoding="utf-8", errors="replace"):
@@ -253,14 +327,24 @@ def _submit(args, request, target, ledger_path):
         prompt = _prompt(request, target)
         with tempfile.TemporaryDirectory(prefix="teams-bridge-") as tmp:
             prompt_path = Path(tmp) / "prompt.txt"
+            choices_path = Path(tmp) / "choices.json"
             command = [
-                args.python, str(jobs_py), "run", "--dir", target["dir"], "--no-wait",
+                args.python, str(jobs_py), "run", "--dir", _box_dir(target), "--no-wait",
                 "--name", f"teams-{request_id}", "--prompt-file", str(prompt_path),
             ]
+            if target.get("auto"):
+                command += ["--to", "auto", "--choices-file", str(choices_path)]
+            elif target.get("hub"):
+                command += ["--to", target["target"]["dir"]]
+            route = {"target": target.get("name"), "reason": target.get("reason")}
+            if target.get("auto"):
+                route = {"target": "auto", "reason": target["reason"], "choices": list(target["choices"])}
             if args.dry_run:
-                return _emit(status="dry-run", request_id=request_id, prompt=prompt, command=command)
+                return _emit(status="dry-run", request_id=request_id, prompt=prompt, command=command, route=route)
 
             prompt_path.write_text(prompt, encoding="utf-8", newline="")
+            if target.get("auto"):
+                choices_path.write_text(json.dumps(_choices(request, target), ensure_ascii=False), encoding="utf-8")
             result = subprocess.run(command, stdout=subprocess.PIPE)
             if result.returncode != 0:
                 print(f"copilot-app-jobs への提出に失敗しました（終了コード {result.returncode}）", file=sys.stderr)
@@ -268,10 +352,12 @@ def _submit(args, request, target, ledger_path):
             job = result.stdout.decode("utf-8").strip()
 
     ledger[request_id] = {
-        "message_id": request["message_id"], "submitted_at": _now(), "dir": target["dir"], "job": job,
+        "message_id": request["message_id"], "submitted_at": _now(), "dir": _box_dir(target), "job": job,
+        "target": "auto" if target.get("auto") else target["name"], "reason": target["reason"],
     }
     _write_ledger(ledger_path, ledger)
-    return _emit(status="submitted", request_id=request_id, job=job)
+    return _emit(status="submitted", request_id=request_id, job=job,
+                 target="auto" if target.get("auto") else target["name"], reason=target["reason"])
 
 
 def cmd_submit(args):
