@@ -44,6 +44,26 @@ devkit <コマンド> --help   # 各コマンドの使い方
 | `url` | URL の分解表示とクエリパラメータの編集 | url-inspect |
 | `branches` | 古いローカル Git ブランチの棚卸しと掃除候補の表示 | git-stale-branches |
 
+## プログラムから使う（API）
+
+ClipIt のようなホストアプリでは、`listCommands()` をコマンド選択メニューに使い、
+選択したコマンドを `runCommand()` で実行できます。以下の例では `token` に画面から受け取った JWT を渡します。
+
+```js
+const { listCommands, runCommand, run } = require("./tools/devkit");
+
+const commands = listCommands(); // [{ name, help, usage }, ...]
+
+async function inspectToken(token) {
+  const { code, stdout, stderr } = await runCommand("jwt", [], { stdin: token });
+  return { code, text: code === 0 ? stdout : stderr };
+}
+```
+
+`run(["jwt", token])` のように、コマンド名を含む引数列も渡せます。
+実行結果の `stdoutBuffer` には、捕捉した標準出力が Buffer で入ります。
+全コマンドの出力が API の戻り値で取得できます（`csv` の集計結果を含む）。
+
 ## 終了コード
 
 全体の約束は次のとおりです（詳細は各コマンドの節）。

@@ -1,0 +1,89 @@
+:root {
+  color-scheme: light dark;
+  font: 14px system-ui, sans-serif;
+  background: Canvas;
+  color: CanvasText;
+  --line: color-mix(in srgb, CanvasText 22%, Canvas);
+  --surface: color-mix(in srgb, CanvasText 5%, Canvas);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+header, nav, footer { padding: .35rem .65rem; background: var(--surface); }
+header strong { flex: 1; }
+nav { border-bottom: 1px solid var(--line); }
+footer {
+  border-top: 1px solid var(--line);
+  min-height: 1.9rem;
+  max-height: 4.5rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+button, input, select, textarea { font: inherit; }
+button, input:not([type="color"], [type="range"], [type="checkbox"]), select { padding: .2rem .45rem; }
+button:not(:disabled) { cursor: pointer; }
+select { max-width: 100%; }
+.grow { flex: 1; min-width: 8rem; }
+[aria-selected="true"] {
+  background: Highlight;
+  color: HighlightText;
+}
+main { min-height: 0; overflow: auto; }
+section {
+  height: 100%;
+  padding: .5rem .65rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.history-content {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: .4rem;
+  flex: 1;
+  min-height: 3rem;
+}
+#clips, #preview, .canvas-area, .scroll {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+.clip {
+  display: flex;
+  gap: .45rem;
+  align-items: center;
+  padding: .25rem .45rem;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.clip img { width: 72px; height: 44px; object-fit: contain; }
+.clip span, #preview, pre, #answer, .note-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#preview, #note-list, #tool-output { padding: .35rem .5rem; }
+#preview img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.canvas-area { flex: 1; min-height: 3rem; display: flex; align-items: center; justify-content: center; }
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+  touch-action: none;
+  cursor: crosshair;
+}
+.note-row { padding: .25rem 0; }
+.note-row label { display: flex; align-items: center; gap: .35rem; flex: 1; }
+.note-row input:checked + span { text-decoration: line-through; }
+#tool-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+#command { max-width: min(100%, 36rem); }
+#stdin { display: block; width: 100%; resize: vertical; }
+pre { margin: .25rem 0; }
+#tool-output pre { background: var(--surface); min-height: 1rem; }
