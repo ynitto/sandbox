@@ -138,13 +138,17 @@ sandbox フォルダのセッション
   └─ 作業 → 結果を MR・issue に書く → finish を呼ぶ（この振り先が空く）
 ```
 
+**振り先はいくつでも登録でき、自動実行は受け箱のあるフォルダ（ハブ）に 1 つあれば足ります。** 振り先ごとに
+自動実行を作る必要はありません。
+
 **同じ振り先へは同時に 1 つだけ振ります。** 振り先のセッションが `finish` を呼ぶまで、同じ振り先の次の依頼は
 受け箱で待ち、置いた順に振られます。振り先が違えば並べて振れます。
 
-1. 振ってよいフォルダを登録します（登録していないフォルダには振りません）。
+1. 振ってよいフォルダを登録します（登録していないフォルダには振りません）。振り先が複数あれば、1 つずつ足します。
 
    ```powershell
    python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\sandbox
+   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\docs
    ```
 
 2. 依頼に、結果をどこに書くかを書いて置きます。
