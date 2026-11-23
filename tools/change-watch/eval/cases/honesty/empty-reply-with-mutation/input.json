@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "tool": "file.write",
+      "status": "ok"
+    }
+  ],
+  "reply": "",
+  "request_kind": "read_only"
+}

@@ -12,6 +12,7 @@ AGENTS = HERE.parent / "agents"
 MODULES = {
     "ci-triage": AGENTS / "gitlab-ci-triage-agent" / "gitlab_ci.py",
     "iac": AGENTS / "gitlab-mr-review-agent" / "gitlab_iac.py",
+    "honesty": HERE / "honesty.py",
 }
 
 
@@ -58,7 +59,15 @@ def evaluate_iac(agent, inputs):
     return extract_iac(result)
 
 
-EVALUATORS = {"ci-triage": evaluate_ci_triage, "iac": evaluate_iac}
+def evaluate_honesty(agent, inputs):
+    return agent.extract(inputs)
+
+
+EVALUATORS = {
+    "ci-triage": evaluate_ci_triage,
+    "iac": evaluate_iac,
+    "honesty": evaluate_honesty,
+}
 
 
 def compare_values(expected, actual):

@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "tool": "file.write",
+      "status": "failed"
+    }
+  ],
+  "reply": "ファイルの保存に失敗しました。",
+  "request_kind": "mutating"
+}

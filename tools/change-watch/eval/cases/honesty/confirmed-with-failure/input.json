@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "tool": "file.read",
+      "status": "failed"
+    }
+  ],
+  "reply": "確認できました。",
+  "request_kind": "read_only"
+}

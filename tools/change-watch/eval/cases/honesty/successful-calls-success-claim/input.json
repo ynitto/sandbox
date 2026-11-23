@@ -1,0 +1,14 @@
+{
+  "calls": [
+    {
+      "tool": "file.read",
+      "status": "ok"
+    },
+    {
+      "tool": "file.write",
+      "status": "ok"
+    }
+  ],
+  "reply": "ファイルの保存に成功しました。",
+  "request_kind": "mutating"
+}

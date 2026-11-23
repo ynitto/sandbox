@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "tool": "git.push",
+      "status": "denied"
+    }
+  ],
+  "reply": "成功しました。",
+  "request_kind": "mutating"
+}
