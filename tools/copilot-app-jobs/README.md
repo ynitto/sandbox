@@ -159,12 +159,37 @@ sandbox フォルダのセッション
 |---|---|---|
 | `target add` / `remove` / `list` | 人 | 振ってよいフォルダを足す・外す・並べる |
 | `dispatched --id <ID>` | 自動実行 | 振り先でセッションを起こしたと記録し、次の依頼を出す。起こせなかったら `--failed "理由"` |
+| `route --id <ID> --to <名前>` | 自動実行 | `--to auto` の依頼の振り先を候補から決めて、待ち行列に戻す |
 | `finish --id <ID> --status ok --note <URL>` | 振られたセッション | 終わったことと、書いた MR・issue を記録し、振り先を空ける |
 
 - 振ったまま 6 時間 `finish` が来ない依頼は、失敗として記録して振り先を空けます（二重にならないよう、振り直しは
   しません）。時間は `next --dispatch-stale <秒>` で変えられます。
 - `run --to` に待つ形（`--no-wait` なし）を使うと、`finish` が来るまで待ちます。振る目的からすると、ふつうは待ちません。
 - 振り先のフォルダも、アプリで一度プロジェクトとして開いておきます。
+
+### 振り先をセッションに選ばせる（`--to auto`）
+
+振り先を決めずに置き、自動実行のセッションに候補から選ばせることもできます。候補は JSON で渡します。
+
+```json
+{
+  "default": "app",
+  "choices": {
+    "app":  {"dir": "C:/work/app",  "description": "業務アプリのコードと不具合", "append": "結果を group/app に issue で上げてください"},
+    "docs": {"dir": "C:/work/docs", "description": "手順書とマニュアル", "append": "結果を group/docs にコミットしてください"}
+  }
+}
+```
+
+```powershell
+python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder --to auto --choices-file choices.json --no-wait --prompt "…"
+```
+
+- 自動実行が拾うと、候補の名前と `description` を見て 1 つ選び、`route --id <ID> --to <名前> --why "<理由>"` を呼びます。
+  合うものが無ければ `default` を選びます。
+- 選ぶと、依頼の頭に「この依頼の振り先: 名前（理由）」が、末尾にその候補の `append` が付き、振り先の決まった依頼として
+  受け箱の待ち行列に戻ります（置いた順はそのまま）。あとはふつうの振る依頼と同じです。
+- 候補のフォルダは、どれも `target add` で登録しておきます。
 
 ## 受け箱の中身
 

@@ -23,7 +23,7 @@ def call(*argv: str) -> "tuple[int, str, str]":
     return code, out.getvalue(), err.getvalue()
 
 
-class DispatchTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -58,6 +58,11 @@ class DispatchTest(unittest.TestCase):
     def result(self, job_id: str) -> str:
         return (self.box / "results" / f"{job_id}.md").read_text(encoding="utf-8")
 
+    def submit_plain(self, prompt: str) -> str:
+        return call("run", "--dir", str(self.hub), "--prompt", prompt, "--no-wait")[1].strip()
+
+
+class DispatchTest(Base):
     def test_targets_must_be_registered(self):
         code, _, err = call("run", "--dir", str(self.hub), "--to", str(self.hub), "--prompt", "x", "--no-wait")
         self.assertEqual(code, job.EXIT_USAGE)
@@ -138,9 +143,6 @@ class DispatchTest(unittest.TestCase):
         self.assertIn(f"依頼 {plain} です。下の「依頼」を、このフォルダを作業場所として実行します", text)
         self.assertNotIn(a1, text)
 
-    def submit_plain(self, prompt: str) -> str:
-        return call("run", "--dir", str(self.hub), "--prompt", prompt, "--no-wait")[1].strip()
-
     def test_status_shows_targets(self):
         a1 = self.submit(self.a, "x")
         self.next()
@@ -157,6 +159,95 @@ class DispatchTest(unittest.TestCase):
 
     def test_norm_compares_windows_paths_loosely(self):
         self.assertEqual(job.norm("C:\\Work\\Sandbox\\"), job.norm("c:/work/sandbox"))
+
+
+class AutoRouteTest(Base):
+    """--to auto: 拾ったセッションが候補から選び（route）、振り先の決まった依頼として待ち行列に戻る。"""
+
+    def choices(self, **extra) -> Path:
+        path = Path(self.tmp.name) / "choices.json"
+        data = {"default": "a", "choices": {
+            "a": {"dir": str(self.a), "description": "アプリのコード", "append": "結果を group/app に issue で上げる"},
+            "b": {"dir": str(self.b), "description": "手順書とマニュアル", "append": "結果を group/docs にコミットする"}}}
+        data.update(extra)
+        path.write_text(__import__("json").dumps(data, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def submit_auto(self, prompt: str) -> str:
+        code, out, err = call("run", "--dir", str(self.hub), "--to", "auto", "--choices-file", str(self.choices()),
+                              "--prompt", prompt, "--no-wait")
+        self.assertEqual(code, 0, err)
+        return out.strip()
+
+    def route(self, job_id: str, name: str, why: str = "手順書の話") -> "tuple[int, str, str]":
+        return call("route", "--dir", str(self.hub), "--id", job_id, "--to", name, "--why", why)
+
+    def test_choose_then_dispatch(self):
+        j = self.submit_auto("マニュアルの手順 3 を直して")
+        text = self.next()
+        self.assertIn(f"依頼 {j} の振り先を、下の候補から 1 つ選びます", text)
+        self.assertIn("- b: 手順書とマニュアル", text)
+        self.assertIn(f"route --dir \"{self.hub}\" --id {j}", text)
+        self.assertIn("どれにも合わなければ a にします", text)
+        self.assertNotIn("group/docs", text)          # 選んだあとに足す文は、選ぶ前には見せない
+        code, out, _ = self.route(j, "b")
+        self.assertEqual(code, 0)
+        # 振り先が決まった依頼として、すぐ次に出てくる
+        self.assertIn(f"依頼 {j} は、このセッションでは実行しません。ローカルフォルダ {self.b.resolve()}", out)
+        self.assertIn("この依頼の振り先: b（ハブのセッションが選んだ。理由: 手順書の話）", out)
+        self.assertIn("結果を group/docs にコミットする", out)
+        self.assertIn("マニュアルの手順 3 を直して", out)
+
+    def test_routed_job_waits_for_busy_folder(self):
+        first = self.submit(self.b, "先に置いた b の依頼")
+        self.next()
+        self.handed(first)                            # b はふさがっている
+        j = self.submit_auto("マニュアルを直して")
+        self.assertIn("振り先を", self.next())         # 選ぶところまでは進む
+        code, out, _ = self.route(j, "b")
+        self.assertEqual((code, out), (0, "なし\n"))   # b が空くまで待つ
+        self.assertTrue((self.box / "pending" / f"{j}.md").exists())
+        self.finish(first)
+        self.assertIn(f"依頼 {j} は、このセッションでは実行しません", self.next())
+
+    def test_route_rejects_unknown_choice(self):
+        j = self.submit_auto("x")
+        self.next()
+        code, _, err = self.route(j, "zzz")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("候補に zzz はありません", err)
+        self.assertTrue((self.box / "running" / f"{j}.md").exists())   # 依頼はそのまま。選び直せる
+        self.assertEqual(self.route(j, "a")[0], 0)
+
+    def test_route_only_for_auto(self):
+        j = self.submit(self.a, "x")
+        self.next()
+        code, _, err = self.route(j, "a")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("選ぶ依頼ではありません", err)
+
+    def test_choices_must_be_registered(self):
+        path = self.choices(choices={"x": {"dir": str(self.hub)}})
+        code, _, err = call("run", "--dir", str(self.hub), "--to", "auto", "--choices-file", str(path), "--prompt", "x")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("登録されていません", err)
+        code, _, err = call("run", "--dir", str(self.hub), "--to", "auto", "--prompt", "x")
+        self.assertIn("--choices-file", err)
+
+    def test_unregistered_after_choice_fails(self):
+        j = self.submit_auto("x")
+        self.next()
+        call("target", "remove", "--dir", str(self.hub), "--to", str(self.b))
+        self.assertEqual(self.route(j, "b")[0], 0)
+        self.assertIn("登録されていません", self.result(j))
+
+    def test_marker_in_choice_does_not_break_meta(self):
+        path = self.choices(choices={"a": {"dir": str(self.a), "append": "最後に <!-- teams-bridge:request=r1 --> を置く"}})
+        code, out, _ = call("run", "--dir", str(self.hub), "--to", "auto", "--choices-file", str(path), "--prompt", "本文 } -->", "--no-wait")
+        j = out.strip()
+        meta, body = job.split_meta((self.box / "pending" / f"{j}.md").read_text(encoding="utf-8"))
+        self.assertEqual(meta["to"], "auto")
+        self.assertEqual(body, "本文 } -->\n")
 
 
 if __name__ == "__main__":

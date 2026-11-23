@@ -1,15 +1,28 @@
 {
   "default": "main",
+  "hub": "C:/work/hub",
   "targets": {
     "main": {
       "dir": "C:/work/project",
       "gitlab_project": "group/project",
-      "mode": "issue"
+      "mode": "issue",
+      "description": "業務アプリのコードと不具合",
+      "keywords": [
+        "バグ",
+        "画面",
+        "エラー"
+      ]
     },
     "docs": {
       "dir": "C:/work/docs",
       "gitlab_project": "group/docs",
-      "mode": "commit"
+      "mode": "commit",
+      "description": "手順書とマニュアル",
+      "keywords": [
+        "マニュアル",
+        "手順書"
+      ],
+      "channels": []
     }
   }
 }

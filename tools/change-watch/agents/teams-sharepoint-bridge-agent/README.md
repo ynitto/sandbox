@@ -54,6 +54,54 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 
 登録後、タスクスケジューラの画面（またはタスク XML）で、同期を行うユーザーのログオン時に開始し、1 分間隔で繰り返すトリガーに設定する。「既に実行中の場合は新しいインスタンスを開始しない」設定も同じ画面または XML で指定する。
 
+## 投稿の中身で宛先を振る
+
+宛先は、次の順に、最初に決まったもので決める。どれで決めたかは台帳（`target`・`reason`）と、Copilot に渡す依頼文の
+「宛先: 名前（理由）」に残り、issue の説明やコミットメッセージにも書かれる。
+
+| 順 | 決め方 | 書くところ |
+|---|---|---|
+| 1 | 投稿の最初の行が `#名前` か `【名前】` で始まる | 投稿する人が書く。知らない名前なら無視して次へ |
+| 2 | 依頼 JSON の `target`（往路のフローで固定した宛先） | Power Automate |
+| 3 | 投稿したチャンネルを受け持つ宛先が 1 つだけ | `targets.json` の宛先ごとの `channels`（チャンネル ID の並び） |
+| 4 | キーワードがいちばん多く当たった宛先が 1 つだけ | `targets.json` の宛先ごとの `keywords`（大文字小文字は区別しない） |
+| 5 | ハブのセッションに選ばせる（ハブがあるときだけ） | `targets.json` の `hub` と、宛先ごとの `description` |
+| 6 | 既定の宛先 | `targets.json` の `default` |
+
+3 で複数の宛先が当たったときはその中から、4 で同点のときは同点の宛先の中から、5 の候補を選ぶ。
+
+```json
+{
+  "default": "app",
+  "hub": "C:/work/hub",
+  "targets": {
+    "app":  {"dir": "C:/work/app",  "gitlab_project": "group/app",  "mode": "issue",
+             "description": "業務アプリのコードと不具合", "keywords": ["バグ", "画面"]},
+    "docs": {"dir": "C:/work/docs", "gitlab_project": "group/docs", "mode": "commit",
+             "description": "手順書とマニュアル", "keywords": ["マニュアル", "手順書"], "channels": ["19:abc…@thread.tacv2"]}
+  }
+}
+```
+
+### ハブ（`hub`）
+
+`hub` を書くと、依頼はハブのフォルダの受け箱に置き、Copilot アプリの自動実行はハブで 1 つだけ動かす。
+自動実行は宛先のフォルダで新しいセッションを起こして依頼を渡し、終わりを待たずに次へ進む
+（[copilot-app-jobs の「ほかのフォルダのセッションに振る」](../../../copilot-app-jobs/README.md)）。同じ宛先への依頼は、
+前の依頼が終わるまで受け箱で待つ。
+
+- 1〜4 か 6 で決まった依頼は、その宛先に振る。
+- 5 の依頼は、ハブの自動実行が候補（名前と `description`）から 1 つ選び、選んだ宛先に振る。issue かコミットかの指示と
+  相関マーカーは、選んだあとに足す。
+- 宛先のフォルダは、ハブで先に登録しておく。
+
+  ```powershell
+  python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\hub --to C:\work\app
+  ```
+
+- 振られたセッションは、結果を GitLab に上げたあと `finish` を呼ぶ。
+- `hub` を書かなければ、これまでどおり宛先のフォルダの受け箱に置く（5 は飛ばす）。
+
 ## コマンド
 
 `change-watch --plugin teams_bridge <コマンド>` または `python3 teams_bridge.py <コマンド>` で呼ぶ。
