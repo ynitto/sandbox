@@ -15,6 +15,7 @@ dot.py から呼ばれる。判定（一覧・入力の確認・検証・承認�
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -22,16 +23,19 @@ import re
 import shutil
 import subprocess
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 WORK = ".dot"
 REGISTRY = "routines.json"
+REVIEW = "routines-review.json"
 DRAFTS = "routines"
 LIST_LIMIT = 10
 MAX_CREATE_TRIES = 3
 RECENT_KEEP = 10
 AUTO_IMPROVE = (3, 2)                 # 直近 3 回で 2 回失敗したら、聞かずに直す
 JOB_STALE_SEC = 12 * 3600             # 進まない業務を取り下げるまで
+DRAFT_STALE_SEC = 7 * 24 * 3600
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 SKILL_MENTION = re.compile(r"`([a-z0-9][a-z0-9._-]*)`\s*スキル")
 SCRIPT_PATH = re.compile(r"(?:^|[\s\"'`(])((?:[A-Za-z]:)?[\w.\-/\\]+\.(?:py|js|sh))\b")
@@ -88,10 +92,13 @@ def load_registry(d: Path) -> dict:
 
 
 def save_registry(d: Path, reg: dict) -> None:
-    path = d / WORK / REGISTRY
+    _save_json(d / WORK / REGISTRY, reg)
+
+
+def _save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -480,6 +487,8 @@ def result(d: Path, state: dict, policy: dict, job: dict, prop: dict, ts: float,
         rec["runs"] = int(rec.get("runs") or 0) + 1
         rec["ok"] = int(rec.get("ok") or 0) + (1 if run["ok"] else 0)
         rec["recent"] = ([*(rec.get("recent") or []), {"id": job["id"], "ok": run["ok"]}])[-RECENT_KEEP:]
+        if not run["ok"]:
+            rec.pop("steady", None)         # 失敗したら「安定」は外れる
         if not run["ok"] and run["final_state"]:
             fails = rec.setdefault("state_failures", {})
             fails[run["final_state"]] = int(fails.get(run["final_state"]) or 0) + 1
@@ -577,6 +586,144 @@ def find_run(d: Path, rid: str) -> "dict | None":
         except (OSError, json.JSONDecodeError):
             pass
     return None
+
+
+# ---------------------------------------------------------------- 定期見直し
+
+
+def _review_runs(d: Path) -> dict[str, dict[str, dict]]:
+    records: dict[str, dict[str, dict]] = {}
+    for path in sorted((d / WORK / "runs").glob("*/*.json")):
+        try:
+            run = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
+        except (OSError, ValueError, InvalidOperation, RecursionError):
+            continue
+        if (isinstance(run, dict) and run.get("id") == path.stem
+                and run.get("machine") == path.parent.name and type(run.get("ok")) is bool):
+            records.setdefault(path.parent.name, {})[path.stem] = run
+    return records
+
+
+def _input_key(value):
+    """JSON のオブジェクトは順不同。真偽値と数値は別の型として比較する。"""
+    if isinstance(value, dict):
+        return dict, tuple(sorted((k, _input_key(v)) for k, v in value.items()))
+    if isinstance(value, list):
+        return list, tuple(map(_input_key, value))
+    if type(value) in (int, Decimal):
+        return int, value
+    return type(value), value
+
+
+def _stale_draft_runs(d: Path, draft: dict, runs: dict, ts: float) -> "list[str] | None":
+    path = draft.get("path")
+    if draft.get("status") not in ("trial", "awaiting") or not path:
+        return None
+    trials = [r for r in runs.values() if r.get("mode") == "trial" and r.get("path") == path]
+    finished = [r for r in trials if type(r.get("finished")) in (int, Decimal)]
+    if finished:
+        latest = max(finished, key=lambda r: r["finished"])
+        return [latest["id"]] if latest["finished"] <= ts - DRAFT_STALE_SEC else None
+    # 試運転の回が未完了だけ（finished が無い）→ 下書きの更新日時にフォールバック
+    try:
+        target = Path(path).resolve()
+        if not target.is_relative_to(d.resolve()):
+            return None                     # 台帳の指す先が目標のフォルダの外なら見ない
+        modified = (target / "workflow.yaml").stat().st_mtime
+    except OSError:
+        return None
+    return [] if ts - modified >= DRAFT_STALE_SEC else None
+
+
+def review_routines(d: Path, state: dict, policy: dict, ts: float) -> dict:
+    """実行の記録を見直し、台帳の集計を整理して報告する。呼び出し元が状態のロックを持つ。"""
+    reg = load_registry(d)
+    records = _review_runs(d)
+    known = reg.keys() | {e["name"] for e in catalog(d, policy)}
+    findings = []
+
+    def add(kind, machine, detail, runs, action):
+        findings.append({"kind": kind, "machine": machine, "detail": detail, "runs": runs, "action": action})
+
+    for name, runs in records.items():
+        if name not in known:
+            add("orphan_run", name, "台帳にも一覧にも無い業務の記録", list(runs), "needs_review")
+        by_input: dict[tuple, list[dict]] = {}
+        for run in runs.values():
+            if "inputs" in run:
+                try:
+                    by_input.setdefault(_input_key(run["inputs"]), []).append(run)
+                except RecursionError:
+                    continue
+        for group in by_input.values():
+            if {r["ok"] for r in group} == {True, False}:
+                add("contradiction", name, "同じ入力で成功と失敗が混在", [r["id"] for r in group], "needs_review")
+
+    changed = False
+    job = state.get("routine") or {}
+    pending = {q["name"] for q in state.get("routine_queue") or []}
+    if job.get("mode") == "improve" or (job.get("mode") == "trial" and job.get("from") == "improve"):
+        pending.add(job["name"])
+    # 承認を待っている下書きも、次の改善で上書きしない。
+    pending.update(a["proposal"]["machine"] for a in state.get("approvals") or []
+                   if a["action"] == "routine.publish" and a["status"] in ("pending", "approved", "running"))
+    window, limit = AUTO_IMPROVE
+    for name, rec in sorted(reg.items()):
+        runs = records.get(name, {})
+        recent = (rec.get("recent") or [])[-RECENT_KEEP:]
+        last_runs = recent[-window:]
+        failures = [r["id"] for r in last_runs if r["ok"] is False]
+        if len(failures) >= limit and name not in pending:
+            detail = f"直近 {len(last_runs)} 回で {len(failures)} 回失敗"
+            queue_improve(state, name, detail, failures[-1])
+            add("repeat_failure", name, detail, failures, "queued")
+
+        draft_runs = _stale_draft_runs(d, rec.get("draft") or {}, runs, ts)
+        if draft_runs is not None:
+            add("stale_draft", name, "試運転または承認待ちの下書きが 7 日以上経過", draft_runs, "needs_review")
+
+        counters = rec.get("state_failures") or {}
+        recent_ids = [r["id"] for r in recent]
+        steady = (len(recent) == RECENT_KEEP and rec.get("runs", 0) >= RECENT_KEEP
+                  and all(r["ok"] is True for r in recent))
+        if steady and (not rec.get("steady") or counters):
+            rec.pop("state_failures", None)
+            rec["steady"] = True
+            changed = True
+            add("steady", name, f"直近 {RECENT_KEEP} 回がすべて成功", recent_ids, "applied")
+            continue
+
+        failed_runs = [runs.get(r["id"], {}) for r in recent if r["ok"] is False]
+        # 失敗の記録が欠けていれば、どのステートで失敗したか確かめられない。
+        if recent and counters and all(r.get("ok") is False and isinstance(r.get("final_state"), str)
+                                       for r in failed_runs):
+            failed_states = {r["final_state"] for r in failed_runs}
+            stale = sorted(counters.keys() - failed_states)
+            if stale:
+                for key in stale:
+                    del counters[key]
+                changed = True
+                states = "、".join(stale)
+                add("stale_failure", name, f"直近で失敗していないステートの集計を整理（{states}）",
+                    recent_ids, "applied")
+
+    if changed:
+        save_registry(d, reg)
+    # 要見直しは、原因の記録や下書きが変わるまで毎回出る。同じ項目は初出の日時で見分ける。
+    previous = {}
+    try:
+        old = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
+        for f in old.get("findings") or []:
+            if f.get("action") == "needs_review":
+                previous[(f.get("kind"), f.get("machine"), tuple(f.get("runs") or []))] = f.get("first_seen")
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    for f in findings:
+        if f["action"] == "needs_review":
+            f["first_seen"] = previous.get((f["kind"], f["machine"], tuple(f["runs"])), ts)
+    report = {"reviewed_at": ts, "findings": findings}
+    _save_json(d / WORK / REVIEW, report)
+    return report
 
 
 # ---------------------------------------------------------------- 承認のあと
@@ -729,7 +876,16 @@ def status_lines(d: Path, state: dict, policy: dict) -> "list[str]":
     out.append(f"業務の進行: {job['id']} {job['name']} の{MODE_WORDS.get(job['mode'], job['mode'])}" if job else "業務の進行: なし")
     if state.get("routine_queue"):
         out.append("直す予定: " + "、".join(q["name"] for q in state["routine_queue"]))
+    reg = load_registry(d)
     for e in catalog(d, policy):
         rate = f"{e['ok']}/{e['runs']} 回成功" if e["runs"] else "未実行"
-        out.append(f"  {e['name']}（{e['status']}・版 {e['version']}・{rate}）")
+        steady = "・安定" if (reg.get(e["name"]) or {}).get("steady") else ""
+        out.append(f"  {e['name']}（{e['status']}・版 {e['version']}・{rate}{steady}）")
+    try:
+        report = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
+        reviewed_at = dt.datetime.fromtimestamp(report["reviewed_at"]).astimezone().isoformat(timespec="seconds")
+    except (OSError, ValueError, KeyError, TypeError):
+        return out                       # 見直しの報告が壊れていても、様子を見るだけは止めない
+    count = sum(f["action"] == "needs_review" for f in report["findings"])
+    out.append(f"見直し: {reviewed_at}・" + (f"要見直し {count} 件" if count else "要見直しなし"))
     return out

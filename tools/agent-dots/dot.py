@@ -1182,6 +1182,25 @@ def cmd_hooks(a) -> int:
 # ---------------------------------------------------------------- status
 
 
+def cmd_review(a) -> int:
+    d = Path(a.dir)
+    ts = a.now if a.now is not None else now_ts()
+    with locked(d):
+        policy = load_policy(d)
+        if not routines.enabled(policy):
+            print("業務の見直しには policy.json の routines.skills_dirs の設定が必要です", file=sys.stderr)
+            return EXIT_USAGE
+        state = load_state(d)
+        findings = routines.review_routines(d, state, policy, ts)["findings"]
+        if any(f["action"] == "queued" for f in findings):
+            save_state(d, state)
+    applied, queued, needs_review = (
+        sum(f["action"] == action for f in findings) for action in ("applied", "queued", "needs_review")
+    )
+    print(f"業務の見直し: 整理・安定 {applied} 件、改善の予定 {queued} 件、要見直し {needs_review} 件")
+    return EXIT_OK
+
+
 def cmd_status(a) -> int:
     d = Path(a.dir)
     state = load_state(d)
@@ -1232,6 +1251,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, func, help_text in (
         ("tick", cmd_tick, "起こすかを決め、起こすなら依頼文を書く"),
         ("act", cmd_act, "outbox の提案を片付け、承認されたものを実行する"),
+        ("review", cmd_review, "業務の実行記録を見直す"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--dir", required=True, help="目標のフォルダ")

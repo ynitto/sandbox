@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -165,6 +166,213 @@ class RoutineTest(unittest.TestCase):
         self.propose({"kind": "routine", "action": "result", "id": rid, "ok": ok, "final_state": final,
                       "summary": summary, "states": [{"state": "make", "output": "OK"}]})
         return self.act()
+
+    # -- 定期見直し
+
+    def review(self):
+        code, out = run("review", "--dir", str(self.d), "--now", str(self.at))
+        self.assertEqual(code, 0)
+        report = json.loads((self.d / ".dot" / "routines-review.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["reviewed_at"], self.at)
+        self.assertIn(f"要見直し {sum(f['action'] == 'needs_review' for f in report['findings'])} 件", out)
+        return report["findings"]
+
+    def finish_months(self, *results):
+        ids = []
+        first_month = self.registry()["monthly-report"]["runs"]
+        for index, (ok, final) in enumerate(results, first_month):
+            self.propose({"kind": "routine", "action": "run", "machine": "monthly-report",
+                          "inputs": {"month": f"2027-{index:02d}"}})
+            self.act()
+            rid = self.job()["id"]
+            self.finish(rid, ok=ok, final=final)
+            ids.append(rid)
+        return ids
+
+    def test_review_stale_failure(self):
+        self.finish(self.run_existing(), ok=False, final="send")
+        self.finish_months(*([(True, "complete")] * 2 + [(False, "make")] + [(True, "complete")] * 7))
+        reg = self.registry()
+        rec = reg["monthly-report"]
+        self.assertEqual(rec["state_failures"], {"send": 1, "make": 1})
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"]) for f in findings], [("stale_failure", "applied")])
+        rec["state_failures"] = {"make": 1}
+        self.assertEqual(self.registry(), reg)
+        self.assertEqual(self.review(), [])
+
+    def test_review_repeat_failure(self):
+        first = self.run_existing()
+        self.finish(first, ok=False, final="send")
+        self.finish_months((True, "complete"))
+        # 通常の処理が改善を積めなかった台帳を再現する。
+        with mock.patch.object(routines, "queue_improve"):
+            last, = self.finish_months((False, "send"))
+        self.assertFalse(self.state().get("routine_queue"))
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings],
+                         [("repeat_failure", "queued", [first, last])])
+        queue = self.state()["routine_queue"]
+        self.assertEqual([(q["name"], q["run"]) for q in queue], [("monthly-report", last)])
+        self.assertEqual(self.review(), [])
+        self.assertEqual(self.state()["routine_queue"], queue)
+        self.act()
+        self.assertEqual(self.job()["mode"], "improve")
+        self.assertEqual(self.review(), [])
+        self.assertFalse(self.state()["routine_queue"])
+        self.propose({"kind": "routine", "action": "created", "id": self.job()["id"]})
+        self.act()
+        self.assertEqual(self.job()["mode"], "trial")
+        os.utime(Path(self.job()["path"]) / "workflow.yaml", (self.at, self.at))
+        self.assertEqual(self.review(), [])
+        self.finish(self.job()["id"], final="complete")
+        self.assertFalse(self.state()["routine_queue"])
+        self.assertFalse(any(f["kind"] == "repeat_failure" for f in self.review()))
+
+    def test_review_contradiction_and_orphan(self):
+        first = self.run_existing()
+        self.finish(first, ok=False, final="send")
+        folder = self.d / ".dot" / "runs"
+        job = {"name": "monthly-report", "id": "r80", "mode": "run",
+               "path": str(self.source / "monthly-report"), "inputs": {"month": "2026-10"}}
+        routines.record_run(self.d, job, {"ok": True}, self.at)
+        routines.record_run(self.d, {**job, "name": "retired", "id": "r81"}, {"ok": True}, self.at)
+        routines.record_run(self.d, {**job, "name": "catalog-only", "id": "r82"}, {"ok": True}, self.at)
+        write_machine(self.source / "catalog-only")
+        orphan = folder / "retired" / "r81.json"
+        original = orphan.read_bytes()
+        (folder / "retired" / "r83.json").write_bytes(b"\xff")
+        (folder / "retired" / "r84.json").write_text("[1, 2]", encoding="utf-8")
+        (folder / "retired" / "r85.json").write_text("{", encoding="utf-8")
+
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["machine"], f["action"], f["runs"]) for f in findings], [
+            ("contradiction", "monthly-report", "needs_review", [first, "r80"]),
+            ("orphan_run", "retired", "needs_review", ["r81"]),
+        ])
+        self.assertEqual(orphan.read_bytes(), original)
+        self.at += 60
+        self.assertEqual(self.review(), findings)
+        _, status = run("status", "--dir", str(self.d))
+        self.assertIn(f"見直し: {dot.iso(self.at)}・要見直し 2 件", status)
+
+    def test_review_stale_draft(self):
+        rid = self.create_and_trial()
+        workflow = Path(self.job()["path"]) / "workflow.yaml"
+        os.utime(workflow, (self.at, self.at))
+        self.at += routines.DRAFT_STALE_SEC
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings],
+                         [("stale_draft", "needs_review", [])])
+        self.finish(rid)
+        finished = self.at
+        self.at = finished + routines.DRAFT_STALE_SEC - 1
+        self.assertEqual(self.review(), [])
+        self.at += 1
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings],
+                         [("stale_draft", "needs_review", [rid])])
+        self.assertEqual(self.registry()["weekly-digest"]["draft"]["status"], "awaiting")
+
+    def test_review_compares_json_inputs(self):
+        job = {"name": "monthly-report", "mode": "run", "path": str(self.source / "monthly-report")}
+        for i, (inputs, ok) in enumerate([
+            ({"record": {"list": [1, 2], "active": True}}, True),
+            ({"record": {"active": True, "list": [1.0, 2]}}, False),
+            ({"record": {"list": [2, 1], "active": True}}, False),
+            ({"record": {"list": [1, 2], "active": 1}}, False),
+        ], 1):
+            routines.record_run(self.d, {**job, "id": f"r{i}", "inputs": inputs}, {"ok": ok}, self.at)
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["runs"]) for f in findings], [("contradiction", ["r1", "r2"])])
+
+    def test_review_steady(self):
+        self.finish(self.run_existing(), ok=False, final="send")
+        ids = self.finish_months(*([(True, "complete")] * 10))
+        reg = self.registry()
+        self.assertEqual(reg["monthly-report"]["state_failures"], {"send": 1})
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings], [("steady", "applied", ids)])
+        del reg["monthly-report"]["state_failures"]
+        reg["monthly-report"]["steady"] = True
+        self.assertEqual(self.registry(), reg)
+        self.assertEqual(self.review(), [])
+        _, status = run("status", "--dir", str(self.d))
+        self.assertIn("10/11 回成功・安定", status)
+        self.assertIn(f"見直し: {dot.iso(self.at)}・要見直しなし", status)
+
+    def test_review_steady_cleared_by_failure(self):
+        self.finish(self.run_existing(), ok=False, final="send")
+        self.finish_months(*([(True, "complete")] * 10))
+        self.assertEqual([(f["kind"], f["action"]) for f in self.review()], [("steady", "applied")])
+        self.assertTrue(self.registry()["monthly-report"]["steady"])
+        self.finish_months((False, "send"))
+        self.assertNotIn("steady", self.registry()["monthly-report"])
+        _, status = run("status", "--dir", str(self.d))
+        self.assertNotIn("安定", status)
+
+    def test_review_stale_draft_unfinished_trial(self):
+        self.create_and_trial()
+        draft = Path(self.job()["path"])
+        folder = self.d / ".dot" / "runs" / "weekly-digest"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "r90.json").write_text(json.dumps(
+            {"id": "r90", "machine": "weekly-digest", "mode": "trial", "path": str(draft),
+             "inputs": {}, "ok": True}, ensure_ascii=False), encoding="utf-8")
+        os.utime(draft / "workflow.yaml", (self.at, self.at))
+        self.at += routines.DRAFT_STALE_SEC
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings],
+                         [("stale_draft", "needs_review", [])])
+
+    def test_review_stale_draft_outside_goal_ignored(self):
+        self.publish_monthly_to_dot()
+        outside = Path(self.tmp.name) / "outside"
+        (outside).mkdir()
+        (outside / "workflow.yaml").write_text("name: x\n", encoding="utf-8")
+        os.utime(outside / "workflow.yaml", (self.at - routines.DRAFT_STALE_SEC, self.at - routines.DRAFT_STALE_SEC))
+        reg = self.registry()
+        reg["monthly-report"]["draft"] = {"status": "trial", "path": str(outside)}
+        routines.save_registry(self.d, reg)
+        self.assertEqual(self.review(), [])
+
+    def test_review_repeat_failure_skipped_while_publish_pending(self):
+        self.publish_monthly_to_dot()
+        reg = self.registry()
+        rec = reg["monthly-report"]
+        rec["recent"] = [{"id": "r1", "ok": False}, {"id": "r2", "ok": False}, {"id": "r3", "ok": True}]
+        rec["runs"], rec["ok"] = 3, 1
+        routines.save_registry(self.d, reg)
+        state = self.state()
+        state["approvals"].append({"id": "a1", "action": "routine.publish",
+                                  "proposal": {"machine": "monthly-report"}, "summary": "登録する",
+                                  "created": "x", "created_ts": self.at, "status": "pending"})
+        (self.d / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.review(), [])
+        self.assertFalse(self.state().get("routine_queue"))
+
+    def test_review_keeps_first_seen(self):
+        first = self.run_existing()
+        self.finish(first, ok=False, final="send")
+        job = {"name": "monthly-report", "id": "r80", "mode": "run",
+               "path": str(self.source / "monthly-report"), "inputs": {"month": "2026-10"}}
+        routines.record_run(self.d, job, {"ok": True}, self.at)
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["first_seen"]) for f in findings],
+                         [("contradiction", self.at)])
+        self.at += 3600
+        again = self.review()
+        self.assertEqual(again[0]["first_seen"], self.at - 3600)
+
+    def test_review_disabled(self):
+        self.set_policy(routines={})
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(dot.main(["review", "--dir", str(self.d)]), 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("業務の見直し", err.getvalue())
+        self.assertIn("skills_dirs", err.getvalue())
+        self.assertFalse((self.d / ".dot" / "routines-review.json").exists())
 
     # -- 手持ちのものを使う
 
@@ -390,6 +598,13 @@ class RoutineTest(unittest.TestCase):
         code, out = run("status", "--dir", str(self.d))
         self.assertIn("業務の進行: なし", out)
         self.assertIn("monthly-report（unapproved・版 0・未実行）", out)
+
+    def test_status_ignores_broken_review_report(self):
+        (self.d / ".dot" / "routines-review.json").write_text("{壊れた", encoding="utf-8")
+        code, out = run("status", "--dir", str(self.d))
+        self.assertEqual(code, 0)
+        self.assertIn("業務の進行: なし", out)
+        self.assertNotIn("見直し:", out)
 
 
 class HelperTest(unittest.TestCase):
