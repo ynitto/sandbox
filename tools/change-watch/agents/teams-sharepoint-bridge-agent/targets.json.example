@@ -1,0 +1,15 @@
+{
+  "default": "main",
+  "targets": {
+    "main": {
+      "dir": "C:/work/project",
+      "gitlab_project": "group/project",
+      "mode": "issue"
+    },
+    "docs": {
+      "dir": "C:/work/docs",
+      "gitlab_project": "group/docs",
+      "mode": "commit"
+    }
+  }
+}

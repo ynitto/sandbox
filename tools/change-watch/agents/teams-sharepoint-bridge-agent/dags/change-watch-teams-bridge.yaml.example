@@ -1,0 +1,111 @@
+# install.py install --agent teams-sharepoint-bridge-agent が ~/.config/dagu/dags/ にこの PC のパスで置く。
+# 手で置くなら /home/you を自分の場所に直す。Windows では command を python にし、
+# args の先頭に change-watch.pyz のフルパスを入れる（インストーラはそうして置く）。
+# インストールしたプラグインには、Dagu の環境変数 TEAMS_BRIDGE_COPILOT_JOB で copilot_app_job.py のパスを渡す。
+description: "同期した Teams の依頼を 1 件受け取り、Copilot アプリに提出する"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/change-watch.yaml"
+        - "get"
+        - "--source"
+        - "teams-requests"
+        - "--consumer"
+        - "bridge"
+        - "--one"
+        - "--initial"
+        - "emit"  # 初回から同期済みの依頼を取り込む
+    timeout_sec: 45
+    retry_policy:  # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: check
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "teams_bridge"
+        - "check-file"
+        - "--path"
+        - "${CHANGE.record.path}"  # 依頼本文はコマンド行に載せない
+        - "--targets"
+        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "--ledger"
+        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
+    output: ROUTE
+  - name: submit
+    depends: [check]
+    preconditions:
+      - condition: "${ROUTE}"
+        expected: "submit"
+    continue_on:
+      skipped: true  # 提出に失敗したら commit せず、翌分に同じ依頼を再試行する
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "teams_bridge"
+        - "submit"
+        - "--path"
+        - "${CHANGE.record.path}"
+        - "--targets"
+        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "--ledger"
+        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
+    timeout_sec: 45
+  - name: record-invalid
+    depends: [check]
+    preconditions:
+      - condition: "${ROUTE}"
+        expected: "invalid"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--plugin"
+        - "teams_bridge"
+        - "record-invalid"
+        - "--path"
+        - "${CHANGE.record.path}"
+        - "--targets"
+        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "--log"
+        - "~/.local/state/change-watch/teams-sharepoint-bridge-agent/invalid.jsonl"
+  - name: commit
+    depends: [submit, record-invalid]  # done / missing で両方を飛ばした場合も進む
+    preconditions:
+      - condition: "${CHANGE.key}"
+        expected: "re:."
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/change-watch.yaml"
+        - "commit"
+        - "--source"
+        - "teams-requests"
+        - "--consumer"
+        - "bridge"
+        - "--"
+        - "${CHANGE.key}"
+    timeout_sec: 45
