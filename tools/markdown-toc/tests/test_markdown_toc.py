@@ -44,6 +44,33 @@ class MarkdownTocTests(unittest.TestCase):
         self.assertIn(b"- [Shown](#shown)", result.stdout)
         self.assertNotIn(b"- [Hidden]", result.stdout)
 
+    def test_close_marker_inside_fence_in_toc_region(self):
+        lines = [
+            "# Title",
+            "",
+            "<!-- toc -->",
+            "```",
+            "<!-- /toc -->",
+            "```",
+            "<!-- /toc -->",
+            "",
+            "## Shown",
+            "",
+        ]
+        result = self.run_cli(stdin="\n".join(lines).encode())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = [
+            "# Title",
+            "",
+            "<!-- toc -->",
+            "- [Shown](#shown)",
+            "<!-- /toc -->",
+            "",
+            "## Shown",
+            "",
+        ]
+        self.assertEqual(result.stdout.decode(), "\n".join(expected))
+
     def test_duplicate_and_japanese_anchors(self):
         source = "<!-- toc -->\n<!-- /toc -->\n## 日本語 Test_!?\n## 日本語 Test_!?\n## 日本語 Test_!?\n"
         result = self.run_cli(stdin=source.encode())

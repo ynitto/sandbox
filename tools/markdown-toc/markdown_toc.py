@@ -21,10 +21,23 @@ def scan(lines):
     start = end = None
     closing_without_opening = False
     fence = None
+    toc_fence = None
     in_comment = False
     for index, raw_line in enumerate(lines):
         line = raw_line.rstrip("\r\n")
         if start is not None and end is None:
+            fence_match = FENCE.match(line)
+            if toc_fence is not None:
+                if fence_match:
+                    run, rest = fence_match.groups()
+                    if run[0] == toc_fence[0] and len(run) >= len(toc_fence) and not rest.strip():
+                        toc_fence = None
+                continue
+            if fence_match:
+                run, rest = fence_match.groups()
+                if run[0] == "~" or "`" not in rest:
+                    toc_fence = run
+                    continue
             if line.strip() == CLOSE:
                 end = index
             continue
