@@ -72,7 +72,10 @@ def new_job_id(label: str = "") -> str:
 def norm(folder: "str | Path") -> str:
     """フォルダの比べ方をそろえる（区切り・大文字小文字・末尾の区切り）。"""
     raw = str(folder).replace("\\", "/")
-    text = (raw if re.match(r"^[A-Za-z]:/", raw) else str(Path(folder).resolve()).replace("\\", "/")).rstrip("/")
+    # この PC の道は正式な形に直す（Windows の短い名前 RUNNER~1 などを長い名前にそろえる）。ほかの OS の書き方の
+    # Windows の道（テストや、記録に残った道）は直せないので、書かれたまま比べる。
+    foreign = os.name != "nt" and re.match(r"^[A-Za-z]:/", raw)
+    text = (raw if foreign else str(Path(folder).resolve()).replace("\\", "/")).rstrip("/")
     return text.lower() if os.name == "nt" or re.match(r"^[A-Za-z]:/", text) else text
 
 
