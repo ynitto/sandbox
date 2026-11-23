@@ -2,7 +2,7 @@
 # 起こす理由（始め・ハブの issue からの返事・決めた時刻）が無い回は tick が何も出さず、ここで終わる（Copilot アプリは動かない）。
 #   tick     起こすかを決め、起こすなら依頼文を .dot/prompt.md に書く
 #   ask      Copilot のデスクトップアプリに依頼を渡し、終わるまで待つ（copilot-app-jobs）
-#   act      アプリが outbox に書いた提案を、policy.json の境界と照らして片付ける。ハブに送る文があれば、そのファイルのパスを出す
+#   act      アプリが outbox に書いた提案を、policy.json の境界と照らして片付け、承認されたコマンドを動かす。ハブに送る文があれば、そのファイルのパスを出す
 #   compose  送る文をコメントの JSON にする（gitlab-issue-hub-agent）
 #   comment  ハブの issue にコメントする。GitLab がこの issue を見ている人へメールで知らせる
 # act は毎回動かす。提案があれば片付け、依頼が終わったのに提案が無ければ出来事を inbox に戻して次の回にやり直す。
@@ -27,6 +27,10 @@ steps:
         - "--dir"
         - "${DOT}"
     timeout_sec: 60
+    retry_policy:              # ほかの処理が state.json を使っていた（終了コード 3）ときだけやり直す
+      limit: 5
+      interval_sec: 20
+      exit_code: [3]
     output: WAKE
   - name: ask
     depends: [tick]
@@ -61,7 +65,11 @@ steps:
         - "act"
         - "--dir"
         - "${DOT}"
-    timeout_sec: 900
+    timeout_sec: 3600            # 承認されたコマンドもここで動く。policy.json の timeout より長くする
+    retry_policy:              # ほかの処理が state.json を使っていた（終了コード 3）ときだけやり直す
+      limit: 5
+      interval_sec: 20
+      exit_code: [3]
     output: COMMENT_FILE
   - name: compose
     depends: [act]

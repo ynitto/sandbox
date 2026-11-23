@@ -121,6 +121,51 @@ python nightly_menu.py submit --menu docs-followup --param target_dir=src --dir 
 
 `python` が別の名前なら `--python py` のように渡します。
 
+## ほかのフォルダのセッションに振る
+
+アプリの自動実行は、ほかのローカルフォルダで新しいセッションを起こせます。依頼に振り先（`--to`）を付けると、
+自動実行はそのフォルダでセッションを起こして依頼を渡し、**終わりを待たずに**次の依頼へ進みます。振られたセッションは
+結果を MR や issue に書き、最後に受け箱へ「終わった」と知らせます。
+
+```text
+Dagu などのステップ
+  └─ copilot_app_job.py run --to C:\work\sandbox --no-wait …   依頼を置いてすぐ終わる
+        ↓ 受け箱（作業フォルダ/.copilot-jobs）
+Copilot アプリの自動実行（作業フォルダのプロジェクト）
+  └─ 振り先のフォルダでセッションを起こして依頼を渡し、dispatched を呼んで次へ（待たない）
+        ↓
+sandbox フォルダのセッション
+  └─ 作業 → 結果を MR・issue に書く → finish を呼ぶ（この振り先が空く）
+```
+
+**同じ振り先へは同時に 1 つだけ振ります。** 振り先のセッションが `finish` を呼ぶまで、同じ振り先の次の依頼は
+受け箱で待ち、置いた順に振られます。振り先が違えば並べて振れます。
+
+1. 振ってよいフォルダを登録します（登録していないフォルダには振りません）。
+
+   ```powershell
+   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\sandbox
+   ```
+
+2. 依頼に、結果をどこに書くかを書いて置きます。
+
+   ```powershell
+   python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder --to C:\work\sandbox --no-wait --prompt "README の誤字を直して MR を出してください"
+   ```
+
+自動実行に貼るプロンプトは、振らない依頼と同じものです（`prompt` が出すもの）。
+
+| コマンド | 呼ぶもの | すること |
+|---|---|---|
+| `target add` / `remove` / `list` | 人 | 振ってよいフォルダを足す・外す・並べる |
+| `dispatched --id <ID>` | 自動実行 | 振り先でセッションを起こしたと記録し、次の依頼を出す。起こせなかったら `--failed "理由"` |
+| `finish --id <ID> --status ok --note <URL>` | 振られたセッション | 終わったことと、書いた MR・issue を記録し、振り先を空ける |
+
+- 振ったまま 6 時間 `finish` が来ない依頼は、失敗として記録して振り先を空けます（二重にならないよう、振り直しは
+  しません）。時間は `next --dispatch-stale <秒>` で変えられます。
+- `run --to` に待つ形（`--no-wait` なし）を使うと、`finish` が来るまで待ちます。振る目的からすると、ふつうは待ちません。
+- 振り先のフォルダも、アプリで一度プロジェクトとして開いておきます。
+
 ## 受け箱の中身
 
 受け箱は作業フォルダの `.copilot-jobs` です（`--box` で別の場所にできます）。
@@ -129,8 +174,10 @@ python nightly_menu.py submit --menu docs-followup --param target_dir=src --dir 
 |---|---|
 | `pending` | 置いた依頼。ファイルの本文がそのままプロンプトになる |
 | `running` | アプリが取りかかった依頼 |
+| `dispatched` | ほかのフォルダのセッションに振った依頼（そのセッションが `finish` するまで） |
 | `done` | 済んだ依頼 |
 | `results` | 結果。1 行目が `status: ok` か `status: failed`、3 行目から報告 |
+| `targets.txt` | 振ってよいフォルダ（`target add` で足す） |
 
 済んだものは自動では消えません。たまったら `done` と `results` を消してかまいません。作業フォルダを
 git で管理しているなら、`.copilot-jobs/` を無視の対象に入れておきます。
@@ -138,7 +185,7 @@ git で管理しているなら、`.copilot-jobs/` を無視の対象に入れ�
 ## 気をつけること
 
 - **受け箱に置かれた文はそのまま実行されます。** 受け箱に書き込めるのを、依頼を出す人と仕組みだけに
-  しておきます。
+  しておきます。振り先の登録（`targets.txt`）も同じです。
 - アプリのセッションが途中で落ちた依頼は `running` に残り、2 時間たつと先にやり直されます
   （`next --stale <秒>` で変えられます）。
 - 同じ作業フォルダの依頼は 1 件ずつ順に処理されます。並べて走らせたいときはフォルダを分け、

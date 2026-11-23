@@ -1,7 +1,7 @@
 # agent-dots — 目標を預けて、裏で進めてもらう
 
-目標を 1 つ預けると、GitHub Copilot のデスクトップアプリが裏で少しずつ進め、報告と質問だけを GitLab の
-ハブの issue に書きます。返事はハブの issue にコメントすれば届きます。個人で使う道具です。
+目標を 1 つ預けると、GitHub Copilot のデスクトップアプリが裏で少しずつ進め、報告と質問と承認の依頼だけを
+GitLab のハブの issue に書きます。返事はハブの issue にコメントすれば届きます。個人で使う道具です。
 
 ```text
 Dagu（15 分おき）
@@ -9,6 +9,7 @@ Dagu（15 分おき）
   ask      Copilot アプリに依頼を渡す（copilot-app-jobs の受け箱）
              └ アプリは目標のフォルダで作業し、外へ出したいことを outbox/ に「提案」として書く
   act      提案を policy.json と照らして片付ける（許していないものは捨てて記録する）
+             └ 聞いてからやるものは承認を頼み、承認されたら動かす
   comment  報告と質問をハブの issue にコメントする → GitLab の通知メール
 
 Dagu（毎分）
@@ -20,7 +21,7 @@ Dagu（毎分）
 
 ## 用意
 
-前提は Python 3.9 以上（標準ライブラリだけで動きます）、GitHub Copilot のデスクトップアプリ、Dagu です。
+前提は Python 3.9 以上（標準ライブラリだけで動きます。業務係を使うときは PyYAML も）、GitHub Copilot のデスクトップアプリ、Dagu です。
 
 1. [copilot-app-jobs](../copilot-app-jobs/README.md) を置きます（例: `C:\tools\copilot-app-jobs\`）。
 2. [gitlab-issue-hub-agent](../change-watch/agents/gitlab-issue-hub-agent/README.md) を入れて、ハブの issue を決めます
@@ -43,11 +44,17 @@ Dagu（毎分）
    python C:\tools\copilot-app-jobs\copilot_app_job.py prompt --dir C:\work\dots\estimate --stay 50
    ```
 
-4. [`dags/agent-dots-tick.example.yaml`](./dags/agent-dots-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
+4. ツールを止めるフックを置きます（下の「ツールを止める」）。
+
+   ```powershell
+   python C:\tools\agent-dots\dot.py hooks --dir C:\work\dots\estimate
+   ```
+
+5. [`dags/agent-dots-tick.example.yaml`](./dags/agent-dots-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
    名前・`DOT`・パスを直します。目標ごとに 1 つ置きます。
-5. [`dags/agent-dots-listen.example.yaml`](./dags/agent-dots-listen.example.yaml) を 1 つだけ置き、`DOTS`（目標のフォルダを並べた
+6. [`dags/agent-dots-listen.example.yaml`](./dags/agent-dots-listen.example.yaml) を 1 つだけ置き、`DOTS`（目標のフォルダを並べた
    親フォルダ）とパスを直します。目標がいくつあっても 1 つで足ります。
-6. 一度ハブの issue の今のコメントを読み飛ばします（今あるコメントを覚えるだけで、何もしません）。
+7. 一度ハブの issue の今のコメントを読み飛ばします（今あるコメントを覚えるだけで、何もしません）。
 
    ```powershell
    change-watch --plugin gitlab_hub --config <設定> --connections <接続設定> get --source gitlab-hub-notes --consumer dots --no-jitter
@@ -65,6 +72,15 @@ Dagu（毎分）
 
 次の tick で目標が起き、このコメントを読んで続きを進めます。目標が書くコメントは `【名前より】` で始まります。
 
+| 書き方 | 意味 |
+|---|---|
+| `【見積り】承認 a3` | 承認待ちの a3 を動かしてよい。次の片付けで動き、結果がハブの issue に書かれる |
+| `【見積り】却下 a3 まだ早い` | a3 は動かさない。理由は目標に伝わる |
+| `【見積り】q2 B で` | 質問 q2 への返事 |
+| `【見積り】…` | それ以外はふつうの話しかけ |
+
+承認待ちは、決めた日数（既定 7 日）返事が無いと取り下げます。
+
 ## 目標が書ける提案
 
 エージェントは作業を終える前に、目標のフォルダの `outbox/` に提案を 1 件 1 ファイルの JSON で書きます。
@@ -73,7 +89,8 @@ Dagu（毎分）
 |---|---|---|
 | メモ | `{"kind": "note", "body": "…"}` | `notes/` の日ごとのファイルに 1 行足す。次に起きたときの依頼に載る |
 | 報告 | `{"kind": "act", "action": "hub.comment", "body": "…"}` | ハブの issue にコメントする |
-| 質問 | `{"kind": "ask", "question": "…", "options": ["A", "B"]}` | ハブの issue に選択肢つきで書く |
+| コマンドを動かす | `{"kind": "act", "action": "run", "name": "publish", "input": "…", "why": "…"}` | policy.json に登録したコマンドを、決めた段（すぐ動かす・承認を頼む）で動かす。`input` は標準入力に渡る。結果は次に起きたときに届く |
+| 質問 | `{"kind": "ask", "question": "…", "options": ["A", "B"]}` | ハブの issue に番号（q1 …）と選択肢つきで書く |
 | 次に起きる時刻 | `{"kind": "wait", "until": "2026-11-25T09:00"}` | その時刻を過ぎた最初の tick で起きる（タイムゾーンを書かなければこの PC の時刻） |
 | 完了 | `{"kind": "done", "evidence": ["…"]}` | 完了の検査があれば動かし、通れば終わる。無ければ「確かめてください」と書いて止まる |
 
@@ -85,15 +102,142 @@ Dagu（毎分）
 ```json
 {
   "actions": {"hub.comment": "auto"},
+  "commands": {
+    "publish": {"run": ["python", "C:/tools/publish.py"], "level": "ask", "description": "下書きを共有フォルダに置く", "timeout": 600}
+  },
+  "approvers": [],
+  "approval_expire_days": 7,
+  "quiet_hours": "22:00-07:00",
   "wake_per_day": 24,
   "done_check": ["python", "check.py"]
 }
 ```
 
-- `actions`：外への作用ごとに `auto`（聞かずにやる）か `deny`（しない）。いまある作用は `hub.comment` だけです。
-  ここに書いても、知らない作用は通しません。
+- `actions`：ハブへの報告（`hub.comment`）を `auto`（聞かずに書く）・`ask`（承認されてから書く）・`deny`（書かない）の
+  どれにするか。ここに書いても、知らない作用は通しません。
+- `commands`：目標に動かしてよいコマンドを名前で登録します。`run` はコマンドと引数のリスト（シェルは通しません）、
+  `level` は `auto`・`ask`（既定）・`deny`、`description` は承認を頼むときと依頼文に出す説明、`timeout` は秒です。
+  コマンドは目標のフォルダで動き、提案の `input` を標準入力（UTF-8）で受け取ります。登録していないコマンドは動きません。
+- `approvers`：承認・却下できる GitLab のユーザー名。空なら、人が書いたコメントならだれでも。
+- `approval_expire_days`：承認待ちを取り下げるまでの日数（0 なら取り下げない）。
+- `quiet_hours`：コメントを書かない時間帯（日をまたいでよい）。この間の報告・質問・承認の依頼は溜めておき、明けてから
+  まとめて書きます。空ならいつでも書きます。
 - `wake_per_day`：1 日に起きてよい回数。使い切ると、その日は起きません（0 なら上限なし）。
 - `done_check`：完了の検査。目標のフォルダで動かし、終了コード 0 で完了にします。空なら、完了は人が確かめます。
+- `proactive_per_day`・`proactive_idle_min`・`tools`：下の「手の空いた時間に調べる」と「ツールを止める」。
+
+## 手の空いた時間に調べる
+
+起こす理由が無くても、利用者とのやりとりが `proactive_idle_min` 分（既定 120）無ければ、1 日 `proactive_per_day` 回
+（既定 0 = しない）まで、目標を起こして調べものをさせます。
+
+```json
+{"proactive_per_day": 2, "proactive_idle_min": 120}
+```
+
+- この回は読むだけです。書ける提案はメモ・質問・次に起きる時刻だけで、報告・コマンド・完了は捨てます。
+- フックが、ファイルを作れる先を `notes/` と `outbox/` に絞り、`tools.shell_allow` のコマンドも止めます。
+- `quiet_hours` の間と、決めた時刻がすぐ先にあるときは起こしません。`wake_per_day` の回数にも数えます。
+
+## ツールを止める（フック）
+
+`dot.py hooks --dir <目標のフォルダ>` は、目標のフォルダの `.github/hooks/agent-dots.json` に、Copilot がツールを使う前に
+呼ぶフック（`preToolUse`）を置きます。フックは `policy.json` の `tools` と照らして、次のものを止めます。
+
+| ツール | 通すもの | 足し方 |
+|---|---|---|
+| ファイルを読む | 目標のフォルダの中 | `tools.read_allow` にフォルダを足す |
+| ファイルを書く | 目標のフォルダの中。ただし `policy.json`・`state.json`・`journal.jsonl`・`.dot/`・`.github/`・受け箱は変えられない（受け箱の `tmp/` に報告を書くのは通す） | 足せない |
+| コマンド | 受け箱とのやりとり（`copilot_app_job.py next` / `done`）だけ。`;`・`&&`・パイプ・リダイレクトなどでつないだものは止める | `tools.shell_allow` に正規表現を足す。`tools.shell` を `allow` にすると全部通す、`deny` にすると全部止める |
+| Web | なし | `tools.web_allow` にホスト名を足す（`*` で全部） |
+| そのほか（MCP のツールなど） | なし | `tools.allow` にツールの名前を足す。`tools.deny` に書いたツールは必ず止める |
+
+```json
+{
+  "tools": {
+    "read_allow": ["C:/work/specs"],
+    "shell_allow": ["^git (status|log|diff)\\b"],
+    "web_allow": ["docs.example.com"]
+  }
+}
+```
+
+止めたときは、理由がエージェントに伝わります。通したもの・止めたものは `.dot/hook.jsonl` に 1 行ずつ残ります
+（ツールの名前と理由だけ。中身は残しません）。判定に失敗したときは止めます。
+
+**フックが効いているかを最初に確かめてください。** Copilot アプリでこのフォルダを開き、「C:\Windows に test.txt を
+作って」と頼みます。断られ、`.dot/hook.jsonl` に `deny` の行が増えれば効いています。増えなければ、アプリがプロジェクトの
+フックを読んでいません。そのときはプラグインとして入れます（すべてのプロジェクトで動きますが、目標のフォルダの外では
+何もしません）。
+
+```powershell
+python C:\tools\agent-dots\dot.py hooks --plugin C:\tools\agent-dots-plugin
+```
+
+出てきたフォルダを、アプリの Customize → Plugins → 歯車 → マーケットプレイスの追加で足し、`agent-dots` を入れます。
+
+## 定型業務を頼む（業務係）
+
+目標の 1 つを「業務係」にすると、ハブの issue に書いた依頼に合うステートマシン（statemachine-use の定義）を選んで
+回します。合うものが無ければ、スキルを組み合わせて新しく作り、試運転してから登録します。実行の記録から直して、版を上げていきます。
+
+```powershell
+python C:\tools\agent-dots\dot.py init --dir C:\work\dots\work --name 業務
+```
+
+```json
+{
+  "routines": {
+    "skills_dirs": ["C:/Users/you/.copilot/skills"],
+    "sources": ["C:/work/repo/.statemachine"],
+    "write_skills": ["outlook-use", "redmine-use", "teams-use"]
+  }
+}
+```
+
+- `skills_dirs`：スキルの置き場（statemachine-use と、業務に使うスキルが入っているところ）。これを書くと業務係になります。
+- `sources`：既にあるステートマシンの置き場（読むだけで、書き換えません）。agent-app のタスクの `.statemachine/` も使えます。
+- `write_skills`：外のシステムに書き込むスキル。試運転では動かしません。
+- `publish_to`：作ったステートマシンを登録する場所（既定は目標のフォルダの `.statemachine/`）。
+
+### 頼む
+
+```text
+【業務】10 月の売上の報告を作って、部長に送って
+```
+
+1. 業務係が手持ちの一覧から合うものを選び、依頼から入力を埋めます。足りない入力は質問が来ます。
+2. そのステートマシンを初めて使うときは、使うスキル（外へ書くものに印）を見せて承認を求めます。承認すると、
+   以後は聞かずに回します。中身が変わったら、もう一度承認を求めます。
+3. 次に起きたとき、Copilot アプリがステートマシンを最後まで回し、結果をハブの issue に書きます。
+
+### 手持ちに無い業務
+
+1. 業務係がスキルを選んで、目標のフォルダの `routines/<名前>/` に下書きを作ります。下書きは検証され、通らなければ直させます（3 回まで）。
+2. 元の依頼の入力で試運転します。外へ書くスキルは動かさず、書く中身を作るところまでにします。
+3. 試運転の結果と使うスキルを見せて承認を求めます。承認すると `.statemachine/<名前>/` に登録します。
+   却下すると、理由を添えて直します。
+
+### 直す・戻す
+
+| 書き方 | 意味 |
+|---|---|
+| `【業務】直す r3 宛先は設定から読む` | その回の記録と理由をもとに直した版を作り、r3 と同じ入力で試運転して、承認されたら版を上げて差し替える |
+| `【業務】直す monthly-report 件名を変える` | 最後の回の入力で、同じように直す |
+| `【業務】戻す monthly-report` | 1 つ前の版に戻す |
+
+同じステートマシンが直近 3 回で 2 回失敗したら、聞かずに直す版を作ります（登録するには承認が要ります）。
+ほかの置き場（`sources`）のものを直したときは、元は書き換えず、目標のフォルダに直した版を登録します（以後はそちらを使います）。
+
+業務は 1 件ずつ進めます。12 時間進まなかった業務は取り下げます。
+
+| ファイル | 中身 |
+|---|---|
+| `routines/<名前>/` | 作っている・直している下書き |
+| `.statemachine/<名前>/` | 登録したステートマシン |
+| `.dot/routines.json` | 台帳（承認した中身の指紋・使うスキル・版・実行の回数と成否） |
+| `.dot/runs/<名前>/<rN>.json` | 実行の記録（入力・最後のステート・成否・各ステートの出力の 1 行目） |
+| `.dot/routines-history/<名前>/` | 前の版 |
 
 ## 様子を見る
 
@@ -107,19 +251,28 @@ python C:\tools\agent-dots\dot.py status --dir C:\work\dots\estimate
 |---|---|
 | `goal.md` | 目標と完了の条件（人が書く） |
 | `policy.json` | やってよいこと・起きる回数・完了の検査 |
-| `state.json` | いまの状態（スクリプトだけが書く。手で直さない） |
+| `state.json` | いまの状態・承認待ち・質問（スクリプトだけが書く。手で直さない） |
 | `inbox/` | 届いた返事 |
 | `outbox/` | エージェントの提案（片付けると `.dot/outbox-done/` へ移る） |
 | `notes/` | エージェントの自分へのメモ |
 | `journal.jsonl` | 記録 |
+| `.dot/hook.jsonl` | フックが通したツール・止めたツール |
+| `.github/hooks/agent-dots.json` | フックの設定（`dot.py hooks` が置く） |
 
 ## 気をつけること
 
-- **エージェントはフォルダの中では何でもできます。** 外へ書かないように依頼文で伝えていますが、Copilot アプリの
-  ツールを止めてはいません。目標のフォルダに、触られて困るものを置かないでください。ハブの issue へ書けるトークンを
-  アプリから見える場所に置かないでください。
+- **フックが止めるのは、Copilot が使うツールだけです。** 許したコマンド（`tools.shell_allow`・`commands`）の中で何が
+  起きるかまでは見ません。目標のフォルダに触られて困るものを置かず、ハブの issue へ書けるトークンをアプリから
+  見える場所に置かないでください。
+- 業務係が回すステートマシンの中では、承認したスキルのスクリプトが外のシステムに書き込みます。登録の承認では、
+  外へ書くスキルの一覧をよく見てください。
+- ツールの名前と引数の形は Copilot の版で変わることがあります。知らないツールは止めるので、何かが動かなくなったら
+  `.dot/hook.jsonl` を見て `tools.allow` に足してください。
 - 自動実行は、PC が起きていてアプリが開いているときだけ動きます。
 - 完了の条件を検査にできるなら `done_check` を書きます。書かなければ、終わったかどうかは人が決めます。
+- `commands` に登録するのは、入力を受けても困らないコマンドだけにします。目標は `input` の中身を自由に書けます。
+- 承認されたコマンドが動いている途中で止まった（PC が落ちたなど）ときは、やり直さずに「途中で止まった」と書きます。
+  二重に動くと困るためです。結果は自分で確かめてください。
 
 ## テスト
 
