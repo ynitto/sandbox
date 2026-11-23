@@ -237,7 +237,27 @@ python C:\tools\agent-dots\dot.py init --dir C:\work\dots\work --name 業務
 | `.statemachine/<名前>/` | 登録したステートマシン |
 | `.dot/routines.json` | 台帳（承認した中身の指紋・使うスキル・版・実行の回数と成否） |
 | `.dot/runs/<名前>/<rN>.json` | 実行の記録（入力・最後のステート・成否・各ステートの出力の 1 行目） |
+| `.dot/routines-review.json` | 最新の見直し報告（日時・検査結果・関連する回 ID・処置） |
 | `.dot/routines-history/<名前>/` | 前の版 |
+
+### 見直し（定期）
+
+```powershell
+python dot.py review --dir C:/work/dots/estimate
+```
+
+業務が有効な目標で、台帳と実行記録を決定的な条件で検査します。定期実行には週 1 回の [Dagu の例](dags/agent-dots-review.example.yaml) を使えます。最新の報告は `.dot/routines-review.json` にあり、`status` で日時と要見直しの件数を確認できます。
+
+| 検査 | 処置 |
+|---|---|
+| `stale_failure` | 直近の実行で失敗していないステートの失敗集計を自動で整理 |
+| `repeat_failure` | 直近 3 回で 2 回以上失敗し、改善の予定・進行中の改善・下書きの登録承認待ちがなければ、改善の回を追加 |
+| `contradiction` | 同じ入力で成功と失敗が混じる回を要見直しにする |
+| `orphan_run` | 台帳にも一覧にも無い業務の記録を要見直しにする |
+| `stale_draft` | 試運転中・承認待ちで、関連する回の終了から 7 日以上たった下書きを要見直しにする。回がなければ下書きの `workflow.yaml` の更新日時を使う |
+| `steady` | 実行が 10 回以上あり、直近 10 回がすべて成功したら、失敗集計を消して `status` に「安定」を表示 |
+
+「要見直し」は、報告書の該当する回や下書きを人が確認する項目です。改善の予定は通常の業務の流れで扱い、版の差し替えには承認が要ります。
 
 ## 様子を見る
 
