@@ -5,9 +5,12 @@ Teams → SharePoint → change-watch → Copilot アプリ → GitLab → 通�
 
 | ファイル | 役割 | 間隔 | 必須 |
 |---|---|---|---|
-| `change-watch-teams-bridge.yaml.example` | ブリッジの本体。SharePoint の同期フォルダを change-watch のフォルダ取得元で見て、新しい依頼を 1 件受け取り（get）、検証して（check-file）、Copilot アプリへ提出し（submit）、見終えたと記録する（commit） | 毎分 | 必須 |
+| `change-watch-teams-bridge.yaml.example` | ブリッジの本体。ローカル受信フォルダを change-watch のフォルダ取得元で見て、新しい依頼を 1 件受け取り（get）、検証して（check-file）、Copilot アプリへ提出し（submit）、見終えたと記録する（commit） | 毎分 | 必須 |
 | `change-watch-teams-sharepoint-bridge-agent-maintenance.yaml.example` | 保持期間を過ぎた取得結果の整理（gc）。状態はエージェントごとに分けているので、このエージェント用に 1 本置く | 毎日 03:17 | 必須 |
 | `copilot-app-job.example.yaml` | copilot-app-jobs を Dagu から呼ぶ例（依頼を置いて結果が出るまで待つ形）。**このソリューションでは通常は使わない**。提出は上のブリッジのワークフローが `run --no-wait` で行い、結果は GitLab の通知メール経由で Teams に返る。提出して結果まで Dagu で待ちたい別運用をするときの参考に同梱した | 任意 | 任意 |
+
+毎分のブリッジ DAG は `change-watch.yaml` の `folder.path` が指すローカル受信フォルダを監視する。直結方式の設定は `change-watch.yaml.example` のコメントを参照。
+フェッチャの起動は Windows のタスクスケジューラが担う。登録例は [エージェントの README](../README.md#フェッチャ方式の設定) にある。
 
 ## 実行の順序と関係
 

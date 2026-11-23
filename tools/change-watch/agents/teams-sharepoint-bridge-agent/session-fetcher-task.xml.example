@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Repetition>
+        <Interval>PT1M</Interval>
+      </Repetition>
+      <UserId>COMPUTERNAME\SyncUser</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="SyncUser">
+      <UserId>COMPUTERNAME\SyncUser</UserId>
+      <LogonType>InteractiveToken</LogonType>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+  <Actions Context="SyncUser">
+    <Exec>
+      <Command>C:\Path\To\python.exe</Command>
+      <Arguments>"C:\Path\To\session_fetcher.py" fetch-once --source "C:\Path\To\Synced Requests" --dest "C:\Path\To\Inbox"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

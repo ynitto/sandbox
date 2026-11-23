@@ -2,7 +2,7 @@
 # 手で置くなら /home/you を自分の場所に直す。Windows では command を python にし、
 # args の先頭に change-watch.pyz のフルパスを入れる（インストーラはそうして置く）。
 # インストールしたプラグインには、Dagu の環境変数 TEAMS_BRIDGE_COPILOT_JOB で copilot_app_job.py のパスを渡す。
-description: "同期した Teams の依頼を 1 件受け取り、Copilot アプリに提出する"
+description: "受信フォルダに届いた Teams の依頼を 1 件受け取り、Copilot アプリに提出する"
 schedule: "* * * * *"
 type: graph
 hist_retention_days: 14
@@ -19,9 +19,11 @@ steps:
         - "teams-requests"
         - "--consumer"
         - "bridge"
+        - "--watch"
+        - "sha256"  # 再コピーで更新時刻だけが変わっても変更として扱わない
         - "--one"
         - "--initial"
-        - "emit"  # 初回から同期済みの依頼を取り込む
+        - "emit"  # 初回から受信フォルダにある依頼を取り込む
     timeout_sec: 45
     retry_policy:  # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3
@@ -32,7 +34,9 @@ steps:
     depends: [get]
     preconditions:
       - condition: "${CHANGE.kind}"
-        expected: "appeared"
+        # 不完全な状態で届いた依頼を、内容の完成後に再検証する。
+        # 提出済みの依頼は台帳で done となり、二重提出されない。
+        expected: "re:(appeared|changed)"
     continue_on:
       skipped: true
     action: exec
