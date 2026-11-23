@@ -1,5 +1,7 @@
 # install.py install --agent teams-sharepoint-bridge-agent が ~/.config/change-watch/teams-sharepoint-bridge-agent/change-watch.yaml に置く。
 # OneDrive / SharePoint の同期クライアントで、この PC に同期した依頼フォルダを指定する。
+# フェッチャ方式では、folder.path に Dagu のサービスアカウントが読めるローカル受信フォルダを指定する。
+# 同期フォルダのパスはフェッチャの --source に指定する。
 version: 1
 state_dir: ~/.local/state/change-watch/teams-sharepoint-bridge-agent
 

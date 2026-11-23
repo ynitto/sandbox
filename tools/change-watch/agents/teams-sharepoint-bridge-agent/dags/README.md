@@ -9,6 +9,9 @@ Teams → SharePoint → change-watch → Copilot アプリ → GitLab → 通�
 | `change-watch-teams-sharepoint-bridge-agent-maintenance.yaml.example` | 保持期間を過ぎた取得結果の整理（gc）。状態はエージェントごとに分けているので、このエージェント用に 1 本置く | 毎日 03:17 | 必須 |
 | `copilot-app-job.example.yaml` | copilot-app-jobs を Dagu から呼ぶ例（依頼を置いて結果が出るまで待つ形）。**このソリューションでは通常は使わない**。提出は上のブリッジのワークフローが `run --no-wait` で行い、結果は GitLab の通知メール経由で Teams に返る。提出して結果まで Dagu で待ちたい別運用をするときの参考に同梱した | 任意 | 任意 |
 
+直結方式では、毎分のブリッジ DAG が SharePoint の同期フォルダを読む。フェッチャ方式では、同じ DAG がローカル受信フォルダを読む。切り替えは `change-watch.yaml` の `folder.path` の変更だけで行う。
+フェッチャは Windows のタスクスケジューラで動かす。このフォルダにフェッチャ用の DAG 例はない。
+
 ## 実行の順序と関係
 
 1. 毎分のブリッジが依頼を Copilot アプリの受け箱（`.copilot-jobs`）に提出する。アプリ側は、アプリの自動実行が受け箱を見に来て処理する（Dagu ではなくアプリ側の仕組み。copilot-app-jobs の README を参照）。

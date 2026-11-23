@@ -8,13 +8,18 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
 
 1. OneDrive / SharePoint の同期クライアントで、SharePoint の依頼フォルダを Dagu が動く PC に同期する。
    往路の依頼 JSON と復路の返信は [Power Automate のレシピ](power-automate/) を参照。
+   Dagu の実行環境に合わせて、次のどちらかを選ぶ。
+
+   - **直結方式**。Dagu がログインユーザーのセッションで動き、同期フォルダを直接読める場合に使う。
+   - **フェッチャ方式**。Dagu を Windows サービスとして動かす場合に使う。ログインユーザーのセッションで同期し、フェッチャ（`session_fetcher.py`）が依頼ファイルをローカル受信フォルダへコピーする。ローカル受信フォルダは Dagu のサービスアカウントが読める場所に置く。[セッション側フェッチャの設計](../../../../docs/plans/2026-11-23-teams-bridge-session-fetcher-design.md)
+
 2. リポジトリのルートからインストーラを動かす。change-watch とエージェントのプログラム、設定の雛形、Dagu のワークフローが入る。
 
    ```sh
    python3 tools/change-watch/install.py install --agent teams-sharepoint-bridge-agent
    ```
 
-3. `~/.config/change-watch/teams-sharepoint-bridge-agent/` に置かれた `change-watch.yaml` の `folder.path` を同期先に直す。
+3. `~/.config/change-watch/teams-sharepoint-bridge-agent/` に置かれた `change-watch.yaml` の `folder.path` を、直結方式では同期先に、フェッチャ方式ではローカル受信フォルダに直す。
    `targets.json` の `targets` に宛先名ごとの設定を書く。 `dir` は Copilot アプリで開く作業フォルダの絶対パス、
    `gitlab_project` は `group/project` の形、`mode` は issue を作るなら `issue`、コミットをプッシュするなら `commit`。
    依頼 JSON の `target` が省略されたときは `default` の宛先名を使う。
@@ -25,6 +30,24 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
    `get` で変化を 1 件受け取る。新しく現れたファイルだけを `check-file` に渡し、結果に応じて `submit` または
    `record-invalid` を動かしてから `commit` する。処理済みや見つからない依頼、追加以外の変化も `commit` する。
    このソリューションに要る DAG 例は [dags/](dags/README.md) に一式そろえた（原本はこのフォルダの直下と各ツール側にあり、dags/ はコピー）。
+
+### フェッチャ方式の設定
+
+同期を行うログインユーザーで、リポジトリ内の `session_fetcher.py` があるフォルダから実行する。山括弧で囲んだ箇所は実際のパスに置き換える。
+
+```sh
+python3 session_fetcher.py fetch-once --source "<同期フォルダ>" --dest "<受信フォルダ>" --state "<台帳パス>" --settle-seconds 10 --heartbeat "<ハートビートパス>"
+```
+
+台帳とハートビートは受信フォルダの外に置く。台帳は `~/.local/state/change-watch/teams-sharepoint-bridge-agent/fetched.json` など、フェッチャを実行するユーザーのプロファイル配下を使い、`--state` には展開済みの絶対パスを渡す。そのプロファイル配下はサービス側から読めないため、ハートビートはフェッチャが書き込めてサービスアカウントが読める場所に置く。
+
+Windows のコマンドプロンプトで、同期を行うユーザーのタスクを毎分実行するように登録する例。Python とスクリプトには実際の絶対パスを指定する。
+
+```bat
+schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\pythonw.exe\" \"C:\sandbox\tools\change-watch\agents\teams-sharepoint-bridge-agent\session_fetcher.py\" fetch-once --source \"C:\Users\you\Example Org\Requests\" --dest C:\TeamsBridge\inbox --state C:\Users\you\.local\state\change-watch\teams-sharepoint-bridge-agent\fetched.json --settle-seconds 10 --heartbeat C:\TeamsBridge\status\heartbeat.json" /SC MINUTE /MO 1 /IT
+```
+
+登録後、タスクスケジューラの画面（またはタスク XML）で、同期を行うユーザーのログオン時に開始し、1 分間隔で繰り返すトリガーに設定する。「既に実行中の場合は新しいインスタンスを開始しない」設定も同じ画面または XML で指定する。
 
 ## コマンド
 
@@ -57,3 +80,5 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
 
 投稿本文はそのまま Copilot へのプロンプトに入る。Power Automate の往路フローで、対象チャンネルと投稿者を許可リストに絞る。
 実 SharePoint・Teams・Power Automate・GitLab を使った一連の動作は未検証。
+フェッチャはトークンを持たず、同期済みの依頼ファイルをローカル受信フォルダへ運ぶだけ。
+フェッチャ方式は実 SharePoint・SSO・タスクスケジューラ・Windows サービスでは未検証。
