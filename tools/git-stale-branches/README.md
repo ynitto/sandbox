@@ -31,6 +31,8 @@ python3 /path/to/tools/git-stale-branches/git_stale_branches.py --delete-merged
 
 表と JSON は削除前の一覧です。削除対象はマージ済みの候補に限ります。削除の失敗理由は標準エラーに出します。JSON モードでは削除したブランチ名も標準エラーに出します。
 
+**注意** `--delete-merged` は経過日数に関係なくマージ済みの候補を削除します。今日マージしたブランチも対象です。
+
 ## 既知の制限
 
 squash merge や cherry-pick で変更を取り込んでも、元のコミットがベースの履歴に含まれなければマージ済みとは判定されません。削除時は Git 自身が上流ブランチまたは HEAD へのマージ状況を確認します。別の worktree でチェックアウト中のブランチなど、Git が安全削除を拒否する場合もあります。

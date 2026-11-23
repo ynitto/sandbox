@@ -17,6 +17,15 @@ def git(*args):
     return result.stdout
 
 
+def ref_lines(output):
+    # Git uses LF between refs. Unicode line separators can occur in ref names.
+    return (
+        row.decode("utf-8", "surrogateescape")
+        for row in output.encode("utf-8", "surrogateescape").splitlines()
+        if row
+    )
+
+
 def inventory(base, days, protected):
     git("rev-parse", "--git-dir")
     base_ref = f"refs/heads/{base}"
@@ -25,16 +34,16 @@ def inventory(base, days, protected):
     except RuntimeError as exc:
         raise RuntimeError(f"Cannot resolve local base branch {base!r}: {exc}") from exc
 
-    merged = set(git(
+    merged = set(ref_lines(git(
         "for-each-ref", f"--merged={base_ref}", "--format=%(refname)", "refs/heads/"
-    ).split("\n"))
+    )))
     rows = git(
         "for-each-ref", "--sort=refname", "--sort=committerdate",
         "--format=%(refname)%09%(HEAD)%09%(committerdate:unix)", "refs/heads/",
     )
     now = datetime.now(timezone.utc)
     branches = []
-    for row in rows.split("\n")[:-1]:
+    for row in ref_lines(rows):
         ref, head, timestamp = row.split("\t")
         name = ref[len("refs/heads/"):]
         committed_at = datetime.fromtimestamp(int(timestamp), timezone.utc)
@@ -46,7 +55,7 @@ def inventory(base, days, protected):
             "name": name,
             "merged": is_merged,
             "last_commit_date": committed_at.isoformat(),
-            "age_days": age.days,
+            "age_days": max(0, age.days),
             "current": current,
             "protected": is_protected,
             "candidate": not is_protected and (is_merged or age.days > days),
@@ -72,7 +81,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="main", help="local base branch (default: main)")
     parser.add_argument("--days", type=int, default=90, help="age threshold (default: 90)")
-    parser.add_argument("--protect", action="append", default=[], metavar="BRANCH",
+    parser.add_argument("--protect", action="append", default=None, metavar="BRANCH",
                         help="protect a branch (repeatable)")
     parser.add_argument("--delete-merged", action="store_true", help="delete merged candidates")
     parser.add_argument("--json", action="store_true", help="output a JSON array")
@@ -80,7 +89,7 @@ def main(argv=None):
     if args.days < 0:
         parser.error("--days must be non-negative")
 
-    protected = {"main", "master", "develop", args.base, *args.protect}
+    protected = {"main", "master", "develop", args.base, *(args.protect or ())}
     try:
         branches = inventory(args.base, args.days, protected)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -102,7 +111,13 @@ def main(argv=None):
                 try:
                     git("branch", "-d", "--", name)
                 except (OSError, RuntimeError) as exc:
-                    print(f"Failed to delete {name!r}: {exc}", file=sys.stderr)
+                    print(
+                        f"Failed to delete {name!r}: {exc}\n"
+                        f"The tool checks whether the branch is merged into --base {args.base!r}. "
+                        "git branch -d checks the upstream branch (or HEAD if no upstream is set), "
+                        "so a different --base can lead Git to refuse the deletion.",
+                        file=sys.stderr,
+                    )
                     failed = True
                 else:
                     deleted.append(name)
