@@ -1,7 +1,7 @@
 # Teams の依頼を SharePoint 経由で Copilot アプリへ渡す設計
 
 > 作成 2026-11-23 ／ 改訂 2026-11-23（フェッチャ方式を標準に、ハブでの振り分け、振り先の表の統合、実行主体の明記）
-> 状態: 実装済み・実環境では未検証（§10）
+> 状態: 実装済み・実環境では未検証（§12）
 > 対象: Power Automate / OneDrive 同期クライアント / `session_fetcher.py` / Dagu / change-watch / `teams_bridge.py` /
 > copilot-app-jobs / GitHub Copilot デスクトップアプリ / GitLab
 > 早見: 段ごとのコマンド・設定ファイル・状態の置き場は [ARCHITECTURE.md](../../tools/change-watch/agents/teams-sharepoint-bridge-agent/ARCHITECTURE.md)、
