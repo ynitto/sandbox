@@ -944,7 +944,7 @@ PATH_KEYS = ("path", "file_path", "filePath", "filename", "file", "target", "des
 WRITE_KEYS = ("content", "file_text", "new_str", "old_str", "new_string", "old_string", "text", "patch", "edits")
 SHELL_KEYS = ("command", "cmd", "script")
 SHELL_META = re.compile(r"[;|`<>\r\n]|&&|\$\(")
-JOB_COMMAND = re.compile(r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+"?[^"]*copilot_app_job\.py"?\s+(next|done)(\s|$)', re.I)
+JOB_COMMAND = re.compile(r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+"?[^"]*copilot_app_job\.py"?\s+(next|done|dispatched|finish)(\s|$)', re.I)
 
 
 def find_dot_from(start: Path) -> "Path | None":

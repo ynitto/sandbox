@@ -1,0 +1,27 @@
+# Copilot のデスクトップアプリに、ほかのローカルフォルダのセッションで作業してもらう例（Windows）。依頼を置いたらすぐ終わる。
+# アプリの自動実行が振り先のフォルダでセッションを起こし、そのセッションが結果を MR・issue に書く（README の「ほかのフォルダのセッションに振る」）。
+# 振り先は先に target add で登録しておく。同じ振り先への依頼は、前の依頼が終わるまで受け箱で待つ。
+# command と args のパスを自分の場所に直す。依頼の本文には、結果をどこに書くか（MR・issue）を書く。
+description: "毎朝、sandbox フォルダのセッションに依存関係の点検を頼む（結果は MR に書いてもらう）"
+schedule: "0 7 * * 1-5"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: dispatch
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "run"
+        - "--dir"
+        - "C:/work/my-folder"         # 自動実行が動くフォルダ（受け箱がある）
+        - "--to"
+        - "C:/work/sandbox"           # セッションを起こすフォルダ
+        - "--no-wait"
+        - "--name"
+        - "deps-check"
+        - "--prompt"
+        - "依存関係の古いものを調べ、上げられるものを上げて MR を出してください。上げられないものは MR の説明に理由を書いてください。"
+    timeout_sec: 60
+    output: JOB_ID
