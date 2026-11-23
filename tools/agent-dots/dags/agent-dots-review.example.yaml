@@ -16,7 +16,7 @@ steps:
         - "--dir"
         - "${DOT}"
     timeout_sec: 60
-    retry_policy:
+    retry_policy:              # ほかの処理が state.json を使っていた（終了コード 3）ときだけやり直す
       limit: 5
       interval_sec: 20
       exit_code: [3]

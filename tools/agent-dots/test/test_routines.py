@@ -301,6 +301,69 @@ class RoutineTest(unittest.TestCase):
         self.assertIn("10/11 回成功・安定", status)
         self.assertIn(f"見直し: {dot.iso(self.at)}・要見直しなし", status)
 
+    def test_review_steady_cleared_by_failure(self):
+        self.finish(self.run_existing(), ok=False, final="send")
+        self.finish_months(*([(True, "complete")] * 10))
+        self.assertEqual([(f["kind"], f["action"]) for f in self.review()], [("steady", "applied")])
+        self.assertTrue(self.registry()["monthly-report"]["steady"])
+        self.finish_months((False, "send"))
+        self.assertNotIn("steady", self.registry()["monthly-report"])
+        _, status = run("status", "--dir", str(self.d))
+        self.assertNotIn("安定", status)
+
+    def test_review_stale_draft_unfinished_trial(self):
+        self.create_and_trial()
+        draft = Path(self.job()["path"])
+        folder = self.d / ".dot" / "runs" / "weekly-digest"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "r90.json").write_text(json.dumps(
+            {"id": "r90", "machine": "weekly-digest", "mode": "trial", "path": str(draft),
+             "inputs": {}, "ok": True}, ensure_ascii=False), encoding="utf-8")
+        os.utime(draft / "workflow.yaml", (self.at, self.at))
+        self.at += routines.DRAFT_STALE_SEC
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["action"], f["runs"]) for f in findings],
+                         [("stale_draft", "needs_review", [])])
+
+    def test_review_stale_draft_outside_goal_ignored(self):
+        self.publish_monthly_to_dot()
+        outside = Path(self.tmp.name) / "outside"
+        (outside).mkdir()
+        (outside / "workflow.yaml").write_text("name: x\n", encoding="utf-8")
+        os.utime(outside / "workflow.yaml", (self.at - routines.DRAFT_STALE_SEC, self.at - routines.DRAFT_STALE_SEC))
+        reg = self.registry()
+        reg["monthly-report"]["draft"] = {"status": "trial", "path": str(outside)}
+        routines.save_registry(self.d, reg)
+        self.assertEqual(self.review(), [])
+
+    def test_review_repeat_failure_skipped_while_publish_pending(self):
+        self.publish_monthly_to_dot()
+        reg = self.registry()
+        rec = reg["monthly-report"]
+        rec["recent"] = [{"id": "r1", "ok": False}, {"id": "r2", "ok": False}, {"id": "r3", "ok": True}]
+        rec["runs"], rec["ok"] = 3, 1
+        routines.save_registry(self.d, reg)
+        state = self.state()
+        state["approvals"].append({"id": "a1", "action": "routine.publish",
+                                  "proposal": {"machine": "monthly-report"}, "summary": "登録する",
+                                  "created": "x", "created_ts": self.at, "status": "pending"})
+        (self.d / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.review(), [])
+        self.assertFalse(self.state().get("routine_queue"))
+
+    def test_review_keeps_first_seen(self):
+        first = self.run_existing()
+        self.finish(first, ok=False, final="send")
+        job = {"name": "monthly-report", "id": "r80", "mode": "run",
+               "path": str(self.source / "monthly-report"), "inputs": {"month": "2026-10"}}
+        routines.record_run(self.d, job, {"ok": True}, self.at)
+        findings = self.review()
+        self.assertEqual([(f["kind"], f["first_seen"]) for f in findings],
+                         [("contradiction", self.at)])
+        self.at += 3600
+        again = self.review()
+        self.assertEqual(again[0]["first_seen"], self.at - 3600)
+
     def test_review_disabled(self):
         self.set_policy(routines={})
         out, err = io.StringIO(), io.StringIO()

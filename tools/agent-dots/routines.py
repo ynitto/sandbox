@@ -487,6 +487,8 @@ def result(d: Path, state: dict, policy: dict, job: dict, prop: dict, ts: float,
         rec["runs"] = int(rec.get("runs") or 0) + 1
         rec["ok"] = int(rec.get("ok") or 0) + (1 if run["ok"] else 0)
         rec["recent"] = ([*(rec.get("recent") or []), {"id": job["id"], "ok": run["ok"]}])[-RECENT_KEEP:]
+        if not run["ok"]:
+            rec.pop("steady", None)         # 失敗したら「安定」は外れる
         if not run["ok"] and run["final_state"]:
             fails = rec.setdefault("state_failures", {})
             fails[run["final_state"]] = int(fails.get(run["final_state"]) or 0) + 1
@@ -613,19 +615,21 @@ def _input_key(value):
     return type(value), value
 
 
-def _stale_draft_runs(draft: dict, runs: dict, ts: float) -> "list[str] | None":
+def _stale_draft_runs(d: Path, draft: dict, runs: dict, ts: float) -> "list[str] | None":
     path = draft.get("path")
     if draft.get("status") not in ("trial", "awaiting") or not path:
         return None
     trials = [r for r in runs.values() if r.get("mode") == "trial" and r.get("path") == path]
-    if trials:
-        finished = [r for r in trials if type(r.get("finished")) in (int, Decimal)]
-        if not finished:
-            return None
+    finished = [r for r in trials if type(r.get("finished")) in (int, Decimal)]
+    if finished:
         latest = max(finished, key=lambda r: r["finished"])
         return [latest["id"]] if latest["finished"] <= ts - DRAFT_STALE_SEC else None
+    # 試運転の回が未完了だけ（finished が無い）→ 下書きの更新日時にフォールバック
     try:
-        modified = (Path(path) / "workflow.yaml").stat().st_mtime
+        target = Path(path).resolve()
+        if not target.is_relative_to(d.resolve()):
+            return None                     # 台帳の指す先が目標のフォルダの外なら見ない
+        modified = (target / "workflow.yaml").stat().st_mtime
     except OSError:
         return None
     return [] if ts - modified >= DRAFT_STALE_SEC else None
@@ -674,7 +678,7 @@ def review_routines(d: Path, state: dict, policy: dict, ts: float) -> dict:
             queue_improve(state, name, detail, failures[-1])
             add("repeat_failure", name, detail, failures, "queued")
 
-        draft_runs = _stale_draft_runs(rec.get("draft") or {}, runs, ts)
+        draft_runs = _stale_draft_runs(d, rec.get("draft") or {}, runs, ts)
         if draft_runs is not None:
             add("stale_draft", name, "試運転または承認待ちの下書きが 7 日以上経過", draft_runs, "needs_review")
 
@@ -705,6 +709,18 @@ def review_routines(d: Path, state: dict, policy: dict, ts: float) -> dict:
 
     if changed:
         save_registry(d, reg)
+    # 要見直しは、原因の記録や下書きが変わるまで毎回出る。同じ項目は初出の日時で見分ける。
+    previous = {}
+    try:
+        old = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
+        for f in old.get("findings") or []:
+            if f.get("action") == "needs_review":
+                previous[(f.get("kind"), f.get("machine"), tuple(f.get("runs") or []))] = f.get("first_seen")
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    for f in findings:
+        if f["action"] == "needs_review":
+            f["first_seen"] = previous.get((f["kind"], f["machine"], tuple(f["runs"])), ts)
     report = {"reviewed_at": ts, "findings": findings}
     _save_json(d / WORK / REVIEW, report)
     return report
