@@ -1,16 +1,20 @@
 # install.py install --agent teams-sharepoint-bridge-agent が ~/.config/change-watch/teams-sharepoint-bridge-agent/change-watch.yaml に置く。
-# OneDrive / SharePoint の同期クライアントで、この PC に同期した依頼フォルダを指定する。
-# フェッチャ方式では、folder.path に Dagu のサービスアカウントが読めるローカル受信フォルダを指定する。
+# フェッチャ方式の設定例。folder.path は Dagu のサービスアカウントが読めるローカル受信フォルダ。
 # 同期フォルダのパスはフェッチャの --source に指定する。
+# 直結方式では、OneDrive / SharePoint の同期先を直接見るよう次の 2 項目を差し替える。
+#   path: "C:/Users/you/Example Org/Requests"
+#   settle_sec: 10  # 同期直後の書きかけを拾わないように待つ
 version: 1
 state_dir: ~/.local/state/change-watch/teams-sharepoint-bridge-agent
 
 sources:
   teams-requests:
     folder:
-      path: "C:/Users/you/Example Org/Requests"  # Windows の例。Dagu を動かす PC から見える同期先に直す
+      path: "C:/TeamsBridge/inbox"
       include: ["*.json"]
       content: json
-      settle_sec: 10  # 同期が遅れることがあるので、更新直後のファイルを拾わないよう長めに待つ
-      hash: true
+      # フェッチャが原子的に置くので書きかけは見えない。
+      # 待ち時間を設けると、毎分コピーされる新規ファイルが未到着のままになることがある。
+      settle_sec: 0
+      hash: true  # DAG の --watch sha256 で内容を比較し、同じ内容の再コピーを変化として扱わない
     schedule: "* * * * *"

@@ -1,160 +1,69 @@
-"""対話セッションの同期フォルダからサービス側の受信フォルダへ依頼を運ぶ。"""
+"""同期フォルダから受信フォルダへ依頼を運ぶ無状態のコピー役。
+
+settle 判定と重複検出は change-watch の folder 取得元が担う。
+"""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _now():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _invalid_constant(value):
-    raise ValueError(f"JSON に使えない値です: {value}")
-
-
-def _read_ledger(path):
-    try:
-        ledger = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=_invalid_constant)
-    except FileNotFoundError:
-        return {}
-    if not isinstance(ledger, dict):
-        raise ValueError("台帳の JSON はオブジェクトである必要があります")
-    files = ledger.get("files", {})
-    if not isinstance(files, dict) or any(not isinstance(record, dict) for record in files.values()):
-        raise ValueError("台帳の files にはファイル名ごとの記録が必要です")
-    return files
-
-
-def _write_atomic(path, data):
+def _copy_atomic(source, target):
     tmp_path = None
     try:
-        # 取得元の *.json に当たらない一時名で、正式名と同じフォルダに書く。
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".tmp-", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-            tmp.write(data)
-            tmp.flush()
-            os.fsync(tmp.fileno())
+        # 正式名と同じフォルダに、*.json に当たらない一時名で書く。
+        with source.open("rb") as original:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".tmp-", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                shutil.copyfileobj(original, tmp)
+                tmp.flush()
+                os.fsync(tmp.fileno())
         try:
             os.chmod(tmp_path, 0o644)
         except OSError:
             pass
-        os.replace(tmp_path, path)
-        try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            pass
+        os.replace(tmp_path, target)
+        tmp_path = None
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
 
-def _write_json(path, data):
-    _write_atomic(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-
-
-def _matches(path, digest):
+def _fetch_once(args):
+    source = args.source
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest() == digest
-    except FileNotFoundError:
-        return False
+        if not source.is_dir():
+            raise ValueError(f"同期フォルダがありません: {source}")
+        source_root = source.resolve()
+        dest = args.dest.resolve()
+        if dest == source_root or source_root in dest.parents:
+            raise ValueError(f"出力先は同期フォルダの外に指定してください: {args.dest}")
+        dest.mkdir(parents=True, exist_ok=True)
+        paths = sorted(source_root.iterdir(), key=lambda path: path.name)
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"フェッチャの実行に失敗しました: {e}", file=sys.stderr)
+        return 2
 
-
-def _fetch_files(paths, dest, files, settle_seconds):
-    result = {"fetched": [], "skipped_settling": [], "already": 0, "errors": []}
+    result = {"copied": [], "errors": []}
     for path in paths:
         name = path.name
         if name.startswith(".") or not name.endswith(".json"):
             continue
         try:
-            before = path.stat()
-            if not stat.S_ISREG(before.st_mode):
+            if not stat.S_ISREG(path.stat().st_mode):
                 continue
-            if time.time() - before.st_mtime < settle_seconds:
-                result["skipped_settling"].append(name)
-                continue
-            data = path.read_bytes()
-            after = path.stat()
-            # 読み取りの途中で同期が進んだファイルは次回に回す。
-            if (before.st_mtime_ns, before.st_size, before.st_ino) != (
-                after.st_mtime_ns, after.st_size, after.st_ino
-            ) or len(data) != after.st_size:
-                result["skipped_settling"].append(name)
-                continue
-            digest = hashlib.sha256(data).hexdigest()
-            target = dest / name
-            if files.get(name, {}).get("sha256") == digest and _matches(target, digest):
-                result["already"] += 1
-                continue
-            _write_atomic(target, data)
-            files[name] = {
-                "sha256": digest,
-                "size": len(data),
-                "fetched_at": _now(),
-                "source_mtime": datetime.fromtimestamp(before.st_mtime, timezone.utc).isoformat(),
-            }
-            result["fetched"].append(name)
-        except (OSError, ValueError, OverflowError) as e:
+            _copy_atomic(path, dest / name)
+            result["copied"].append(name)
+        except OSError as e:
             result["errors"].append({"file": name, "error": str(e)})
-    return result
-
-
-def _fetch_once(args):
-    source = args.source
-    try:
-        if args.settle_seconds < 0:
-            raise ValueError("--settle-seconds に負数は指定できません")
-        if not source.is_dir():
-            raise ValueError(f"同期フォルダがありません: {source}")
-        source_root = source.resolve()
-        dest_root = args.dest.resolve()
-        metadata_paths = [args.state]
-        if args.heartbeat is not None:
-            metadata_paths.append(args.heartbeat)
-        metadata_outputs = [(path, path.resolve()) for path in metadata_paths]
-        for path, resolved in [(args.dest, dest_root), *metadata_outputs]:
-            if resolved == source_root or source_root in resolved.parents:
-                raise ValueError(f"出力先は同期フォルダの外に指定してください: {path}")
-        for path, resolved in metadata_outputs:
-            if resolved == dest_root or dest_root in resolved.parents:
-                raise ValueError(f"出力先は受信フォルダの外に指定してください: {path}")
-
-        args.dest.mkdir(parents=True, exist_ok=True)
-        args.state.parent.mkdir(parents=True, exist_ok=True)
-        files = _read_ledger(args.state)
-        result = _fetch_files(sorted(source.iterdir(), key=lambda path: path.name),
-                              args.dest, files, args.settle_seconds)
-        if result["fetched"]:
-            _write_json(args.state, {"files": files})
-    except (OSError, ValueError, RuntimeError) as e:
-        print(f"フェッチャの実行に失敗しました: {e}", file=sys.stderr)
-        return 2
-
-    if args.heartbeat is not None:
-        try:
-            args.heartbeat.parent.mkdir(parents=True, exist_ok=True)
-            _write_json(args.heartbeat, {
-                "last_run": _now(),
-                "fetched": len(result["fetched"]),
-                "skipped_settling": len(result["skipped_settling"]),
-                "errors": len(result["errors"]),
-            })
-        except (OSError, ValueError, RuntimeError) as e:
-            result["heartbeat_error"] = str(e)
     print(json.dumps(result, ensure_ascii=False))
-    return 2 if result["errors"] or "heartbeat_error" in result else 0
+    return 2 if result["errors"] else 0
 
 
 def main(argv=None):
@@ -163,9 +72,6 @@ def main(argv=None):
     fetch = sub.add_parser("fetch-once", help="同期済みの依頼を一度だけコピーする")
     fetch.add_argument("--source", required=True, type=Path)
     fetch.add_argument("--dest", required=True, type=Path)
-    fetch.add_argument("--state", required=True, type=Path)
-    fetch.add_argument("--settle-seconds", type=int, default=10)
-    fetch.add_argument("--heartbeat", type=Path)
     args = parser.parse_args(argv)
     return _fetch_once(args)
 
