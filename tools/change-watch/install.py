@@ -185,6 +185,7 @@ def render(text: str, *, windows: bool, home: Path, bin_dir: Path, python: str, 
     """例の /home/you の下のパスを、この PC の置き場所にする（agents/NAME の *.example 用）。"""
     agents = agents_home(windows, home, bin_dir)
     text = text.replace(f"{PLACEHOLDER}/.local/share/{NAME}/agents", _posix(agents))
+    text = text.replace(f"{PLACEHOLDER}/.local/state/{NAME}/", _posix(home / ".local" / "state" / NAME) + "/")
     text = text.replace(f"{PLACEHOLDER}/.config/{NAME}", _posix(home / ".config" / NAME))
     text = text.replace(f"{PLACEHOLDER}/.github/connections.yaml", _posix(home / ".github" / "connections.yaml"))
     exe = f"{PLACEHOLDER}/.local/bin/{NAME}"

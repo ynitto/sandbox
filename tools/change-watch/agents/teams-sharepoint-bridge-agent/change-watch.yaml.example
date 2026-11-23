@@ -1,0 +1,14 @@
+# install.py install --agent teams-sharepoint-bridge-agent が ~/.config/change-watch/teams-sharepoint-bridge-agent/change-watch.yaml に置く。
+# OneDrive / SharePoint の同期クライアントで、この PC に同期した依頼フォルダを指定する。
+version: 1
+state_dir: ~/.local/state/change-watch/teams-sharepoint-bridge-agent
+
+sources:
+  teams-requests:
+    folder:
+      path: "C:/Users/you/Example Org/Requests"  # Windows の例。Dagu を動かす PC から見える同期先に直す
+      include: ["*.json"]
+      content: json
+      settle_sec: 10  # 同期が遅れることがあるので、更新直後のファイルを拾わないよう長めに待つ
+      hash: true
+    schedule: "* * * * *"
