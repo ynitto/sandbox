@@ -62,6 +62,13 @@ class TimestampConverterTests(unittest.TestCase):
             self.assertEqual(output["local"], "1970-01-01T09:00:00+09:00")
         self.assertEqual(date["epoch_s"], -32400)
 
+    def test_lowercase_z_suffix(self):
+        result = self.run_cli("--tz", "UTC", "--json", "1970-01-01T00:00:00z")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (output,) = json.loads(result.stdout)
+        self.assertEqual(output["epoch_s"], 0)
+        self.assertEqual(output["utc"], "1970-01-01T00:00:00+00:00")
+
     def test_text_output(self):
         result = self.run_cli("0", "--tz", "Asia/Tokyo", "1970-01-01T00:00:00Z")
         self.assertEqual(result.returncode, 0, result.stderr)

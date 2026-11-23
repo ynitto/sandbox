@@ -42,7 +42,7 @@ def convert(value, unit, zone):
         microseconds = round_ratio(numerator * (1000 if milliseconds else 1000000), denominator)
         return EPOCH + timedelta(microseconds=microseconds), True
 
-    if value.endswith("Z"):
+    if value.endswith(("Z", "z")):
         value = value[:-1] + "+00:00"
     date = datetime.fromisoformat(value)
     if date.tzinfo is None and zone is not None:
