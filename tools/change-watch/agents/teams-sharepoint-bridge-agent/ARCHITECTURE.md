@@ -2,7 +2,7 @@
 
 Teams に投稿された依頼を、宛先のフォルダで Copilot アプリのセッションに作業させ、結果を GitLab に上げて、元の投稿へ
 リンクを返信するまでの全体を 1 枚にまとめる。どのソフトが、どのプログラムを、どの設定ファイルで呼び、何をするかを
-段ごとに書く。主に書くのは、ハブ（`targets.json` の `hub`）を使う形。ハブを使わない形との違いは
+段ごとに書く。主に書くのは、ハブ（`targets.json` を置いた受け箱のフォルダ）を使う形。ハブを使わない形との違いは
 [§6](#6-ハブを使わない形) にある。
 
 - 設計: [Teams–SharePoint ブリッジ](../../../../docs/plans/2026-11-23-teams-sharepoint-bridge-design.md)・
@@ -31,7 +31,7 @@ flowchart LR
   end
 
   subgraph APP["④ 作業（PC・Copilot デスクトップアプリ）"]
-    BOX[("ハブの受け箱<br/>hub/.copilot-jobs<br/>targets.txt")]
+    BOX[("ハブの受け箱<br/>hub/.copilot-jobs<br/>targets.json")]
     AUTO["ハブの自動実行<br/>next → route → dispatched"]
     SES["宛先フォルダのセッション<br/>作業 → GitLab → finish"]
     BOX <--> AUTO
@@ -129,8 +129,7 @@ sequenceDiagram
 | `session-fetcher-task.xml` | タスクスケジューラに取り込む | タスクスケジューラ | フェッチャを毎分・ログオン時から・多重起動なしで動かす |
 | `change-watch-teams-bridge.yaml` | `~/.config/dagu/dags/` | Dagu | 毎分のワークフロー（get → check → submit / record-invalid → commit）。コマンドとファイルのパス |
 | `change-watch.yaml` | `~/.config/change-watch/teams-sharepoint-bridge-agent/` | change-watch | 受信フォルダ（`folder.path`）・`settle_sec`・`hash`・状態の置き場 |
-| `targets.json` | 同上 | teams_bridge.py | `hub`・`default`・宛先ごとの `dir`・`gitlab_project`・`mode`（`issue`／`commit`）・`description`・`keywords`・`channels` |
-| `targets.txt` | `<hub>/.copilot-jobs/`（`copilot_app_job.py target add` が書く） | copilot_app_job.py | 振ってよいフォルダ（`targets.json` の各 `dir` を登録する） |
+| `targets.json` | `<hub>/.copilot-jobs/`（置いた受け箱のフォルダがハブになる） | teams_bridge.py・copilot_app_job.py | `default`・宛先ごとの `dir`・`gitlab_project`・`mode`（`issue`／`commit`）・`description`・`keywords`・`channels`。copilot_app_job.py は各宛先の `dir` を「振ってよいフォルダ」として読む |
 | 自動実行のプロンプト | Copilot アプリの自動実行（ハブのフォルダ） | Copilot アプリ | `copilot_app_job.py prompt --dir <hub> --stay 50` が出す 3 行。間隔は 1 時間 |
 | 環境変数 `TEAMS_BRIDGE_COPILOT_JOB` | Dagu を動かす環境 | teams_bridge.py | `copilot_app_job.py` の絶対パス |
 
@@ -150,7 +149,7 @@ sequenceDiagram
 
 ## 6. ハブを使わない形
 
-`targets.json` に `hub` を書かないと、§2 の 4c は宛先のフォルダの受け箱（`<dir>/.copilot-jobs`）に置く。宛先のフォルダごとに
+`targets.json` を受け箱の外に置き、`hub` も書かないと、§2 の 4c は宛先のフォルダの受け箱（`<dir>/.copilot-jobs`）に置く。宛先のフォルダごとに
 Copilot アプリの自動実行を用意し、その自動実行のセッションが自分で作業して GitLab に上げる（5a・5b・`finish` は使わない。
 終わりは `done` を呼ぶ）。宛先の決め方の 5（候補から選ぶ）は飛ばし、既定の宛先にする。
 

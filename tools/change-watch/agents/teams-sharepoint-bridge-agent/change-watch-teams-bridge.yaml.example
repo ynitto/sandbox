@@ -49,7 +49,7 @@ steps:
         - "--path"
         - "${CHANGE.record.path}"  # 依頼本文はコマンド行に載せない
         - "--targets"
-        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--ledger"
         - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
     output: ROUTE
@@ -70,7 +70,7 @@ steps:
         - "--path"
         - "${CHANGE.record.path}"
         - "--targets"
-        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--ledger"
         - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/submitted.json"
     timeout_sec: 45
@@ -91,7 +91,7 @@ steps:
         - "--path"
         - "${CHANGE.record.path}"
         - "--targets"
-        - "/home/you/.config/change-watch/teams-sharepoint-bridge-agent/targets.json"
+        - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--log"
         - "/home/you/.local/state/change-watch/teams-sharepoint-bridge-agent/invalid.jsonl"
   - name: commit

@@ -1,5 +1,4 @@
 {
-  "hub": "C:/work/hub",
   "default": "app",
   "targets": {
     "app": {

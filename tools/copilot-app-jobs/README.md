@@ -144,24 +144,25 @@ sandbox フォルダのセッション
 **同じ振り先へは同時に 1 つだけ振ります。** 振り先のセッションが `finish` を呼ぶまで、同じ振り先の次の依頼は
 受け箱で待ち、置いた順に振られます。振り先が違えば並べて振れます。
 
-1. 振ってよいフォルダを登録します（登録していないフォルダには振りません）。振り先が複数あれば、1 つずつ足します。
+1. 振り先を名前を付けて登録します（登録していないフォルダには振りません）。振り先が複数あれば、1 つずつ足します。
+   登録は受け箱の `targets.json` に書かれます。
 
    ```powershell
-   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\sandbox
-   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\docs
+   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\sandbox --name sandbox --description "アプリのコード"
+   python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\my-folder --to C:\work\docs --name docs --description "手順書"
    ```
 
-2. 依頼に、結果をどこに書くかを書いて置きます。
+2. 依頼に、結果をどこに書くかを書いて置きます。`--to` には振り先の名前か、登録したフォルダを書きます。
 
    ```powershell
-   python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder --to C:\work\sandbox --no-wait --prompt "README の誤字を直して MR を出してください"
+   python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder --to sandbox --no-wait --prompt "README の誤字を直して MR を出してください"
    ```
 
 自動実行に貼るプロンプトは、振らない依頼と同じものです（`prompt` が出すもの）。
 
 | コマンド | 呼ぶもの | すること |
 |---|---|---|
-| `target add` / `remove` / `list` | 人 | 振ってよいフォルダを足す・外す・並べる |
+| `target add --to <フォルダ> --name <名前>` / `remove --name <名前>` / `list` | 人 | 振り先を足す・外す・並べる（受け箱の `targets.json`） |
 | `dispatched --id <ID>` | 自動実行 | 振り先でセッションを起こしたと記録し、次の依頼を出す。起こせなかったら `--failed "理由"` |
 | `route --id <ID> --to <名前>` | 自動実行 | `--to auto` の依頼の振り先を候補から決めて、待ち行列に戻す |
 | `finish --id <ID> --status ok --note <URL>` | 振られたセッション | 終わったことと、書いた MR・issue を記録し、振り先を空ける |
@@ -193,7 +194,7 @@ python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder 
   合うものが無ければ `default` を選びます。
 - 選ぶと、依頼の頭に「この依頼の振り先: 名前（理由）」が、末尾にその候補の `append` が付き、振り先の決まった依頼として
   受け箱の待ち行列に戻ります（置いた順はそのまま）。あとはふつうの振る依頼と同じです。
-- 候補のフォルダは、どれも `target add` で登録しておきます。
+- 候補のフォルダは、どれも振り先として登録しておきます。
 
 ## 受け箱の中身
 
@@ -206,7 +207,7 @@ python C:\tools\copilot-app-jobs\copilot_app_job.py run --dir C:\work\my-folder 
 | `dispatched` | ほかのフォルダのセッションに振った依頼（そのセッションが `finish` するまで） |
 | `done` | 済んだ依頼 |
 | `results` | 結果。1 行目が `status: ok` か `status: failed`、3 行目から報告 |
-| `targets.txt` | 振ってよいフォルダ（`target add` で足す） |
+| `targets.json` | 振り先の表（名前ごとの `dir`・`description`）。`target add` が書く。Teams のブリッジも同じファイルを読み、宛先ごとの項目を足して使う |
 
 済んだものは自動では消えません。たまったら `done` と `results` を消してかまいません。作業フォルダを
 git で管理しているなら、`.copilot-jobs/` を無視の対象に入れておきます。
@@ -214,7 +215,7 @@ git で管理しているなら、`.copilot-jobs/` を無視の対象に入れ�
 ## 気をつけること
 
 - **受け箱に置かれた文はそのまま実行されます。** 受け箱に書き込めるのを、依頼を出す人と仕組みだけに
-  しておきます。振り先の登録（`targets.txt`）も同じです。
+  しておきます。振り先の表（`targets.json`）も同じです。
 - アプリのセッションが途中で落ちた依頼は `running` に残り、2 時間たつと先にやり直されます
   （`next --stale <秒>` で変えられます）。
 - 同じ作業フォルダの依頼は 1 件ずつ順に処理されます。並べて走らせたいときはフォルダを分け、

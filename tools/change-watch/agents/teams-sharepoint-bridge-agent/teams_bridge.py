@@ -68,16 +68,34 @@ def _keyword_hits(text, words):
     return [w for w in words if isinstance(w, str) and w.strip() and w.lower() in low]
 
 
+def _for_teams(target):
+    """Teams の宛先か。gitlab_project も mode も無いものは、Teams 以外から振るために登録した振り先として外す。
+    どちらかがあれば Teams の宛先として扱い、書き誤りはそのまま様式違反にする（黙って外さない）。"""
+    return not isinstance(target, dict) or "gitlab_project" in target or "mode" in target
+
+
+def _hub_of(config, path):
+    """ハブのフォルダ。宛先表がハブの受け箱（<ハブ>/.copilot-jobs/targets.json）にあれば、その場所から決める。"""
+    hub = config.get("hub")
+    if hub is not None:
+        if not _nonempty(hub) or not Path(hub).is_absolute():
+            raise ValueError("宛先表の hub は絶対パスで指定してください")
+        return hub
+    folder = Path(path).expanduser().resolve().parent
+    return str(folder.parent) if folder.name == ".copilot-jobs" else None
+
+
 def _resolve_target(request, path):
     """宛先を決める。決まる順: 投稿の 1 行目の #名前・【名前】 → フローの target → チャンネル → キーワード
-    → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。"""
+    → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。
+
+    宛先表は copilot-app-jobs の振り先の表と同じファイル。gitlab_project・mode の無い宛先（Teams 以外から振るために
+    登録したもの）は、Teams の振り分けには使わない。"""
     config = _read_json(path)
     if not isinstance(config, dict) or not isinstance(config.get("targets"), dict):
         raise ValueError("宛先表の targets はオブジェクトである必要があります")
-    targets = config["targets"]
-    hub = config.get("hub")
-    if hub is not None and (not _nonempty(hub) or not Path(hub).is_absolute()):
-        raise ValueError("宛先表の hub は絶対パスで指定してください")
+    targets = {n: t for n, t in config["targets"].items() if _for_teams(t)}
+    hub = _hub_of(config, path)
     text = request.get("text") if isinstance(request.get("text"), str) else ""
     first = next((line for line in text.splitlines() if line.strip()), "")
 

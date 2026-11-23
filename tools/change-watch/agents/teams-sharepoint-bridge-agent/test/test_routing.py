@@ -132,10 +132,24 @@ class RoutingTest(unittest.TestCase):
 
     # -- ハブの受け箱をたどる
 
+    def use_hub_file(self) -> None:
+        """宛先表をハブの受け箱に置く（copilot-app-jobs の振り先の表と同じファイル）。hub は書かない。"""
+        self.targets = self.hub / ".copilot-jobs" / "targets.json"
+        self.targets.parent.mkdir(parents=True)
+        self.config["targets"]["scratch"] = {"dir": str(self.ops)}   # Teams 以外から振るために登録した振り先
+        self.write(text="お願いします")
+
+    def test_hub_is_inferred_from_file_location(self):
+        self.use_hub_file()
+        self.write(text="来週の打ち合わせの資料を作って")
+        out = self.dry()
+        self.assertEqual(out["command"][out["command"].index("--dir") + 1], str(self.hub))
+        self.assertEqual(out["route"]["choices"], ["app", "docs", "ops"])   # scratch は Teams の宛先ではない
+        self.write(text="#scratch これは振れない")
+        self.assertEqual(self.dry()["route"]["target"], "auto")
+
     def test_end_to_end_through_hub(self):
-        self.config["hub"] = str(self.hub)
-        for folder in (self.app, self.docs, self.ops):
-            self.assertEqual(call(jobs, "target", "add", "--dir", str(self.hub), "--to", str(folder))[0], 0)
+        self.use_hub_file()
         self.write(text="先月の障害の再発防止策を手順書にまとめて")   # 障害・手順書 → 同点で ops と docs
         code, out, err = call(bridge, "submit", "--path", str(self.path), "--targets", str(self.targets),
                               "--ledger", str(self.ledger), "--jobs-py", str(JOBS_PY), "--python", sys.executable)
@@ -149,7 +163,7 @@ class RoutingTest(unittest.TestCase):
         self.assertNotIn("- app:", text)
         code, text, err = call(jobs, "route", "--dir", str(self.hub), "--id", job_id, "--to", "docs", "--why", "手順書にまとめる依頼")
         self.assertEqual(code, 0, err)
-        self.assertIn(f"ローカルフォルダ {self.docs.resolve()}", text)
+        self.assertIn(f"ローカルフォルダ {self.docs}", text)
         self.assertIn("結果を GitLab のプロジェクト `g/docs` にコミットして push してください", text)
         self.assertIn("宛先: docs（ハブのセッションが選んだ）", text)
         self.assertIn("<!-- teams-bridge:request=req-1 teams-message=m-1 -->", text)
@@ -159,7 +173,10 @@ class RoutingTest(unittest.TestCase):
         code, out, _ = call(bridge, "submit", "--path", str(self.path), "--targets", str(self.targets),
                             "--ledger", str(self.ledger), "--jobs-py", str(JOBS_PY), "--python", sys.executable)
         self.assertEqual(json.loads(out)["job"], job_id)
-
+        # 振り先の表も同じファイル。target add は Teams の項目を残して説明だけを変える
+        call(jobs, "target", "add", "--dir", str(self.hub), "--to", str(self.docs), "--name", "docs", "--description", "手順書")
+        kept = json.loads(self.targets.read_text(encoding="utf-8"))["targets"]["docs"]
+        self.assertEqual((kept["gitlab_project"], kept["description"]), ("g/docs", "手順書"))
 
 if __name__ == "__main__":
     unittest.main()
