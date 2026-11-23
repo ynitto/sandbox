@@ -37,6 +37,9 @@ function parseOffset(text, invalid) {
   if (text === "Z" || text === "z") return 0;
   const [hour, minute, second, micro] = parseClock(text.slice(1), invalid);
   const whole = hour * 3600 + minute * 60 + second;
+  // CPython fromisoformat の癖: 時分秒がすべて 0 のオフセットでは小数部が落ちる
+  // （+00:00:00.5 の utcoffset は 0 になる）。元実装の挙動として再現する。
+  if (whole === 0) return 0;
   const sign = text[0] === "-" ? -1 : 1;
   const offset = sign * (whole + micro / 1e6);
   if (whole >= DAY_SECONDS) {
