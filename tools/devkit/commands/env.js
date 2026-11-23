@@ -4,6 +4,7 @@
 // 2つの .env ファイルを比較する。既定では値を表示しない。
 
 const fs = require("fs");
+const path = require("path");
 const { ArgParser, UsageError } = require("../core/args");
 const { pyRepr, pyJsonStringify } = require("../core/py");
 
@@ -47,10 +48,10 @@ const STRERROR = {
   ENOTDIR: "Not a directory",
 };
 
-function readInput(pathLabel) {
+function readInput(pathLabel, cwd) {
   let buffer;
   try {
-    buffer = fs.readFileSync(pathLabel);
+    buffer = fs.readFileSync(path.resolve(cwd, pathLabel));
   } catch (error) {
     throw new UsageError(`${pathLabel}: ${STRERROR[error.code] || error.message}`);
   }
@@ -146,8 +147,8 @@ function run(argv, io) {
   parser.addPositional("file_b", { metavar: "ファイルB" });
   const args = parser.parse(argv);
 
-  const a = readInput(args.file_a);
-  const b = readInput(args.file_b);
+  const a = readInput(args.file_a, io.cwd);
+  const b = readInput(args.file_b, io.cwd);
   const result = compare(a.values, b.values, a.duplicates, b.duplicates, args.show_values);
   const hasDifferences = Object.values(result).some((entries) => entries.length > 0);
   if (args.json) {

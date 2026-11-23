@@ -37,7 +37,6 @@ function parseOffset(text, invalid) {
   if (text === "Z" || text === "z") return 0;
   const [hour, minute, second, micro] = parseClock(text.slice(1), invalid);
   const whole = hour * 3600 + minute * 60 + second;
-  if (whole === 0) return 0;
   const sign = text[0] === "-" ? -1 : 1;
   const offset = sign * (whole + micro / 1e6);
   if (whole >= DAY_SECONDS) {
@@ -99,7 +98,7 @@ function parseIsoDateTime(text) {
   return { wall, offsetSeconds };
 }
 
-// tz.js uses Date.UTC for offsets, which treats years 0–99 as 1900–1999.
+// For instants before year 101, sample the zone offset at a fixed early point.
 // IANA zones use their initial offset before their first transition.
 const EARLY_SAMPLE = wallSeconds({ year: 101, month: 1, day: 1, hour: 0, minute: 0, second: 0 });
 function zoneOffset(zone, seconds) {

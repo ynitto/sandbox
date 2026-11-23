@@ -52,6 +52,15 @@ test("time claims", async () => {
   assert.ok(!utc.includes("期限切れ"));
 });
 
+test("time claims before year 100 use the historical offset", async () => {
+  // 西暦50年の exp。Date.UTC の年 0〜99 読み替えでオフセットが壊れる回帰の防止。
+  const token = makeToken('{"exp":-60574996800}');
+  const { status, stdout, stderr } = await runMain([token, "--tz", "Asia/Tokyo"]);
+  assert.equal(status, 0);
+  assert.equal(stderr, "");
+  assert.ok(stdout.includes("exp: 0050-06-15T21:18:59+09:18:59"));
+});
+
 test("string time claims", async () => {
   const token = makeToken('{"exp":"99","nbf":"101","iat":"0","auth_time":"1"}');
   const { status, stdout, stderr } = await runMain([token]);

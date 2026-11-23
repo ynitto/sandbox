@@ -30,6 +30,8 @@ function discoverCommands() {
     if (commands.has(mod.name)) {
       throw new Error(`commands/${file}: コマンド名 ${mod.name} が重複しています`);
     }
+    if (typeof mod.usage !== "string") mod.usage = `devkit ${mod.name}`;
+    if (typeof mod.help !== "string") mod.help = "";
     commands.set(mod.name, mod);
   }
   return commands;
@@ -43,7 +45,7 @@ function topLevelHelp(commands) {
     "",
     "commands:",
   ];
-  const width = Math.max(...[...commands.keys()].map((name) => name.length));
+  const width = Math.max(0, ...[...commands.keys()].map((name) => name.length));
   for (const [name, mod] of [...commands.entries()].sort()) {
     lines.push(`  ${name.padEnd(width)}  ${mod.help || ""}`);
   }

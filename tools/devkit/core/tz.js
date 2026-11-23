@@ -50,11 +50,12 @@ function partsAt(zone, epochSeconds) {
 }
 
 // 現地時刻部品を UTC として解釈した epoch 秒。
+// Date.UTC は年 0〜99 を 1900〜1999 に読み替えるため、setUTCFullYear で組み立てる。
 function wallAsUtcSeconds(wall) {
-  return (
-    Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second) /
-    1000
-  );
+  const date = new Date(0);
+  date.setUTCFullYear(wall.year, wall.month - 1, wall.day);
+  date.setUTCHours(wall.hour, wall.minute, wall.second, 0);
+  return date.getTime() / 1000;
 }
 
 // 指定した瞬間におけるゾーンの UTC オフセット（秒）。
