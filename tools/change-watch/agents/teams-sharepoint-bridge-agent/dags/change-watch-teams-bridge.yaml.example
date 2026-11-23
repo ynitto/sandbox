@@ -46,8 +46,10 @@ steps:
         - "--plugin"
         - "teams_bridge"
         - "check-file"
-        - "--path"
-        - "${CHANGE.record.path}"  # 依頼本文はコマンド行に載せない
+        - "--inbox"
+        - "C:/TeamsBridge/inbox"  # change-watch.yaml の folder.path と同じ
+        - "--name"
+        - "${CHANGE.record.rel}"  # 受信フォルダからの相対の名前。Windows の道（\\ を含む）を Dagu に展開させない
         - "--targets"
         - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--ledger"
@@ -67,8 +69,10 @@ steps:
         - "--plugin"
         - "teams_bridge"
         - "submit"
-        - "--path"
-        - "${CHANGE.record.path}"
+        - "--inbox"
+        - "C:/TeamsBridge/inbox"  # change-watch.yaml の folder.path と同じ
+        - "--name"
+        - "${CHANGE.record.rel}"  # 受信フォルダからの相対の名前。Windows の道（\\ を含む）を Dagu に展開させない
         - "--targets"
         - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--ledger"
@@ -88,8 +92,10 @@ steps:
         - "--plugin"
         - "teams_bridge"
         - "record-invalid"
-        - "--path"
-        - "${CHANGE.record.path}"
+        - "--inbox"
+        - "C:/TeamsBridge/inbox"  # change-watch.yaml の folder.path と同じ
+        - "--name"
+        - "${CHANGE.record.rel}"  # 受信フォルダからの相対の名前。Windows の道（\\ を含む）を Dagu に展開させない
         - "--targets"
         - "/home/you/work/hub/.copilot-jobs/targets.json"  # 宛先表。ハブの受け箱に置く（振り先の表を兼ねる）
         - "--log"

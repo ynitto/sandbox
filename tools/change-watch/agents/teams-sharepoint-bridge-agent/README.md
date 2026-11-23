@@ -144,6 +144,11 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 | `submit --path F --targets F [--ledger F] [--jobs-py PATH] [--python CMD] [--dry-run]` | 受け箱に提出し、結果を JSON で出す。提出済みなら `already` を返す。`--dry-run` では依頼文とコマンドを JSON で確認できる |
 | `record-invalid --path F [--log F] [--targets F]` | 検証し直して、違反の理由を JSON Lines に追記する。宛先の検証も記録するときは `check-file` と同じ宛先表を渡す |
 
+依頼ファイルは `--path F` の代わりに、`--inbox <受信フォルダ> --name <受信フォルダからの相対の名前>` でも渡せる。Dagu の例は
+こちらを使い、`--name` に get の出力の `record.rel` を渡す。Windows の道（`C:\TeamsBridge\inbox\tm-1.json`）を `${CHANGE.record.path}`
+で引数に展開させると、途中の `\t` などが制御文字に化けて、存在しない道を読み続けることがあるため。読めなかったときは、
+`check-file` が `missing` を出し、読めなかった道を標準エラーに書く（制御文字が入っていれば、そう書く）。
+
 依頼は UTF-8 の JSON で、`request_id` とファイル名 `<request_id>.json` をそろえる。
 `team_id`、`channel_id`、`message_id`、`author`、`posted_at`（ISO 8601）、`text`（2 万文字まで）は必須。
 `target` は省略できる。返信先を引けるよう、Teams への返信が済むまで SharePoint の依頼ファイルを残す。

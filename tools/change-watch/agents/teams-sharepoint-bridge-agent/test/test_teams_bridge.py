@@ -140,7 +140,28 @@ class TeamsBridgeTests(unittest.TestCase):
 
     def test_check_missing_file(self):
         self.path.unlink()
-        self.assert_route("missing")
+        code, out, err = run_main("check-file", "--path", str(self.path), "--targets", str(self.targets),
+                                  "--ledger", str(self.ledger))
+        self.assertEqual((code, out), (0, "missing\n"))
+        self.assertIn("依頼ファイルを読めません", err)      # どの道を読めなかったかを Dagu の記録に残す
+        self.assertIn(repr(str(self.path)), err)
+
+    def test_check_by_inbox_and_name(self):
+        # Dagu の例は --inbox と --name で渡す（Windows の道の \t が制御文字に化けないように）
+        code, out, err = run_main("check-file", "--inbox", str(self.path.parent), "--name", self.path.name,
+                                  "--targets", str(self.targets), "--ledger", str(self.ledger))
+        self.assertEqual((code, out, err), (0, "submit\n", ""))
+        for bad in ("../x.json", "/etc/x.json", "C:/x.json", ""):
+            code, out, err = run_main("check-file", "--inbox", str(self.path.parent), "--name", bad,
+                                      "--targets", str(self.targets), "--ledger", str(self.ledger))
+            self.assertEqual(out, "missing\n", bad)
+
+    def test_check_explains_control_characters_in_path(self):
+        broken = str(self.path.parent) + "\tm-1.json"      # Dagu が \t を展開したときの形
+        code, out, err = run_main("check-file", "--path", broken, "--targets", str(self.targets),
+                                  "--ledger", str(self.ledger))
+        self.assertEqual(out, "missing\n")
+        self.assertIn("制御文字", err)
 
     def test_check_malformed_json(self):
         self.path.write_text("{", encoding="utf-8")
