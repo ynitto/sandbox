@@ -67,14 +67,50 @@ class DispatchTest(Base):
         code, _, err = call("run", "--dir", str(self.hub), "--to", str(self.hub), "--prompt", "x", "--no-wait")
         self.assertEqual(code, job.EXIT_USAGE)
         self.assertIn("登録されていません", err)
-        code, _, err = call("run", "--dir", str(self.hub), "--to", str(self.hub / "nothing"), "--prompt", "x")
+        code, _, err = call("run", "--dir", str(self.hub), "--to", "nothing", "--prompt", "x")
         self.assertEqual(code, job.EXIT_USAGE)
         listed = call("target", "list", "--dir", str(self.hub))[1].splitlines()
-        self.assertEqual(listed, [str(self.a.resolve()), str(self.b.resolve())])
+        self.assertEqual(listed, [f"sandbox\t{self.a}", f"other\t{self.b}"])
         call("target", "remove", "--dir", str(self.hub), "--to", str(self.b))
-        self.assertEqual(call("target", "list", "--dir", str(self.hub))[1].splitlines(), [str(self.a.resolve())])
-        call("target", "add", "--dir", str(self.hub), "--to", str(self.a))     # 二度足しても 1 行
+        self.assertEqual(call("target", "list", "--dir", str(self.hub))[1].splitlines(), [f"sandbox\t{self.a}"])
+        call("target", "add", "--dir", str(self.hub), "--to", str(self.a))     # 二度足しても 1 件
         self.assertEqual(len(call("target", "list", "--dir", str(self.hub))[1].splitlines()), 1)
+        self.assertFalse((self.box / "targets.txt").exists())
+
+    def test_targets_json_names_and_kept_fields(self):
+        import json
+        path = self.box / "targets.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["default"] = "sandbox"
+        data["targets"]["sandbox"].update(gitlab_project="g/app", mode="issue")   # Teams のブリッジの項目
+        path.write_text(json.dumps(data), encoding="utf-8")
+        code, out, _ = call("target", "add", "--dir", str(self.hub), "--to", str(self.a), "--name", "sandbox",
+                            "--description", "アプリ")
+        self.assertEqual(code, 0)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["default"], "sandbox")
+        self.assertEqual(data["targets"]["sandbox"], {"dir": str(self.a), "gitlab_project": "g/app", "mode": "issue",
+                                                      "description": "アプリ"})
+        self.assertIn("アプリ", call("target", "list", "--dir", str(self.hub))[1])
+        # 同じフォルダを別の名前では登録しない
+        code, _, err = call("target", "add", "--dir", str(self.hub), "--to", str(self.a), "--name", "dup")
+        self.assertEqual(code, job.EXIT_USAGE)
+        self.assertIn("sandbox として登録済み", err)
+        # 名前で振れる
+        code, out, _ = call("run", "--dir", str(self.hub), "--to", "sandbox", "--prompt", "x", "--no-wait")
+        self.assertEqual(code, 0)
+        self.assertEqual(job.job_meta(self.box, "pending", out.strip())["to"], str(self.a))
+        # 名前で外す
+        self.assertEqual(call("target", "remove", "--dir", str(self.hub), "--name", "sandbox")[0], 0)
+        self.assertNotIn("sandbox", json.loads(path.read_text(encoding="utf-8"))["targets"])
+
+    def test_broken_targets_json_keeps_jobs_waiting(self):
+        a1 = self.submit(self.a, "x")
+        (self.box / "targets.json").write_text("{broken", encoding="utf-8")
+        self.assertEqual(self.next(), "なし\n")
+        self.assertTrue((self.box / "pending" / f"{a1}.md").exists())
+        code, _, err = call("target", "list", "--dir", str(self.hub))
+        self.assertEqual(code, job.EXIT_USAGE)
 
     def test_dispatch_does_not_wait_and_queues_per_folder(self):
         a1 = self.submit(self.a, "README の誤字を直して MR を出して")

@@ -14,7 +14,7 @@
     受け箱/done/<id>.md      済んだ依頼
     受け箱/results/<id>.md   結果。1 行目が `status: ok` か `status: failed`、3 行目から報告
     受け箱/dispatched/<id>.md  ほかのフォルダのセッションに振った依頼（そのセッションが finish するまで）
-    受け箱/targets.txt       振ってよいフォルダ（1 行 1 つ。target add で足す）
+    受け箱/targets.json      振り先（名前ごとの dir と説明。target add で足す。Teams のブリッジも同じファイルを読む）
 
 振り先を --to auto にした依頼は、候補（名前・フォルダ・説明・選んだときに足す文）を一緒に置く。拾ったセッションが
 候補から 1 つ選んで route を呼ぶと、振り先を決めた依頼として受け箱の待ち行列に戻る（置いた順はそのまま）。
@@ -43,7 +43,8 @@ BOX_NAME = ".copilot-jobs"
 STATES = ("pending", "running", "dispatched", "done", "results")
 META = re.compile(r"^<!-- copilot-app-job: (\{[^\n]*\}) -->\n")
 AUTO = "auto"                       # 振り先をハブのセッションに選ばせる
-TARGETS = "targets.txt"
+TARGETS = "targets.json"
+NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 DISPATCH_STALE = 6 * 3600           # 振ったまま finish の来ない依頼を、止まったとみなすまで
 JOB_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 STATUS_LINE = re.compile(r"^\s*status\s*:\s*(ok|failed)\s*$", re.IGNORECASE)
@@ -83,17 +84,47 @@ def norm(folder: "str | Path") -> str:
     return text.lower() if os.name == "nt" or re.match(r"^[A-Za-z]:/", text) else text
 
 
-def targets(box: Path) -> "list[str]":
+def load_targets(box: Path) -> dict:
+    """振り先の表（受け箱の targets.json）。{"targets": {名前: {"dir": …, "description": …, ほかの項目}}}。
+
+    ここで使うのは各宛先の dir（と説明）だけ。Teams のブリッジが使う項目（gitlab_project など）は読まずに残す。
+    """
     try:
-        lines = (box / TARGETS).read_text(encoding="utf-8").splitlines()
+        data = json.loads((box / TARGETS).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return []
-    return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+        return {"targets": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("targets", {}), dict):
+        raise ValueError(f"{box / TARGETS} の targets はオブジェクトにしてください")
+    data.setdefault("targets", {})
+    return data
+
+
+def save_targets(box: Path, data: dict) -> None:
+    tmp = box / "tmp" / f"{TARGETS}.tmp"
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, box / TARGETS)
+
+
+def targets(box: Path) -> "dict[str, str]":
+    """名前 → フォルダ。dir の無い宛先は数えない。"""
+    out = {}
+    for name, spec in load_targets(box)["targets"].items():
+        if isinstance(spec, dict) and isinstance(spec.get("dir"), str) and spec["dir"].strip():
+            out[str(name)] = spec["dir"]
+    return out
 
 
 def allowed_target(box: Path, folder: "str | Path") -> bool:
     want = norm(folder)
-    return any(norm(t) == want for t in targets(box))
+    return any(norm(t) == want for t in targets(box).values())
+
+
+def resolve_to(box: Path, value: str) -> "str | None":
+    """--to の値を振り先のフォルダにする。宛先の名前でも、登録したフォルダのパスでもよい。登録に無ければ None。"""
+    named = targets(box).get(value)
+    if named:
+        return named
+    return value if allowed_target(box, value) else None
 
 
 def split_meta(text: str) -> "tuple[dict, str]":
@@ -258,7 +289,11 @@ def claim_next(box: Path, stale_sec: float = 7200, wall=time.time, dispatch_stal
             to = ""                         # 振り先はこれから選ぶ。選ぶところまではどのフォルダもふさがない
         if to and norm(to) in busy:
             continue                        # 同じフォルダのセッションがまだ動いている。順番を待たせる
-        if to and not allowed_target(box, to):
+        try:
+            allowed = not to or allowed_target(box, to)
+        except ValueError:
+            continue                        # 振り先の表が壊れている。直るまで振り先のある依頼は待たせる
+        if not allowed:
             reject(box, path, f"振り先のフォルダが登録されていません: {to}（target add で足します）")
             continue
         target = box / "running" / path.name
@@ -355,7 +390,11 @@ def route(box: Path, job_id: str, name: str, why: str = "") -> str:
     choice = (meta.get("choices") or {}).get(name)
     if not isinstance(choice, dict) or not choice.get("dir"):
         return f"候補に {name} はありません（{', '.join(meta.get('choices') or {})}）"
-    if not allowed_target(box, choice["dir"]):
+    try:
+        allowed = allowed_target(box, choice["dir"])
+    except ValueError as error:
+        return f"振り先の表を読めません: {error}"
+    if not allowed:
         finish(box, job_id, "failed", f"選ばれた振り先のフォルダが登録されていません: {choice['dir']}")
         return ""
     note = f"この依頼の振り先: {name}（ハブのセッションが選んだ" + (f"。理由: {why}" if why else "") + "）\n\n"
@@ -472,13 +511,18 @@ def cmd_run(args: argparse.Namespace) -> int:
             return EXIT_USAGE
         to = AUTO
     elif args.to:
-        if not Path(args.to).is_dir():
-            print(f"振り先のフォルダがありません: {args.to}", file=sys.stderr)
+        try:
+            folder = resolve_to(box, args.to)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
             return EXIT_USAGE
-        if not allowed_target(box, args.to):
-            print(f"振り先のフォルダが登録されていません: {args.to}（target add で足します）", file=sys.stderr)
+        if folder is None:
+            print(f"振り先が登録されていません: {args.to}（target add で足します）", file=sys.stderr)
             return EXIT_USAGE
-        to = args.to
+        if not Path(folder).is_dir():
+            print(f"振り先のフォルダがありません: {folder}", file=sys.stderr)
+            return EXIT_USAGE
+        to = folder
     job_id = submit(box, prompt, args.name, to, choices)
     print(f"依頼を置きました: {job_id}", file=sys.stderr)
     if args.no_wait:
@@ -587,26 +631,50 @@ def cmd_target(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     box = box_of(work_dir, args.box)
     ensure_box(box)
-    current = targets(box)
-    if args.action == "list":
-        for t in current:
-            print(t)
-        return EXIT_OK
-    folder = Path(args.to).resolve() if args.to else None
-    if folder is None:
-        print("--to を指定してください", file=sys.stderr)
+    try:
+        data = load_targets(box)
+    except (ValueError, json.JSONDecodeError) as error:
+        print(f"{box / TARGETS} を読めません: {error}", file=sys.stderr)
         return EXIT_USAGE
+    table = data["targets"]
+    if args.action == "list":
+        for name, folder in targets(box).items():
+            desc = (table.get(name) or {}).get("description") or ""
+            print(f"{name}\t{folder}" + (f"\t{desc}" if desc else ""))
+        return EXIT_OK
     if args.action == "add":
+        if not args.to:
+            print("--to（フォルダ）を指定してください", file=sys.stderr)
+            return EXIT_USAGE
+        folder = Path(args.to).resolve()
         if not folder.is_dir():
             print(f"フォルダがありません: {folder}", file=sys.stderr)
             return EXIT_USAGE
-        if not allowed_target(box, folder):
-            current.append(str(folder))
-        print(f"振り先に足しました: {folder}")
-    else:
-        current = [t for t in current if norm(t) != norm(folder)]
-        print(f"振り先から外しました: {folder}")
-    (box / TARGETS).write_text("".join(t + "\n" for t in current), encoding="utf-8")
+        name = args.name or re.sub(r"[^A-Za-z0-9_.-]+", "-", folder.name).strip("-") or "target"
+        if not NAME.match(name):
+            print(f"名前は英数字・ピリオド・下線・ハイフンで 64 文字まで: {name}", file=sys.stderr)
+            return EXIT_USAGE
+        other = next((n for n, d in targets(box).items() if norm(d) == norm(folder) and n != name), None)
+        if other:
+            print(f"このフォルダは {other} として登録済みです", file=sys.stderr)
+            return EXIT_USAGE
+        spec = dict(table.get(name) or {})        # ほかの項目（Teams のブリッジのもの）は残す
+        spec["dir"] = str(folder)
+        if args.description is not None:
+            spec["description"] = args.description
+        table[name] = spec
+        save_targets(box, data)
+        print(f"振り先 {name} を登録しました: {folder}")
+        return EXIT_OK
+    key = args.name
+    if not key and args.to:
+        key = next((n for n, d in targets(box).items() if norm(d) == norm(args.to)), None)
+    if not key or key not in table:
+        print(f"登録に無い振り先です: {args.name or args.to}", file=sys.stderr)
+        return EXIT_USAGE
+    del table[key]
+    save_targets(box, data)
+    print(f"振り先 {key} を外しました")
     return EXIT_OK
 
 
@@ -734,10 +802,12 @@ def build_parser() -> argparse.ArgumentParser:
     fin.add_argument("--report-file", help="報告を書いたファイル")
     fin.set_defaults(func=cmd_finish)
 
-    target = sub.add_parser("target", help="振ってよいフォルダを足す・外す・並べる")
+    target = sub.add_parser("target", help="振り先（受け箱の targets.json）を足す・外す・並べる")
     common(target)
     target.add_argument("action", choices=["add", "remove", "list"])
-    target.add_argument("--to", help="フォルダ")
+    target.add_argument("--to", help="フォルダ（add で必須。remove では --name の代わりに使える）")
+    target.add_argument("--name", help="振り先の名前（add で省くとフォルダ名）")
+    target.add_argument("--description", help="振り先が受け持つこと（--to auto で選ぶときの材料）")
     target.set_defaults(func=cmd_target)
 
     status = sub.add_parser("status", help="受け箱の中身を数える")

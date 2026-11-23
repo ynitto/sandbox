@@ -1,8 +1,19 @@
 # teams-sharepoint-bridge-agent
 
 Teams の投稿から Power Automate が SharePoint に作った依頼 JSON を、同期先のフォルダから受け取る。
-このエージェントは依頼を検証し、宛先の Copilot アプリの受け箱へ相関マーカー付きの依頼文を提出する。
-Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Power Automate が Teams の元の投稿へ返信する。
+このエージェントは依頼を検証して宛先を決め、Copilot アプリのハブの受け箱へ相関マーカー付きの依頼文を提出する。
+ハブの自動実行は宛先のフォルダでセッションを起こして依頼を渡し、そのセッションが GitLab に結果を上げる。
+GitLab の通知メールを受けた Power Automate が Teams の元の投稿へ返信する。
+
+標準の形は、**ハブのフォルダを 1 つ**用意して Copilot アプリの自動実行をそこで 1 つだけ動かし、作業する**フォルダ（宛先）を
+いくつでも**登録する形。宛先ごとに自動実行を作る必要はない。
+
+```text
+C:\work\hub      ← ハブ。受け箱（.copilot-jobs）があり、自動実行が 1 つだけ動く。作業はしない
+C:\work\app      ← 宛先 app。ハブが振った依頼を、このフォルダのセッションが作業する
+C:\work\docs     ← 宛先 docs
+C:\work\ops      ← 宛先 ops
+```
 
 全体の構成（呼び出し元・呼び出すプログラム・設定ファイル・処理の概要）と流れは [ARCHITECTURE.md](ARCHITECTURE.md) にまとめた。
 
@@ -22,16 +33,48 @@ Copilot が GitLab に結果を上げ、GitLab の通知メールを受けた Po
    ```
 
 3. `~/.config/change-watch/teams-sharepoint-bridge-agent/` に置かれた `change-watch.yaml` の `folder.path` と `settle_sec` を使う方式に合わせる。フェッチャ方式ではローカル受信フォルダと `0`、直結方式では同期先と `10` を指定する。どちらも `hash: true` を使う。
-   `targets.json` の `targets` に宛先名ごとの設定を書く。 `dir` は Copilot アプリで開く作業フォルダの絶対パス、
-   `gitlab_project` は `group/project` の形、`mode` は issue を作るなら `issue`、コミットをプッシュするなら `commit`。
-   依頼 JSON の `target` が省略されたときは `default` の宛先名を使う。
-4. 各作業フォルダで [copilot-app-jobs](../../../copilot-app-jobs/README.md) の手順に従い、受け箱を拾う Copilot アプリの自動実行を用意する。
-   Dagu を起動する環境の `TEAMS_BRIDGE_COPILOT_JOB` に `copilot_app_job.py` の絶対パスを設定する。
+4. ハブの受け箱に `targets.json` を置き、宛先を書く（雛形は [targets.json.example](targets.json.example)）。置き場所は
+   `C:\work\hub\.copilot-jobs\targets.json`。このファイルは copilot-app-jobs の振り先の表を兼ねるので、ここに書いた
+   宛先のフォルダには、ほかに登録しなくても振れる。置いた受け箱のフォルダ（`C:\work\hub`）がハブになる。
+
+   ```json
+   {
+     "default": "app",
+     "targets": {
+       "app":  {"dir": "C:/work/app",  "gitlab_project": "group/app",  "mode": "issue",
+                "description": "業務アプリのコードと不具合", "keywords": ["バグ", "画面"]},
+       "docs": {"dir": "C:/work/docs", "gitlab_project": "group/docs", "mode": "commit",
+                "description": "手順書とマニュアル", "keywords": ["マニュアル", "手順書"]},
+       "ops":  {"dir": "C:/work/ops",  "gitlab_project": "group/ops",  "mode": "issue",
+                "description": "障害の対応と再発防止", "keywords": ["障害", "アラート"]}
+     }
+   }
+   ```
+
+   - `targets` は宛先名ごとに、`dir`（作業するフォルダの絶対パス）・`gitlab_project`（`group/project` の形）・
+     `mode`（issue を作るなら `issue`、コミットをプッシュするなら `commit`）を書く。宛先はいくつでも足せる。
+   - `description` は、規則で宛先が決まらない依頼をハブのセッションが選ぶときの材料。`keywords`・`channels` は
+     [投稿の中身で宛先を振る](#投稿の中身で宛先を振る) を参照。`default` は、どれにも決まらないときの宛先名。
+   - Dagu のワークフロー（`change-watch-teams-bridge.yaml`）の `--targets` を、このファイルのパスにする。
+   - `gitlab_project` も `mode` も無い宛先（Teams を通さずに振るために `target add` で足したもの）は、Teams の振り分けには使わない。
+5. ハブを用意する（[copilot-app-jobs](../../../copilot-app-jobs/README.md) の「ほかのフォルダのセッションに振る」）。
+   1. ハブのフォルダと、各宛先のフォルダを、Copilot アプリでそれぞれ一度プロジェクトとして開く。
+   2. ハブのフォルダに、Copilot アプリの自動実行を 1 つ作る。貼るプロンプトは次のコマンドが出す（間隔は 1 時間）。
+
+      ```powershell
+      python C:\tools\copilot-app-jobs\copilot_app_job.py prompt --dir C:\work\hub --stay 50
+      ```
+
+   宛先を足すときは、`targets.json` に 1 つ書き足すだけでよい。自動実行は増やさない。
+6. Dagu を起動する環境の `TEAMS_BRIDGE_COPILOT_JOB` に `copilot_app_job.py` の絶対パスを設定する。
    リポジトリ内の `teams_bridge.py` を直接使うときは、未設定なら同じリポジトリのスクリプトを探す。
-5. Dagu のスケジューラを動かす。インストーラが `~/.config/dagu/dags/` に置く `change-watch-teams-bridge.yaml` は毎分起動し、
+7. Dagu のスケジューラを動かす。インストーラが `~/.config/dagu/dags/` に置く `change-watch-teams-bridge.yaml` は毎分起動し、
    `get` で変化を 1 件受け取る。現れたファイルと、内容が変わったファイルを `check-file` に渡し、結果に応じて `submit` または
    `record-invalid` を動かしてから `commit` する。処理済みや見つからない依頼、削除も `commit` する。
    このソリューションに要る DAG 例は [dags/](dags/README.md) に一式そろえた（原本はこのフォルダの直下と各ツール側にあり、dags/ はコピー）。
+
+ハブを使わない形（宛先のフォルダごとに自動実行を作り、そのセッションが自分で作業する）も動く。違いは
+[ARCHITECTURE.md の「ハブを使わない形」](ARCHITECTURE.md#6-ハブを使わない形) を参照。
 
 ### フェッチャ方式の設定
 
@@ -67,27 +110,16 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 | 2 | 依頼 JSON の `target`（往路のフローで固定した宛先） | Power Automate |
 | 3 | 投稿したチャンネルを受け持つ宛先が 1 つだけ | `targets.json` の宛先ごとの `channels`（チャンネル ID の並び） |
 | 4 | キーワードがいちばん多く当たった宛先が 1 つだけ | `targets.json` の宛先ごとの `keywords`（大文字小文字は区別しない） |
-| 5 | ハブのセッションに選ばせる（ハブがあるときだけ） | `targets.json` の `hub` と、宛先ごとの `description` |
+| 5 | ハブのセッションに選ばせる（ハブがあるときだけ） | 宛先ごとの `description` |
 | 6 | 既定の宛先 | `targets.json` の `default` |
 
 3 で複数の宛先が当たったときはその中から、4 で同点のときは同点の宛先の中から、5 の候補を選ぶ。
 
-```json
-{
-  "default": "app",
-  "hub": "C:/work/hub",
-  "targets": {
-    "app":  {"dir": "C:/work/app",  "gitlab_project": "group/app",  "mode": "issue",
-             "description": "業務アプリのコードと不具合", "keywords": ["バグ", "画面"]},
-    "docs": {"dir": "C:/work/docs", "gitlab_project": "group/docs", "mode": "commit",
-             "description": "手順書とマニュアル", "keywords": ["マニュアル", "手順書"], "channels": ["19:abc…@thread.tacv2"]}
-  }
-}
-```
+書き方の例は [用意と動かし方](#用意と動かし方) の手順 4。
 
 ### ハブ（`hub`）
 
-`hub` を書くと、依頼はハブのフォルダの受け箱に置き、Copilot アプリの自動実行はハブで 1 つだけ動かす。
+`targets.json` をハブの受け箱に置くと、依頼はハブの受け箱に置き、Copilot アプリの自動実行はハブで 1 つだけ動かす。
 自動実行は宛先のフォルダで新しいセッションを起こして依頼を渡し、終わりを待たずに次へ進む
 （[copilot-app-jobs の「ほかのフォルダのセッションに振る」](../../../copilot-app-jobs/README.md)）。同じ宛先への依頼は、
 前の依頼が終わるまで受け箱で待つ。
@@ -95,14 +127,10 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 - 1〜4 か 6 で決まった依頼は、その宛先に振る。
 - 5 の依頼は、ハブの自動実行が候補（名前と `description`）から 1 つ選び、選んだ宛先に振る。issue かコミットかの指示と
   相関マーカーは、選んだあとに足す。
-- 宛先のフォルダは、ハブで先に登録しておく。
-
-  ```powershell
-  python C:\tools\copilot-app-jobs\copilot_app_job.py target add --dir C:\work\hub --to C:\work\app
-  ```
 
 - 振られたセッションは、結果を GitLab に上げたあと `finish` を呼ぶ。
-- `hub` を書かなければ、これまでどおり宛先のフォルダの受け箱に置く（5 は飛ばす）。
+- `targets.json` を受け箱の外（たとえば `~/.config/change-watch/teams-sharepoint-bridge-agent/`）に置き、`hub` も書かなければ、
+  宛先のフォルダの受け箱に置く（5 は飛ばす）。受け箱の外に置いてハブを使うときは、`hub` にハブのフォルダを書く。
 
 ## コマンド
 
@@ -115,6 +143,11 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 | `build-prompt --path F --targets F` | 検証して Copilot への依頼文を出す |
 | `submit --path F --targets F [--ledger F] [--jobs-py PATH] [--python CMD] [--dry-run]` | 受け箱に提出し、結果を JSON で出す。提出済みなら `already` を返す。`--dry-run` では依頼文とコマンドを JSON で確認できる |
 | `record-invalid --path F [--log F] [--targets F]` | 検証し直して、違反の理由を JSON Lines に追記する。宛先の検証も記録するときは `check-file` と同じ宛先表を渡す |
+
+依頼ファイルは `--path F` の代わりに、`--inbox <受信フォルダ> --name <受信フォルダからの相対の名前>` でも渡せる。Dagu の例は
+こちらを使い、`--name` に get の出力の `record.rel` を渡す。Windows の道（`C:\TeamsBridge\inbox\tm-1.json`）を `${CHANGE.record.path}`
+で引数に展開させると、途中の `\t` などが制御文字に化けて、存在しない道を読み続けることがあるため。読めなかったときは、
+`check-file` が `missing` を出し、読めなかった道を標準エラーに書く（制御文字が入っていれば、そう書く）。
 
 依頼は UTF-8 の JSON で、`request_id` とファイル名 `<request_id>.json` をそろえる。
 `team_id`、`channel_id`、`message_id`、`author`、`posted_at`（ISO 8601）、`text`（2 万文字まで）は必須。

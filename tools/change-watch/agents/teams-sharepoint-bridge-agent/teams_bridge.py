@@ -68,16 +68,34 @@ def _keyword_hits(text, words):
     return [w for w in words if isinstance(w, str) and w.strip() and w.lower() in low]
 
 
+def _for_teams(target):
+    """Teams の宛先か。gitlab_project も mode も無いものは、Teams 以外から振るために登録した振り先として外す。
+    どちらかがあれば Teams の宛先として扱い、書き誤りはそのまま様式違反にする（黙って外さない）。"""
+    return not isinstance(target, dict) or "gitlab_project" in target or "mode" in target
+
+
+def _hub_of(config, path):
+    """ハブのフォルダ。宛先表がハブの受け箱（<ハブ>/.copilot-jobs/targets.json）にあれば、その場所から決める。"""
+    hub = config.get("hub")
+    if hub is not None:
+        if not _nonempty(hub) or not Path(hub).is_absolute():
+            raise ValueError("宛先表の hub は絶対パスで指定してください")
+        return hub
+    folder = Path(path).expanduser().resolve().parent
+    return str(folder.parent) if folder.name == ".copilot-jobs" else None
+
+
 def _resolve_target(request, path):
     """宛先を決める。決まる順: 投稿の 1 行目の #名前・【名前】 → フローの target → チャンネル → キーワード
-    → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。"""
+    → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。
+
+    宛先表は copilot-app-jobs の振り先の表と同じファイル。gitlab_project・mode の無い宛先（Teams 以外から振るために
+    登録したもの）は、Teams の振り分けには使わない。"""
     config = _read_json(path)
     if not isinstance(config, dict) or not isinstance(config.get("targets"), dict):
         raise ValueError("宛先表の targets はオブジェクトである必要があります")
-    targets = config["targets"]
-    hub = config.get("hub")
-    if hub is not None and (not _nonempty(hub) or not Path(hub).is_absolute()):
-        raise ValueError("宛先表の hub は絶対パスで指定してください")
+    targets = {n: t for n, t in config["targets"].items() if _for_teams(t)}
+    hub = _hub_of(config, path)
     text = request.get("text") if isinstance(request.get("text"), str) else ""
     first = next((line for line in text.splitlines() if line.strip()), "")
 
@@ -160,13 +178,36 @@ def _validate(request, path, targets_path, resolved) -> list[str]:
     return errors
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _request_path(args):
+    """依頼ファイルの場所。--path か、--inbox（受信フォルダ）と --name（フォルダからの相対の名前）で受け取る。
+
+    Dagu の例は --inbox と --name で渡す。Windows の道（C:\\...\\tm-1.json）を ${…} で引数に展開させると、
+    途中の \\t などが制御文字に化けることがあるため、\\ を含まない相対の名前だけを Dagu に渡す。"""
+    if args.path:
+        return Path(args.path).expanduser()
+    name = str(args.name or "")
+    parts = name.replace("\\", "/").split("/")
+    if not args.inbox or not name or name.startswith("/") or ".." in parts or ":" in name:
+        raise ValueError("--path か、--inbox と --name（受信フォルダからの相対の名前）を指定してください")
+    return Path(args.inbox).expanduser() / Path(*parts)
+
+
 def _load_request(args):
-    path = Path(args.path).expanduser()
     target = {}
+    try:
+        path = _request_path(args)
+    except ValueError as error:
+        return None, target, [str(error)], "missing"
     try:
         request = _read_json(path)
     except OSError as error:
-        return None, target, [f"依頼ファイルを読めません（{error}）"], "missing"
+        hint = ""
+        if _CONTROL.search(str(path)):
+            hint = "。パスに制御文字が入っています。Dagu が \\t などを展開した可能性があります。--inbox と --name で渡してください"
+        return None, target, [f"依頼ファイルを読めません（{str(path)!r}: {error}）{hint}"], "missing"
     except ValueError as error:
         return None, target, [f"依頼ファイルを JSON として読めません（{error}）"], "invalid"
     targets = Path(args.targets).expanduser() if args.targets else None
@@ -185,9 +226,11 @@ def cmd_check(args):
         ledger = _read_ledger(_ledger_path(args.ledger))
     except (OSError, ValueError) as error:
         return _error(f"台帳を読めません（{error}）")
-    request, _, _, route = _load_request(args)
+    request, _, errors, route = _load_request(args)
     if route is None:
         route = "done" if request["request_id"] in ledger else "submit"
+    elif route == "missing":
+        print(*errors, sep="\n", file=sys.stderr)   # Dagu の記録に、どの道を読めなかったかを残す
     print(route)
     return 0
 
@@ -379,7 +422,7 @@ def cmd_submit(args):
 def cmd_record_invalid(args):
     request, _, errors, _ = _load_request(args)
     request_id = request.get("request_id") if isinstance(request, dict) else None
-    entry = {"at": _now(), "path": args.path, "request_id": request_id if isinstance(request_id, str) else None,
+    entry = {"at": _now(), "path": args.path or f"{args.inbox}/{args.name}", "request_id": request_id if isinstance(request_id, str) else None,
              "errors": errors}
     try:
         path = Path(args.log).expanduser() if args.log else _ledger_path().with_name("invalid.jsonl")
@@ -400,7 +443,9 @@ _COMMANDS = {
 
 
 def _arguments(parser, name):
-    parser.add_argument("--path", required=True, help="依頼の JSON ファイル")
+    parser.add_argument("--path", help="依頼の JSON ファイル（--inbox と --name の代わり）")
+    parser.add_argument("--inbox", help="受信フォルダ（change-watch.yaml の folder.path と同じ）")
+    parser.add_argument("--name", help="受信フォルダからの相対の名前（get の出力の record.rel）")
     parser.add_argument("--targets", required=name in ("check-file", "build-prompt", "submit"),
                         help="宛先表の JSON ファイル")
     if name in ("check-file", "submit"):

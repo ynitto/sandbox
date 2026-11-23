@@ -1,10 +1,9 @@
 {
-  "default": "main",
-  "hub": "C:/work/hub",
+  "default": "app",
   "targets": {
-    "main": {
-      "dir": "C:/work/project",
-      "gitlab_project": "group/project",
+    "app": {
+      "dir": "C:/work/app",
+      "gitlab_project": "group/app",
       "mode": "issue",
       "description": "業務アプリのコードと不具合",
       "keywords": [
@@ -23,6 +22,16 @@
         "手順書"
       ],
       "channels": []
+    },
+    "ops": {
+      "dir": "C:/work/ops",
+      "gitlab_project": "group/ops",
+      "mode": "issue",
+      "description": "障害の対応と再発防止",
+      "keywords": [
+        "障害",
+        "アラート"
+      ]
     }
   }
 }
