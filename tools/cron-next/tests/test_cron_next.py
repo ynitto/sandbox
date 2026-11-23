@@ -83,6 +83,28 @@ class CronNextTest(unittest.TestCase):
                 self.assertIn(reason, result.stderr)
                 self.assertEqual(result.stdout, "")
 
+    def test_full_range_counts_as_restricted(self):
+        # 1-31 は * ではないので OR 条件になり、毎日実行される
+        self.assert_runs("0 9 1-31 * MON", "2026-11-23T00:00", [
+            "2026-11-23 09:00 (Mon)",
+            "2026-11-24 09:00 (Tue)",
+        ])
+
+    def test_star_step_counts_as_star(self):
+        # */1 は * で始まるので AND 条件になり、月曜だけ実行される
+        self.assert_runs("0 9 */1 * MON", "2026-11-23T00:00", [
+            "2026-11-23 09:00 (Mon)",
+            "2026-11-30 09:00 (Mon)",
+        ])
+
+    def test_invalid_options(self):
+        result = self.run_cli("0 9 * * *", "2026-11-23", zone="No/Such_Zone")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("タイムゾーン", result.stderr)
+        result = self.run_cli("0 9 * * *", "2026-11-23", count=0)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--count", result.stderr)
+
     def test_nonexistent_dates(self):
         for expression in ("0 0 31 2 *", "0 0 31 4 *"):
             with self.subTest(expression=expression):
