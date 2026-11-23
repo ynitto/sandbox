@@ -35,7 +35,7 @@ class RoutingTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = Path(tmp.name).resolve()   # Windows の短い名前を正式な形にそろえる
         self.app, self.docs, self.ops, self.hub = (self.root / n for n in ("app", "docs", "ops", "hub"))
         for folder in (self.app, self.docs, self.ops, self.hub):
             folder.mkdir()

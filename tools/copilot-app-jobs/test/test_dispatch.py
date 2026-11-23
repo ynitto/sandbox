@@ -26,7 +26,7 @@ def call(*argv: str) -> "tuple[int, str, str]":
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
+        root = Path(self.tmp.name).resolve()   # Windows の短い名前（RUNNER~1）を、プログラムが出す正式な形にそろえる
         self.hub = root / "hub"            # 自動実行が動くフォルダ（受け箱がある）
         self.a = root / "sandbox"
         self.b = root / "other"
