@@ -14,7 +14,7 @@ VERSION = re.compile(
     rf"v?({NUMBER})\.({NUMBER})\.({NUMBER})"
     rf"(?:-({IDENTIFIERS}))?(?:\+{IDENTIFIERS})?"
 )
-TILDE_PARTIAL = re.compile(rf"v?({NUMBER})(?:\.({NUMBER}))?")
+PARTIAL_VERSION = re.compile(rf"v?({NUMBER})(?:\.({NUMBER}))?")
 WILDCARD = re.compile(rf"v?({NUMBER})(?:\.({NUMBER}))?\.x")
 COMPARATOR = re.compile(r"(>=|<=|>|<|=)(.+)")
 OPERATORS = {
@@ -95,12 +95,17 @@ def range_conditions(expression):
         if term in ("*", "x"):
             return []
         if term.startswith("^"):
+            partial = PARTIAL_VERSION.fullmatch(term[1:])
+            if partial:
+                major, minor = partial.groups()
+                index = int(major == "0" and minor is not None)
+                return interval(Version((major, minor or "0", "0")), index)
             lower = Version.parse(term[1:])
             index = next((index for index, value in enumerate(lower.core)
                           if value != "0"), 2)
             return interval(lower, index)
         if term.startswith("~"):
-            partial = TILDE_PARTIAL.fullmatch(term[1:])
+            partial = PARTIAL_VERSION.fullmatch(term[1:])
             if partial:
                 major, minor = partial.groups()
                 return interval(Version((major, minor or "0", "0")), int(minor is not None))

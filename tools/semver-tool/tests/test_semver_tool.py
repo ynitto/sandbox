@@ -8,13 +8,15 @@ SCRIPT = Path(__file__).resolve().parents[1] / "semver_tool.py"
 
 
 class SemverToolTests(unittest.TestCase):
-    def assert_cli(self, *args, code=0, output="", error=False):
+    def assert_cli(self, *args, code=0, output="", error=False, error_text=None):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
         )
         self.assertEqual(result.returncode, code, result.stderr)
         self.assertEqual(result.stdout, output + "\n" if output else "")
         self.assertEqual(bool(result.stderr), error)
+        if error_text is not None:
+            self.assertIn(error_text, result.stderr)
 
     def test_check_accepts_valid_versions(self):
         for version in ("0.0.0", "v1.2.3-0.alpha-1+001.BUILD", "1.0.0-01a"):
@@ -39,7 +41,11 @@ class SemverToolTests(unittest.TestCase):
 
     def test_compare_core_and_build_metadata(self):
         self.assert_cli("compare", "2.0.0", "10.0.0", output="-1")
+        self.assert_cli("compare", "1.0.0", "1.0.0", output="0")
         self.assert_cli("compare", "v1.0.0+001", "1.0.0+abc", output="0")
+
+    def test_compare_prerelease_prefix(self):
+        self.assert_cli("compare", "1.0.0-alpha", "1.0.0-alpha.0", output="-1")
 
     def test_bump_core(self):
         for part, expected in (("major", "2.0.0"), ("minor", "1.3.0"),
@@ -74,12 +80,27 @@ class SemverToolTests(unittest.TestCase):
         self.assert_ranges((
             ("1.9.0", "^1.2.3", True), ("2.0.0", "^1.2.3", False),
             ("0.2.3", "^0.2.3", True), ("0.2.2", "^0.2.3", False),
+            ("0.3.0-rc.1", "^0.2.3", True),
             ("0.3.0", "^0.2.3", False), ("0.0.3", "^0.0.3", True),
-            ("0.0.4", "^0.0.3", False), ("0.0.1", "^0.0.0", False),
+            ("0.0.4", "^0.0.3", False),
+            ("0.0.0", "^0.0.0", True), ("0.0.1", "^0.0.0", False),
+        ))
+
+    def test_partial_caret_ranges(self):
+        self.assert_ranges((
+            ("0.9.9", "^1", False), ("1.0.0", "^1", True), ("2.0.0", "^1", False),
+            ("1.1.9", "^1.2", False), ("1.2.0", "^1.2", True),
+            ("1.9.0", "^1.2", True), ("2.0.0", "^1.2", False),
+            ("0.0.0", "^0", True), ("0.9.0", "^0", True), ("1.0.0", "^0", False),
+            ("0.1.9", "^0.2", False), ("0.2.0", "^0.2", True), ("0.3.0", "^0.2", False),
+            ("0.0.0", "^0.0", True), ("0.0.1", "^0.0", True), ("0.1.0", "^0.0", False),
+            ("1.2.0", "^v1.2", True),
         ))
 
     def test_tilde_ranges(self):
         self.assert_ranges((
+            ("1.2.2", "~1.2.3", False), ("1.2.3", "~1.2.3", True),
+            ("1.2.9", "~1.2.3", True), ("1.3.0", "~1.2.3", False),
             ("0.2.2", "~0.2.3", False), ("0.2.9", "~0.2.3", True),
             ("0.3.0", "~0.2.3", False), ("0.2.0", "~0.2", True),
             ("0.3.0", "~0.2", False), ("0.9.0", "~0", True),
@@ -97,6 +118,8 @@ class SemverToolTests(unittest.TestCase):
         self.assert_ranges((
             ("v1.2.3+one", "1.2.3", True), ("1.2.3", "v1.2.3+two", True),
             ("1.2.3-rc.1", "1.2.3", False), ("1.2.3", "=1.2.3", True),
+            ("1.1.9", ">=1.2.0", False), ("1.2.0", ">=1.2.0", True),
+            ("1.0.0", ">1.0.0", False), ("1.0.1", ">1.0.0", True),
             ("1.2.0", ">=1.2.0 <2.0.0", True), ("1.1.9", ">=1.2.0 <2.0.0", False),
             ("2.0.0", ">=1.2.0 <2.0.0", False),
             ("2.0.0-rc.1", ">=1.2.0 <2.0.0", True),
@@ -109,9 +132,13 @@ class SemverToolTests(unittest.TestCase):
             ("bump", "bad", "--part", "major"), ("bump", "1.2.3"),
             ("bump", "1.2.3", "--part", "build"),
             ("bump", "1.2.3", "--part", "pre", "--pre-id", "01"),
-            ("satisfies", "bad", "*"), ("satisfies", "1.2.3", ""),
+            ("satisfies", "bad", "*"),
             ("satisfies", "1.2.3", ">2.0.0 <bad"), ("satisfies", "1.2.3", "~01"),
             ("satisfies", "1.2.3", "1.0.0 || 1.2.3"), ("satisfies", "1.2.3", "1.02.x"),
         ):
             with self.subTest(args=args):
                 self.assert_cli(*args, code=2, error=True)
+
+    def test_empty_range_reports_reason(self):
+        self.assert_cli("satisfies", "1.2.3", "", code=2, error=True,
+                        error_text="empty version range")
