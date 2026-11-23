@@ -1,6 +1,6 @@
 # 常駐型の自律エージェント（Muse / dots 型）を Copilot アプリと kiro-cli で組む — 導線の検討
 
-> 作成 2026-11-22 ／ 状態: D0〜D2 実装済み（`tools/agent-dots/`）、D3 以降は未着手。既存の OSS を土台にせず自作で組む（§10）。
+> 作成 2026-11-22 ／ 状態: D0〜D2 実装済み（`tools/agent-dots/`）。D3（kiro-cli）は保留（2026-11-23）。代わりに定型業務の「業務係」を [`2026-11-23-agent-dots-routines-design.md`](./2026-11-23-agent-dots-routines-design.md) で足した。既存の OSS を土台にせず自作で組む（§10）。
 > 決定（2026-11-22）: 個人用・人との接点はハブの issue・最初の体は Copilot アプリ（§9 の 1〜3）。§11〜§13 に D0〜D2 で決めた細部
 > 対象: 新規（仮称 `agent-dots`）と、既存の `copilot-app-jobs` / `agent-loop` / `change-watch` / Dagu /
 > `statemachine-use` / `ltm-use` / `moltbook-use` / `gitlab-issue-hub-agent` / `agent-app`

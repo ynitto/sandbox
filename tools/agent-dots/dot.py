@@ -38,6 +38,8 @@ import sys
 import time
 from pathlib import Path
 
+import routines
+
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_BUSY = 3
@@ -75,6 +77,7 @@ DEFAULT_POLICY = {
     "proactive_per_day": 0,
     "proactive_idle_min": 120,
     "tools": {},
+    "routines": {},
 }
 
 GOAL_TEMPLATE = """# {name}
@@ -202,6 +205,38 @@ def put_event(d: Path, state: dict, event: dict, ts: float) -> Path:
     return path
 
 
+def routine_api(d: Path) -> dict:
+    """routines.py が台帳の外（出来事・質問・承認の依頼）を触るときの口。"""
+    def event(state: dict, text: str, ts: float, base: "dict | None" = None) -> None:
+        put_event(d, state, {**(base or {"from": "dot"}), "text": text}, ts)
+
+    def question(state: dict, text: str, options: list, comments: list, ts: float) -> str:
+        return add_question(state, text, options, comments, ts)
+
+    def approval(state: dict, action: str, proposal: dict, summary: str, comments: list, ts: float) -> str:
+        entry = {"id": next_id(state, "a"), "action": action, "proposal": proposal, "summary": summary.splitlines()[0][:200],
+                 "created": iso(ts), "created_ts": ts, "status": "pending"}
+        state["approvals"].append(entry)
+        comments.append(f"承認待ち {entry['id']}: {summary}\n"
+                        f"（「【{state['name']}】承認 {entry['id']}」か「【{state['name']}】却下 {entry['id']} 理由」で返信してください）")
+        return entry["id"]
+
+    return {"event": event, "question": question, "approval": approval}
+
+
+def add_question(state: dict, question: str, options: list, comments: list, ts: float) -> str:
+    qid = next_id(state, "q")
+    lines = [f"質問 {qid}: " + question]
+    lines.extend(f"- {o}" for o in options)
+    example = options[0] if options else "…"
+    lines.append(f"（「【{state['name']}】{qid} {example}」のように返信してください）")
+    comments.append("\n".join(lines))
+    qs = list(state.get("questions") or [])
+    qs.append({"id": qid, "at": iso(ts), "question": question, "options": options})
+    state["questions"] = qs[-QUESTION_KEEP * 2:]
+    return qid
+
+
 def next_id(state: dict, prefix: str) -> str:
     key = f"{prefix}seq"
     state[key] = int(state.get(key) or 0) + 1
@@ -292,9 +327,13 @@ def take_reply(d: Path, state: dict, policy: dict, author: str, text: str, base:
             return "approved"
         entry["status"] = "rejected"
         entry["note"] = why
+        routines.on_rejected(state, entry, why)
         msg = f"{aid}（{entry.get('summary', '')}）は却下されました" + (f"。理由: {why}" if why else "")
         put_event(d, state, {**base, "text": msg}, ts)
         return "rejected"
+    handled = routines.take_reply(d, state, policy, text, base, ts, routine_api(d))
+    if handled:
+        return handled
     m = ANSWER_RE.match(text)
     if m:
         qid, answer = m.group(1).lower(), m.group(2).strip()
@@ -407,7 +446,7 @@ def wake_reasons(d: Path, state: dict, ts: float) -> "list[str]":
 def proactive_reason(state: dict, policy: dict, ts: float) -> "list[str]":
     """起こす理由が無いとき、手の空いた時間の調べもの（読み取りだけ）をさせるか。"""
     limit = int(policy.get("proactive_per_day") or 0)
-    if limit <= 0 or state.get("status") != "active" or not state.get("last_wake"):
+    if limit <= 0 or state.get("status") != "active" or not state.get("last_wake") or state.get("routine"):
         return []
     if int((state.get("proactive") or {}).get(today(ts)) or 0) >= limit:
         return []
@@ -481,6 +520,7 @@ def build_prompt(d: Path, state: dict, policy: dict, events: "list[dict]", reaso
         out.append("")
         out.append("## 承認を待っている提案（同じものを出し直さない）")
         out.extend(f"- {x['id']} {x.get('summary', '')}（{x.get('status')}）" for x in pending)
+    out.extend(routines.prompt_section(d, state, policy, events))
     out.append("")
     if reasons == ["proactive"]:
         out.append("## 今回は調べものの回")
@@ -697,6 +737,11 @@ def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: 
         qs.append({"id": qid, "at": iso(ts), "question": question, "options": options})
         state["questions"] = qs[-QUESTION_KEEP * 2:]
         return {"result": "done", "id": qid}
+    if kind == "routine":
+        try:
+            return routines.handle(d, state, policy, prop, ts, comments, routine_api(d))
+        except routines.RoutineError as e:
+            return {"result": "denied", "why": str(e)}
     if kind == "wait":
         try:
             until = parse_until(prop.get("until"))
@@ -742,6 +787,8 @@ def trim_approvals(state: dict) -> None:
 def execute(d: Path, policy: dict, entry: dict) -> dict:
     """承認された作用を 1 つ実行する（ロックの外）。"""
     prop = entry.get("proposal") or {}
+    if str(entry.get("action") or "").startswith("routine."):
+        return {"code": 0, "internal": True}      # 台帳の書き換えはロックの中で（act の後半）
     if entry.get("action") == "hub.comment":
         return {"code": 0, "comment": str(prop.get("body") or "").strip()}
     spec = (policy.get("commands") or {}).get(str(prop.get("name") or "")) or {}
@@ -765,6 +812,10 @@ def cmd_act(a) -> int:
         to_run: list[dict] = []
         if not job_busy(d):                       # まだ終わっていない依頼の提案は、次の act で片付ける
             _take_proposals(d, state, policy, ts, comments, to_run)
+            try:
+                routines.advance(d, state, policy, ts, comments, routine_api(d))
+            except (routines.RoutineError, OSError) as e:
+                comments.append(f"業務を進められませんでした: {e}")
         expire_approvals(d, state, policy, ts)
         for entry in state["approvals"]:
             if entry.get("status") == "approved" and entry not in to_run:
@@ -793,6 +844,13 @@ def cmd_act(a) -> int:
             append_journal(d, {"kind": "run", "id": aid, "action": entry.get("action"),
                                "proposal": entry.get("proposal"), "code": res["code"],
                                "output": res.get("output", "")}, ts)
+            if res.get("internal"):
+                try:
+                    routines.on_approved(d, state, policy, entry, ts, comments, routine_api(d))
+                except (routines.RoutineError, OSError) as e:
+                    entry["status"] = "failed"
+                    comments.append(f"{aid}（{entry.get('summary', '')}）を進められませんでした: {e}")
+                continue
             if "comment" in res:
                 comments.append(res["comment"])
                 continue
@@ -874,6 +932,7 @@ HOOK_FILE = "agent-dots.json"                 # 目標のフォルダの .github
 PROTECTED = ("policy.json", "state.json", "journal.jsonl", WORK, ".github")
 JOB_TMP = (JOB_BOX, "tmp")                    # 受け箱のうち、エージェントが報告を書く場所
 PROACTIVE_WRITABLE = (("notes",), ("outbox",), JOB_TMP)
+ROUTINE_DIRS = (routines.DRAFTS, ".statemachine")   # 業務の下書きと登録先（作る・直す回の下書きのほかは書かせない）
 
 SHELL_TOOLS = {"bash", "powershell", "pwsh", "shell", "sh", "cmd", "terminal", "run_in_terminal", "execute", "exec"}
 WRITE_TOOLS = {"edit", "create", "write", "write_file", "create_file", "str_replace", "insert", "delete", "rename",
@@ -961,8 +1020,10 @@ def kind_of(name: str, args: dict) -> str:
     return "other"
 
 
-def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, policy: dict) -> "str | None":
+def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, policy: dict,
+               scope: "dict | None" = None) -> "str | None":
     """この道が使えなければ理由を返す。"""
+    scope = scope or {"read": [], "write_only": None}
     target = Path(raw)
     if not target.is_absolute():
         target = cwd / target
@@ -970,17 +1031,23 @@ def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, polic
     if not write:
         if parts is not None:
             return None
-        for folder in (policy.get("tools") or {}).get("read_allow") or []:
+        for folder in list((policy.get("tools") or {}).get("read_allow") or []) + list(scope["read"]):
             if inside(Path(folder), target) is not None:
                 return None
         return f"目標のフォルダの外は読めません: {raw}"
+    if scope.get("write_only") and parts is not None and tuple(parts[:2]) != JOB_TMP \
+            and inside(Path(scope["write_only"]), target) is None \
+            and not any(tuple(parts[:len(w)]) == w for w in PROACTIVE_WRITABLE[:2]):
+        return f"業務を作る・直す回では、下書き（{scope['write_only']}）と notes/・outbox/ のほかには書けません: {raw}"
+    if scope.get("write_only") and inside(Path(scope["write_only"]), target) is not None:
+        return None
     if parts is None:
         return f"目標のフォルダの外には書けません: {raw}"
     if not parts:
         return f"目標のフォルダそのものは変えられません: {raw}"
     if tuple(parts[:2]) == JOB_TMP:
         return None
-    if parts[0] in PROTECTED or parts[0] == JOB_BOX:
+    if parts[0] in PROTECTED or parts[0] in ROUTINE_DIRS or parts[0] == JOB_BOX:
         return f"このファイルは変えられません（動かし方の記録）: {raw}"
     if proactive and not any(tuple(parts[:len(w)]) == w for w in PROACTIVE_WRITABLE):
         return f"調べものの回では notes/ と outbox/ のほかには書けません: {raw}"
@@ -993,6 +1060,7 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
     name = str(payload.get("toolName") or payload.get("tool_name") or payload.get("toolname") or "")
     args = tool_args(payload)
     proactive = ((state.get("inflight") or {}).get("reasons") or []) == ["proactive"]
+    scope = routines.hook_scope(d, state, policy)
     if name in (tools.get("deny") or []):
         return f"このツールは止めています: {name}"
     if name in (tools.get("allow") or []):
@@ -1005,7 +1073,7 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
         if kind == "write" and not paths:
             return f"書き込み先が分からないので止めました: {name}"
         for raw in paths or ["."]:
-            why = check_path(d, cwd, raw, kind == "write", proactive, policy)
+            why = check_path(d, cwd, raw, kind == "write", proactive, policy, scope)
             if why:
                 return why
         return None
@@ -1019,6 +1087,13 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
         patterns = [JOB_COMMAND] + ([] if proactive else [re.compile(x) for x in tools.get("shell_allow") or []])
         if mode != "deny" and not SHELL_META.search(body) and any(pt.search(body) for pt in patterns):
             return None
+        script = routines.script_of(body) if mode != "deny" and not SHELL_META.search(body) else None
+        if script:
+            path = Path(script) if Path(script).is_absolute() else cwd / script
+            if any(inside(Path(x), path) is not None for x in scope["deny_scripts"]):
+                return "試運転では外へ書くスキルは動かしません。書く中身を作って、そのステートの出力にしてください: " + command[:120]
+            if any(inside(Path(x), path) is not None for x in scope["scripts"]):
+                return None
         return "このコマンドは許していません（policy.json の tools.shell_allow に足すと動かせます）: " + command[:120]
     if kind == "web":
         allow = [str(h).lower() for h in tools.get("web_allow") or []]
@@ -1125,6 +1200,8 @@ def cmd_status(a) -> int:
     print(f"返事待ちの質問: {len(open_qs)} 件")
     for q in open_qs:
         print(f"  {q['id']} {q.get('question', '')}")
+    for line in routines.status_lines(d, state, load_policy(d)):
+        print(line)
     if state.get("held"):
         print(f"静かにする時間帯に溜めたコメント: {len(state['held'])} 件")
     return EXIT_OK
