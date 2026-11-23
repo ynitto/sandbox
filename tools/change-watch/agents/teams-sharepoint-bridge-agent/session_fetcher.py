@@ -30,7 +30,9 @@ def _copy_atomic(source, target, before):
             pass
         # コピー中に同期元が変わったら、正式名で公開する前に一時コピーを破棄する。
         after = source.stat()
-        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        if not os.path.samestat(before, after) or (
+            before.st_mtime_ns, before.st_size
+        ) != (after.st_mtime_ns, after.st_size):
             raise OSError(f"コピー中に同期元のファイルが更新されました: {source}")
         os.replace(tmp_path, target)
         tmp_path = None

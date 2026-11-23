@@ -75,10 +75,11 @@ class DigestTest(unittest.TestCase):
         self.report(status="unchanged", diverged=["refs/heads/main"], conflicts=["refs/heads/dev"])
         self.gc(0)
         body = self.body()
+        report_path = str(self.root / "last-report.json").replace("_", r"\_")
         for expected in ("✅ 正常：change-watch gc", "❌ 失敗：codd-lint", "文書がありません",
                          "❌ 失敗：testcase-lint", "case.yaml — K001", "❌ 失敗：gitlab-repo-sync",
                          "分岐（1 件） refs/heads/main", "衝突（1 件） refs/heads/dev",
-                         f"- 参照先：{self.root / 'last-report.json'}\n"):
+                         f"- 参照先：{report_path}\n"):
             self.assertIn(expected, body)
         self.assertNotIn("# 点検の結果", body)
 
@@ -118,6 +119,16 @@ class DigestTest(unittest.TestCase):
         self.assertIn("summary.bySeverity.error = 2", body)
         self.assertIn("❌ 失敗：コマンド", body)
         self.assertIn("- 終了コード 9\n- command output\n", body)
+
+    def test_command_source_stays_on_one_markdown_line(self):
+        self.config["checks"] = [
+            {"name": "コマンド", "type": "command",
+             "argv": [sys.executable, "-c", "raise SystemExit(1)\n# [comment]"]},
+        ]
+        body = self.body()
+        source = next(line for line in body.splitlines() if line.startswith("- 参照先："))
+        self.assertIn(r"raise SystemExit(1) \# \[comment\]", source)
+        self.assertNotIn("\n# [comment]", body)
 
     def test_empty_findings_and_output_file(self):
         self.config["checks"] = self.config["checks"][:1]

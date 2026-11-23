@@ -245,11 +245,11 @@ def collect(check, now):
     return Result(check["name"], source, "failed" if details else "ok", details)
 
 
-def markdown(text):
+def markdown(text, *, limit=400):
     # 実行結果をコメントの本文に埋めても、見出しや HTML として解釈させない。
     line = " ".join(str(text).splitlines()).strip()
-    if len(line) > 400:
-        line = line[:397] + "..."
+    if limit is not None and len(line) > limit:
+        line = line[:limit - 3] + "..."
     return re.sub(r"([\\`*_\[\]<>#])", r"\\\1", line)
 
 
@@ -265,7 +265,7 @@ def render(results, digest_date):
         label = "❌ 失敗" if result.status == "failed" else "❓ 未確認（結果なし）"
         lines += [f"### {label}：{markdown(result.name)}", ""]
         lines.extend(f"- {markdown(detail)}" for detail in result.details)
-        lines += [f"- 参照先：{result.source}", ""]
+        lines += [f"- 参照先：{markdown(result.source, limit=None)}", ""]
     return "\n".join(lines).rstrip() + "\n"
 
 

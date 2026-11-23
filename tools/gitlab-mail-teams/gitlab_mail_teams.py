@@ -130,13 +130,21 @@ def _html_to_text(markup: str) -> str:
     return html.unescape(text)
 
 
+def _body_parts(part):
+    if part.get_content_disposition() == "attachment":
+        return
+    if part.is_multipart():
+        for child in part.iter_parts():
+            yield from _body_parts(child)
+    else:
+        yield part
+
+
 def _body_text(msg) -> str:
     """text/plain を優先して本文を返す。無ければ text/html からタグを落とす。"""
     plain: "list[str]" = []
     rich: "list[str]" = []
-    for part in msg.walk():
-        if part.is_multipart() or part.get_content_disposition() == "attachment":
-            continue
+    for part in _body_parts(msg):
         ctype = part.get_content_type()
         if ctype == "text/plain":
             plain.append(_part_text(part))
