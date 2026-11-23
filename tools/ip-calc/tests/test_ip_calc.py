@@ -54,6 +54,17 @@ class IpCalcTest(unittest.TestCase):
                 self.assertEqual(data["first_usable_host"], first)
                 self.assertEqual(data["last_usable_host"], "192.0.2.1")
 
+    def test_ipv4_usable_hosts_exclude_endpoints(self):
+        for cidr, count, first, last in (
+            ("192.0.2.0/30", 2, "192.0.2.1", "192.0.2.2"),
+            ("0.0.0.0/0", 2**32 - 2, "0.0.0.1", "255.255.255.254"),
+        ):
+            with self.subTest(cidr=cidr):
+                data = self.read_info(cidr)
+                self.assertEqual(data["usable_host_count"], count)
+                self.assertEqual(data["first_usable_host"], first)
+                self.assertEqual(data["last_usable_host"], last)
+
     def test_ipv6_info(self):
         data = self.read_info("2001:db8::/64")
         self.assertEqual(data["version"], 6)
@@ -72,12 +83,15 @@ class IpCalcTest(unittest.TestCase):
         self.assertIn("ブロードキャストアドレス: なし", result.stdout)
 
     def test_contains(self):
-        for ip, code, output in (
-            ("192.168.1.255", 0, "含まれる"),
-            ("192.168.2.0", 1, "含まれない"),
+        for cidr, ip, code, output in (
+            ("192.168.1.10/24", "192.168.1.255", 0, "含まれる"),
+            ("192.168.1.10/24", "192.168.2.0", 1, "含まれない"),
+            ("192.168.1.0/24", "192.168.1.0", 0, "含まれる"),
+            ("2001:db8::/64", "2001:db8::1", 0, "含まれる"),
+            ("2001:db8::/64", "2001:db8:0:1::1", 1, "含まれない"),
         ):
-            with self.subTest(ip=ip):
-                result = self.run_cli("contains", "192.168.1.10/24", ip)
+            with self.subTest(cidr=cidr, ip=ip):
+                result = self.run_cli("contains", cidr, ip)
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertEqual(result.stdout.strip(), output)
 
@@ -85,9 +99,12 @@ class IpCalcTest(unittest.TestCase):
         for first, second, code, output in (
             ("192.168.1.0/24", "192.168.1.129/25", 0,
              "重なる: 192.168.1.128/25 (192.168.1.128 ～ 192.168.1.255)"),
+            ("192.168.1.129/25", "192.168.1.0/24", 0,
+             "重なる: 192.168.1.128/25 (192.168.1.128 ～ 192.168.1.255)"),
             ("2001:db8::/64", "2001:db8::/64", 0,
              "重なる: 2001:db8::/64 (2001:db8:: ～ 2001:db8::ffff:ffff:ffff:ffff)"),
             ("192.168.1.0/24", "192.168.2.0/24", 1, "重ならない"),
+            ("2001:db8::/64", "2001:db8:0:1::/64", 1, "重ならない"),
         ):
             with self.subTest(first=first, second=second):
                 result = self.run_cli("overlap", first, second)
