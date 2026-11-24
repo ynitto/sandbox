@@ -166,4 +166,4 @@ function run(argv, io) {
   }
 }
 
-module.exports = { name: "toc", help: "Markdown の目次を更新する", usage, run };
+module.exports = { name: "toc", help: "Markdown の目次を更新する", usage, example: "devkit toc - --create <<< $'# Title\\n\\n## Section'", run };

@@ -422,10 +422,26 @@ function splitArguments(text) {
 
 function updateUsage() {
   const name = byId("command").value;
-  byId("usage").textContent = commands.find((command) => command.name === name)?.usage ?? "";
+  const command = commands.find((command) => command.name === name);
+  const example = command?.example ?? "";
+  byId("usage").textContent = command?.usage ?? "";
+  byId("tool-example").textContent = example;
+  byId("tool-example-row").hidden = !example;
 }
 
 byId("command").onchange = updateUsage;
+byId("fill-example").onclick = () => {
+  const select = byId("command");
+  const command = commands.find(({ name }) => name === select.value);
+  if (!command?.example) return;
+
+  const invocation = `devkit ${command.name}`;
+  const prefix = invocation + " ";
+  if (command.example !== invocation && !command.example.startsWith(prefix)) return;
+
+  select.value = command.name;
+  byId("argv").value = command.example.slice(prefix.length);
+};
 byId("tool-form").onsubmit = perform(async () => {
   if (byId("run-tool").disabled) return;
   const argv = splitArguments(byId("argv").value);

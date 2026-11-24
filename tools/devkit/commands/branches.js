@@ -127,4 +127,4 @@ function run(argv, io) {
   return failed ? 2 : 0;
 }
 
-module.exports = { name: "branches", help, usage, run };
+module.exports = { name: "branches", help, usage, example: "devkit branches --days 90", run };

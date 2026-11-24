@@ -43,16 +43,26 @@ devkit <コマンド> --help   # 各コマンドの使い方
 | `toc` | Markdown の目次を生成・更新する | markdown-toc |
 | `url` | URL の分解表示とクエリパラメータの編集 | url-inspect |
 | `branches` | 古いローカル Git ブランチの棚卸しと掃除候補の表示 | git-stale-branches |
+| `uuid` | UUID v4 を生成し、指定された UUID の形式を検証します | — |
+| `pw` | 暗号学的乱数でパスワードを生成します | — |
+| `b64` | Base64 をエンコードまたはデコードします | — |
+| `hash` | ハッシュまたは HMAC を計算します | — |
+| `json` | JSON を整形・検証し、指定したパスから値を抽出します | — |
+| `regex` | JavaScript の正規表現で全マッチを検索し、必要に応じて置換します | — |
+| `dns` | 指定したホストの DNS レコードを取得します | — |
+| `http` | HTTP(S) 応答のステータス、所要時間、ヘッダを表示します | — |
+| `port` | 指定したホストの TCP ポートに接続できるかを調べます | — |
+| `cert` | TLS 証明書の発行先、発行者、有効期間、残り日数、SAN を表示します | — |
 
 ## プログラムから使う（API）
 
 ClipIt のようなホストアプリでは、`listCommands()` をコマンド選択メニューに使い、
-選択したコマンドを `runCommand()` で実行できます。以下の例では `token` に画面から受け取った JWT を渡します。
+選択したコマンドを `runCommand()` で実行できます。`example` には各コマンドの実行例が入ります。以下の例では `token` に画面から受け取った JWT を渡します。
 
 ```js
 const { listCommands, runCommand, run } = require("./tools/devkit");
 
-const commands = listCommands(); // [{ name, help, usage }, ...]
+const commands = listCommands(); // [{ name, help, usage, example }, ...]
 
 async function inspectToken(token) {
   const { code, stdout, stderr } = await runCommand("jwt", [], { stdin: token });
@@ -326,10 +336,161 @@ devkit branches --delete-merged
 
 終了コード: 0=正常／2=リポジトリや `--base` の解決に失敗、または削除に失敗したブランチがある。
 
+### uuid
+
+```sh
+devkit uuid --count 3
+```
+
+UUID v4 を生成し、指定された UUID の形式を検証します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--count N` | 生成個数。既定は 1。 |
+| `--upper` | 生成結果を大文字にします。 |
+| `--json` | 生成結果または検証結果を JSON で出力します。 |
+
+### pw
+
+```sh
+devkit pw --length 24
+```
+
+暗号学的乱数でパスワードを生成します。有効な各文字種を少なくとも1文字含みます。
+
+| オプション | 説明 |
+| --- | --- |
+| `--length N` | 文字数。既定は 16。 |
+| `--count N` | 生成個数。既定は 1。 |
+| `--no-symbols` | 記号を除きます。 |
+| `--no-ambiguous` | 0、O、1、l、I を除きます。 |
+
+### b64
+
+```sh
+devkit b64 --decode aGVsbG8=
+```
+
+Base64 をエンコードまたはデコードします。デコード結果はバイト列として出力します。
+
+入力は位置引数、`--file`、標準入力の順に優先します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--decode` | デコードします。 |
+| `--url` | base64url のアルファベットを使います。 |
+| `--file FILE` | 入力ファイルを指定します。 |
+
+### hash
+
+```sh
+devkit hash --algo sha256 hello
+```
+
+ハッシュまたは HMAC を計算します。照合が不一致なら終了コード 1 を返します。
+
+入力は位置引数、`--file`、標準入力の順に優先します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--algo ALGO` | md5 / sha1 / sha256 / sha512。既定は sha256。 |
+| `--hmac KEY` | 指定した鍵で HMAC を計算します。 |
+| `--check EXPECTED` | 16進ダイジェストを照合します。 |
+| `--file FILE` | 入力ファイルを指定します。 |
+| `--json` | ダイジェストと照合結果を JSON で出力します。 |
+
+### json
+
+```sh
+devkit json --path user.name '{"user":{"name":"sample"}}'
+```
+
+JSON を整形・検証し、指定したパスから値を抽出します。パスが見つからない場合は終了コード 1 を返します。
+
+入力は位置引数、`--file`、標準入力の順に優先します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--indent N` | インデント幅を 0〜10 で指定します。既定は 2。 |
+| `--minify` | 空白を除きます。 |
+| `--check` | 構文が正しければ `valid` を出力します。 |
+| `--path PATH` | ドット区切りのパスで値を抽出します。配列は 0 始まりです。 |
+| `--file FILE` | 入力ファイルを指定します。 |
+
+### regex
+
+```sh
+devkit regex '([0-9]+)' 'ID: 123'
+```
+
+JavaScript の正規表現で全マッチを検索し、必要に応じて置換します。対象文字列を省略すると標準入力を読み、マッチがなければ終了コード 1 を返します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--flags FLAGS` | i / m / s / u を指定できます。 |
+| `--replace TEXT` | 全マッチを指定文字列に置換します。 |
+| `--json` | マッチ位置、キャプチャ、件数、置換結果を JSON で出力します。 |
+
+### dns
+
+```sh
+devkit dns example.com --type A
+```
+
+指定したホストの DNS レコードを取得します。対象のレコードがなければ終了コード 1 を返します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--type TYPE` | A / AAAA / CNAME / MX / TXT / NS / ALL。既定は ALL。 |
+| `--json` | ホスト名と取得できたレコードを種別ごとに JSON で出力します。 |
+
+### http
+
+```sh
+devkit http https://example.com/
+```
+
+HTTP(S) 応答のステータス、所要時間、ヘッダを表示します。本文は読み捨てます。
+
+| オプション | 説明 |
+| --- | --- |
+| `--method METHOD` | HTTP メソッド。既定は GET。 |
+| `--timeout MS` | 各リクエストの制限時間。既定は 10000 ミリ秒。 |
+| `--no-follow` | リダイレクトを無効にします。既定は最大10回まで追跡します。 |
+| `--json` | 最終 URL、応答情報、リダイレクト履歴を JSON で出力します。 |
+
+### port
+
+```sh
+devkit port example.com --port 80,443
+```
+
+指定したホストの TCP ポートに接続できるかを調べます。1つでも接続できなければ終了コード 1 を返します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--port PORT[,PORT...]` | 必須。1〜65535 のポートをカンマ区切りで指定します。 |
+| `--timeout MS` | 接続の制限時間。既定は 3000 ミリ秒。 |
+| `--json` | 各ポートの接続結果を JSON で出力します。 |
+
+### cert
+
+```sh
+devkit cert example.com --warn-days 30
+```
+
+TLS 証明書の発行先、発行者、有効期間、残り日数、SAN を表示します。証明書の信頼性にかかわらず情報を取得し、残り日数がしきい値未満なら終了コード 1 を返します。
+
+| オプション | 説明 |
+| --- | --- |
+| `--port PORT` | 接続先ポート。既定は 443。 |
+| `--warn-days DAYS` | 残り日数の警告しきい値。既定は 30 日。 |
+| `--json` | 証明書情報を JSON で出力します。警告は標準エラーに出力します。 |
+
 ## 新しいコマンドの追加方法
 
 1. `commands/_template.js.example` を `commands/<名前>.js` にコピーします。
-2. `name`（サブコマンド名）、`help`（一覧用の1行説明）、`usage`、`run(argv, io)` を書き換えます。
+2. `name`（サブコマンド名）、`help`（一覧用の1行説明）、`usage`、`example`（実行例）、`run(argv, io)` を書き換えます。
    `commands/` に置かれた `.js` ファイル（先頭が `_` でないもの）は起動時に自動発見されるので、
    登録リストの編集は不要です。
 3. `tests/<名前>.test.js` にテストを書き、`npm test` で全件パスを確認します。

@@ -17,12 +17,15 @@ const token = [
 test("listCommands returns sorted command metadata", () => {
   const commands = listCommands();
   assert.deepEqual(commands.map(({ name }) => name), [
-    "branches", "cron", "csv", "env", "ip", "jwt", "semver", "toc", "ts", "url",
+    "b64", "branches", "cert", "cron", "csv", "dns", "env", "hash", "http", "ip",
+    "json", "jwt", "port", "pw", "regex", "semver", "toc", "ts", "url", "uuid",
   ]);
-  for (const { name, help, usage } of commands) {
+  for (const { name, help, usage, example } of commands) {
     assert.equal(typeof help, "string");
     assert.ok(help.length > 0, name);
     assert.ok(usage.startsWith(`devkit ${name}`), name);
+    assert.equal(typeof example, "string");
+    assert.ok(example.startsWith(`devkit ${name} `), name);
   }
 });
 
@@ -120,3 +123,18 @@ test("runCommand preserves output written before an unexpected exception", async
     stdoutBuffer: Buffer.from("before 日本語 after\n"),
   });
 });
+
+for (const [name, args, expected] of [
+  ["uuid", ["--count", "1"], /^[\da-f-]{36}\n$/],
+  ["pw", ["--length", "12"], /^.{12}\n$/],
+  ["b64", ["hello"], /^aGVsbG8=\n$/],
+  ["hash", ["abc"], /^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n$/],
+  ["json", ["--path", "name", '{"name":"sample"}'], /^sample\n$/],
+  ["regex", ["[0-9]+", "ID: 123"], /^match 1: 123/],
+]) {
+  test("runCommand executes " + name, async () => {
+    const result = await runCommand(name, args);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, expected);
+  });
+}

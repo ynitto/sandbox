@@ -173,4 +173,4 @@ function run(argv, io) {
   return 1;
 }
 
-module.exports = { name: "cron", help, usage, run };
+module.exports = { name: "cron", help, usage, example: "devkit cron \"0 9 * * 1-5\"", run };

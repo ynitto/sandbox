@@ -146,4 +146,4 @@ function run(argv, io) {
   return failed ? (stdinMode ? 1 : 2) : 0;
 }
 
-module.exports = { name: "ts", help, usage, run };
+module.exports = { name: "ts", help, usage, example: "devkit ts 0", run };
