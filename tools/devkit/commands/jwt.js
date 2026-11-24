@@ -178,4 +178,4 @@ function run(argv, io) {
   return verified ? 0 : 3;
 }
 
-module.exports = { name: "jwt", help, usage, run };
+module.exports = { name: "jwt", help, usage, example: "devkit jwt eyJhbGciOiJub25lIn0.eyJzdWIiOiJzYW1wbGUifQ.", run };

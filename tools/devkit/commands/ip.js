@@ -197,4 +197,4 @@ function run(argv, io) {
   return 0;
 }
 
-module.exports = { name: "ip", help, usage, run };
+module.exports = { name: "ip", help, usage, example: "devkit ip info 192.168.1.10/24", run };

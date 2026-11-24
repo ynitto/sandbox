@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawnSync } = require("child_process");
+const { execFile, spawnSync } = require("child_process");
 const path = require("path");
 
 const BIN = path.join(__dirname, "..", "bin", "devkit.js");
@@ -25,4 +25,27 @@ function runCliBuffer(args, { input = Buffer.alloc(0), cwd, env, replaceEnv = fa
   });
 }
 
-module.exports = { runCli, runCliBuffer, BIN };
+// 同じプロセスのローカルサーバーを動かしながら CLI を実行する。
+function runCliAsync(args) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [BIN, ...args], { timeout: 15000 }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== "number") reject(error);
+      else resolve({ status: error ? error.code : 0, stdout, stderr });
+    });
+  });
+}
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port));
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+module.exports = { runCli, runCliBuffer, runCliAsync, listen, close, BIN };

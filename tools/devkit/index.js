@@ -3,14 +3,14 @@
 const { discoverCommands, main } = require("./core/cli");
 
 /**
- * 自動発見されたコマンドの名前、説明、使用法を名前の昇順で返す。
- * @returns {{name: string, help: string, usage: string}[]} コマンド一覧。
+ * 自動発見されたコマンドの名前、説明、使用法、実行例を名前の昇順で返す。
+ * @returns {{name: string, help: string, usage: string, example: string}[]} コマンド一覧。
  */
 function listCommands() {
   const commands = discoverCommands();
   return [...commands.keys()].sort().map((name) => {
-    const { help, usage } = commands.get(name);
-    return { name, help, usage };
+    const { help, usage, example } = commands.get(name);
+    return { name, help, usage, example };
   });
 }
 

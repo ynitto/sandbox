@@ -28,5 +28,6 @@ module.exports = {
   name: "example", // サブコマンド名（devkit example ...）
   help: "雛形コマンド（1行説明）", // devkit --help の一覧に出る
   usage: "devkit example [--json] <対象>",
+  example: "devkit example --json sample",
   run,
 };

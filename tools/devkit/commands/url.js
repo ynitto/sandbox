@@ -205,4 +205,4 @@ function run(argv, io) {
   return 0;
 }
 
-module.exports = { name: "url", help, usage, run };
+module.exports = { name: "url", help, usage, example: "devkit url https://example.com/", run };

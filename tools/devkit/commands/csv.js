@@ -470,4 +470,4 @@ function run(argv, io) {
   return 0;
 }
 
-module.exports = { name: "csv", help: "CSV ファイルの概要を表示する", usage, run };
+module.exports = { name: "csv", help: "CSV ファイルの概要を表示する", usage, example: "devkit csv data.csv", run };

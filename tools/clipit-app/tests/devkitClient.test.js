@@ -10,10 +10,21 @@ test("loads the repository devkit API from the app directory", async () => {
   const options = { appDir, env: {} };
   assert.equal(resolveDevkitDir(options), path.resolve(appDir, "../devkit"));
   const { listCommands, runCommand } = loadDevkit(options);
-  assert.ok(listCommands().some(({ name }) => name === "jwt"));
+  const commands = listCommands();
+  assert.equal(commands.length, 20);
+  assert.ok(commands.some(({ name }) => name === "jwt"));
+  for (const { name, example } of commands) {
+    assert.equal(typeof example, "string", `${name} must have an example`);
+    const invocation = `devkit ${name}`;
+    assert.ok(example === invocation || example.startsWith(invocation + " "),
+      `${name} example must start with "${invocation}"`);
+  }
   const timestamp = await runCommand("ts", ["0"]);
   assert.equal(timestamp.code, 0);
   assert.match(timestamp.stdout, /1970/);
+  const uuid = await runCommand("uuid", []);
+  assert.equal(uuid.code, 0);
+  assert.match(uuid.stdout.trim(), /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
   assert.equal((await runCommand("unknown-clipit-test-command", [])).code, 2);
 });
 

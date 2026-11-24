@@ -7,6 +7,7 @@
 //     name: "jwt",            // サブコマンド名
 //     help: "JWT の中身を表示する",  // 一覧用の1行説明
 //     usage: "devkit jwt [--file FILE] [--tz TZ] [--secret SECRET] [token]",
+//     example: "devkit jwt TOKEN",
 //     run(argv, io) { ... return 終了コード; }  // async でもよい
 //   }
 
@@ -32,6 +33,7 @@ function discoverCommands() {
     }
     if (typeof mod.usage !== "string") mod.usage = `devkit ${mod.name}`;
     if (typeof mod.help !== "string") mod.help = "";
+    if (typeof mod.example !== "string") mod.example = "";
     commands.set(mod.name, mod);
   }
   return commands;
