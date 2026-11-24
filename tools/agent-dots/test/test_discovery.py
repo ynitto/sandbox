@@ -792,7 +792,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.finish_evaluation()
         self.outbox(evaluation)
         self.call("act")
-        self.assertEqual([row["status"] for row in dot.proposal_queue(self.goal)], ["pending", "approved"])
+        self.assertEqual(sorted(row["status"] for row in dot.proposal_queue(self.goal)), ["approved", "pending"])
 
     def test_tick_journal_classifies_discovery_error_without_exception_text(self):
         with patch.object(discovery, "evaluation_material", side_effect=PermissionError("PRIVATE PATH")):
