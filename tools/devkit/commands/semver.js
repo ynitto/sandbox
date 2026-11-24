@@ -304,5 +304,6 @@ module.exports = {
   name: "semver",
   help: "SemVer の検証・比較・bump・レンジ判定をする",
   usage: "devkit semver <command> [options]",
+  example: "devkit semver check 1.2.3",
   run,
 };

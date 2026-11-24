@@ -455,8 +455,13 @@ function run(argv, io) {
     }
     const output = Buffer.from((args.json ? json(result) : display(result)) + "\n");
     // Synchronous writes let the command report EPIPE with its own exit code.
-    for (let written = 0; written < output.length;) {
-      written += fs.writeSync(1, output, written, output.length - written);
+    // io.outSync が無いホストでは fd 1 へ直接書く（従来どおり）。
+    if (typeof io.outSync === "function") {
+      io.outSync(output);
+    } else {
+      for (let written = 0; written < output.length;) {
+        written += fs.writeSync(1, output, written, output.length - written);
+      }
     }
   } catch (error) {
     io.err(`エラー: 出力できません (${error.message})\n`);
@@ -465,4 +470,4 @@ function run(argv, io) {
   return 0;
 }
 
-module.exports = { name: "csv", help: "CSV ファイルの概要を表示する", usage, run };
+module.exports = { name: "csv", help: "CSV ファイルの概要を表示する", usage, example: "devkit csv data.csv", run };

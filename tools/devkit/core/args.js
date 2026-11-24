@@ -27,9 +27,10 @@ class ArgParser {
   }
 
   addFlag(names, { key, help = "", def = false } = {}) {
+    const optionNames = [].concat(names);
     this.options.push({
-      names: [].concat(names),
-      key: key || names[0].replace(/^--?/, "").replace(/-/g, "_"),
+      names: optionNames,
+      key: key || optionNames[0].replace(/^--?/, "").replace(/-/g, "_"),
       help,
       takesValue: false,
       def,
@@ -38,11 +39,12 @@ class ArgParser {
   }
 
   addOption(names, { key, help = "", metavar = null, required = false, def = undefined, choices = null, type = null, append = false } = {}) {
+    const optionNames = [].concat(names);
     this.options.push({
-      names: [].concat(names),
-      key: key || names[0].replace(/^--?/, "").replace(/-/g, "_"),
+      names: optionNames,
+      key: key || optionNames[0].replace(/^--?/, "").replace(/-/g, "_"),
       help,
-      metavar: metavar || (key || names[0].replace(/^--?/, "")).toUpperCase(),
+      metavar: metavar || (key || optionNames[0].replace(/^--?/, "")).toUpperCase(),
       takesValue: true,
       required,
       def,

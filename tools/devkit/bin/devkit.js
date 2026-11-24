@@ -14,6 +14,12 @@ const io = {
   outBuffer(buffer) {
     process.stdout.write(buffer);
   },
+  outSync(buffer) {
+    // 同期書き込み。EPIPE を呼び出し側が検知して独自の終了コードで報告できる。
+    for (let written = 0; written < buffer.length;) {
+      written += fs.writeSync(1, buffer, written, buffer.length - written);
+    }
+  },
   readStdin() {
     return fs.readFileSync(0);
   },

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
+  <title>ClipIt</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="renderer.js"></script>
+</head>
+<body>
+  <header class="row">
+    <strong>ClipIt</strong>
+    <button id="hide">隠す</button>
+    <button id="quit">終了</button>
+  </header>
+  <nav class="row" aria-label="機能" role="tablist">
+    <button id="tab-history" role="tab" aria-controls="history" aria-selected="true">履歴</button>
+    <button id="tab-paint" role="tab" aria-controls="paint" aria-selected="false" tabindex="-1">ペイント</button>
+    <button id="tab-notes" role="tab" aria-controls="notes" aria-selected="false" tabindex="-1">メモ</button>
+    <button id="tab-calc" role="tab" aria-controls="calc" aria-selected="false" tabindex="-1">電卓</button>
+    <button id="tab-tools" role="tab" aria-controls="tools" aria-selected="false" tabindex="-1">ツール</button>
+  </nav>
+  <main>
+    <section id="history" role="tabpanel" aria-labelledby="tab-history">
+      <div class="row">
+        <input id="search" class="grow" type="search" placeholder="キーワード検索" aria-label="キーワード検索">
+        <select id="tags" aria-label="タグ絞り込み"></select>
+        <select id="order" aria-label="並び順">
+          <option value="newest">新しい順</option>
+          <option value="oldest">古い順</option>
+        </select>
+      </div>
+      <div class="history-content">
+        <div id="clips" role="listbox" tabindex="0" aria-label="クリップ履歴"></div>
+        <div id="preview" tabindex="0" aria-label="プレビュー"></div>
+      </div>
+      <div class="row">
+        <button id="edit-tags">タグ編集</button>
+        <button id="pin">ピン留め</button>
+        <button id="delete-clip">削除</button>
+        <button id="translate">翻訳</button>
+        <button id="ocr">文字読み取り</button>
+        <button id="open-paint">ペイントで開く</button>
+      </div>
+      <form id="tag-form" class="row" hidden>
+        <input id="tag-input" class="grow" placeholder="カンマ区切りで入力" aria-label="タグ">
+        <button>保存</button>
+        <button id="cancel-tags" type="button">キャンセル</button>
+      </form>
+    </section>
+    <section id="paint" role="tabpanel" aria-labelledby="tab-paint" hidden>
+      <div class="row">
+        <label>色 <input id="color" type="color" value="#24292f"></label>
+        <label>太さ <input id="width" type="range" min="1" max="40" value="4"></label>
+        <button id="clear-paint">消去</button>
+        <button id="save-paint">画像として保存</button>
+      </div>
+      <div class="canvas-area"><canvas id="canvas" width="900" height="380" aria-label="描画領域"></canvas></div>
+    </section>
+    <section id="notes" role="tabpanel" aria-labelledby="tab-notes" hidden>
+      <form id="note-form" class="row">
+        <input id="note-input" class="grow" placeholder="タスクを入力" aria-label="タスク">
+        <button>追加</button>
+      </form>
+      <div id="note-list" class="scroll"></div>
+    </section>
+    <section id="calc" role="tabpanel" aria-labelledby="tab-calc" hidden>
+      <form id="calc-form" class="row">
+        <input id="expression" class="grow" placeholder="例  (12 + 8) × 50%" aria-label="式">
+        <button>計算</button>
+        <button id="save-calc" type="button">式と答えをクリップに追加</button>
+      </form>
+      <output id="answer"></output>
+    </section>
+    <section id="tools" role="tabpanel" aria-labelledby="tab-tools" hidden>
+      <form id="tool-form">
+        <fieldset id="tool-fields" disabled>
+          <div class="row">
+            <select id="command" aria-label="コマンド"></select>
+            <input id="argv" class="grow" placeholder="引数" aria-label="引数">
+            <button id="run-tool">実行</button>
+            <button id="save-tool" type="button" disabled>結果をクリップに保存</button>
+          </div>
+          <pre id="usage"></pre>
+          <div id="tool-example-row" class="row" hidden>
+            <pre id="tool-example"></pre>
+            <button id="fill-example" type="button">例を入力</button>
+          </div>
+          <textarea id="stdin" rows="2" placeholder="標準入力" aria-label="標準入力"></textarea>
+        </fieldset>
+      </form>
+      <div id="tool-reason"></div>
+      <div id="tool-output" class="scroll" hidden>
+        <div>終了コード <output id="exit-code"></output></div>
+        <div>標準出力</div><pre id="stdout" tabindex="0"></pre>
+        <div>標準エラー</div><pre id="stderr" tabindex="0"></pre>
+      </div>
+    </section>
+  </main>
+  <footer id="status" role="status"></footer>
+</body>
+</html>

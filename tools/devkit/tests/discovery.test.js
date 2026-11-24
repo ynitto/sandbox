@@ -8,7 +8,10 @@ const test = require("node:test");
 const { discoverCommands } = require("../core/cli");
 const { runCli } = require("./helpers");
 
-const EXPECTED = ["branches", "cron", "csv", "env", "ip", "jwt", "semver", "toc", "ts", "url"];
+const EXPECTED = [
+  "b64", "branches", "cert", "cron", "csv", "dns", "env", "hash", "http", "ip",
+  "json", "jwt", "port", "pw", "regex", "semver", "toc", "ts", "url", "uuid",
+];
 
 test("all commands are discovered", () => {
   const commands = discoverCommands();

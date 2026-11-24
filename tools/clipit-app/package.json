@@ -1,0 +1,51 @@
+{
+  "name": "clipit-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "クリップボード履歴、メモ、計算、翻訳をまとめたデスクトップツール ClipIt",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/",
+    "predist": "node ./scripts/check-dist.js",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.clipit.app",
+    "productName": "ClipIt",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "helper/clipit-helper.exe",
+        "to": "helper/clipit-helper.exe"
+      },
+      {
+        "from": "../devkit",
+        "to": "devkit",
+        "filter": [
+          "**/*",
+          "!tests/**",
+          "!node_modules/**",
+          "!**/node_modules/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false
+    }
+  }
+}
