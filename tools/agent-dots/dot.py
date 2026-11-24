@@ -855,6 +855,7 @@ def cmd_act(a) -> int:
     d = Path(a.dir)
     ts = a.now if a.now is not None else now_ts()
     comments: list[str] = []
+    auto_approved: set[str] = set()
     with locked(d):
         state = load_state(d)
         policy = load_policy(d)
@@ -863,7 +864,7 @@ def cmd_act(a) -> int:
             comment_file.unlink()
         to_run: list[dict] = []
         if not job_busy(d):                       # まだ終わっていない依頼の提案は、次の act で片付ける
-            _take_proposals(d, state, policy, ts, comments, to_run)
+            _take_proposals(d, state, policy, ts, comments, to_run, auto_approved)
             try:
                 routines.advance(d, state, policy, ts, comments, routine_api(d))
             except (routines.RoutineError, OSError) as e:
@@ -928,11 +929,12 @@ def cmd_act(a) -> int:
             text = f"【{state['name']}より】\n\n" + "\n\n".join(comments) + "\n"
             comment_file.write_text(text, encoding="utf-8")
             print(str(comment_file))
-    reconcile_discovery(d, ts)
+    reconcile_discovery(d, ts, auto_approved)
     return EXIT_OK
 
 
-def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]", to_run: "list[dict]") -> None:
+def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]", to_run: "list[dict]",
+                    auto_approved: set[str]) -> None:
     proposals = sorted_files(d / "outbox", ".json")
     inflight = state.get("inflight") or {}
     evaluating = inflight.get("kind") == "discovery"
@@ -1008,6 +1010,8 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
                 entry = handle(d, state, policy, prop, ts, comments, to_run, proactive)
             else:
                 entry, prop = {"result": "denied", "why": "JSON がオブジェクトでない"}, None
+        if evaluating and "auto" in entry:
+            auto_approved.add(entry["id"])
         row = {"kind": "proposal", "file": p.name, "proposal": prop, **entry}
         if evaluating:
             row["evaluation_id"] = inflight["evaluation_id"]
@@ -1104,8 +1108,12 @@ def receive_discovery(d: Path, policy: dict, inflight: dict, filename: str, prop
             return denied("対応する評価資料がありません")
         pid = "p" + hashlib.sha256(f"{ident}/{filename}".encode()).hexdigest()[:32]
         path = folder / "proposals" / f"{pid}.json"
+        receipt = {"result": "accepted", "id": pid}
         if path.exists():
-            return {"result": "accepted", "id": pid}
+            prior = read_json(path, {})
+            if "auto" in prior:
+                receipt["auto"] = prior["auto"]
+            return receipt
         if not discovery.proposal_fields(prop):
             return denied("propose の必須項目または列挙値が不正です")
         config = discovery.parse_policy(policy, d)
@@ -1141,8 +1149,17 @@ def receive_discovery(d: Path, policy: dict, inflight: dict, filename: str, prop
         record.update(id=pid, evaluation_id=ident, signal_ids=sorted(evidence), evidence=list(evidence.values()),
                       status="pending", received_at=iso(ts), decision=None, append_target=None)
         record["append_target"] = discovery_append_target(config, record)
+        # 自動承認の効力は登録まで。実行は登録先の policy・フック・done_check に従う。
+        if discovery.approval_requirement(config, record) is None:
+            auto = discovery.auto_execute_match(config, record)
+            if auto is not None:
+                record.update(status="approved", auto=auto, decision={
+                    "at": iso(ts), "by": "policy",
+                    "reason": f"auto_execute の「{auto}」に一致し、require_approval に当たらないため自動承認",
+                })
+                receipt["auto"] = auto
         write_json(path, record)
-        return {"result": "accepted", "id": pid}
+        return receipt
     except (discovery.SOURCE_ERRORS + (routines.RoutineError,)) as e:
         return denied(f"Discovery の照合に失敗しました: {e}")
 
@@ -1225,10 +1242,13 @@ def discovery_history(d: Path, proposal: dict, event: str, status: str, reason: 
     event_id = ":".join(filter(None, (proposal["id"], event, result_id)))
     if any(row.get("event_id") == event_id for row in json_lines(path)):
         return
+    row = {"event_id": event_id, "at": iso(ts), "proposal_id": proposal["id"],
+           "signal_ids": proposal.get("signal_ids", []), "event": event, "status": status,
+           "reason": reason, "execution_ref": ref}
+    if event == "decision" and proposal.get("auto"):
+        row["decision"] = proposal["decision"]
     with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"event_id": event_id, "at": iso(ts), "proposal_id": proposal["id"],
-                                 "signal_ids": proposal.get("signal_ids", []), "event": event, "status": status,
-                                 "reason": reason, "execution_ref": ref}, ensure_ascii=False) + "\n")
+        stream.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def register_discovery(plan: dict, proposal: dict, ts: float) -> dict:
@@ -1385,7 +1405,7 @@ def discovery_results(proposal: dict):
             yield ident, status, reason, dict(ref, result_id=ident)
 
 
-def reconcile_discovery(d: Path, ts: float) -> None:
+def reconcile_discovery(d: Path, ts: float, auto_approved: set[str]) -> None:
     if not (d / WORK / "discovery" / "proposals").is_dir():
         return
     with locked(d):
@@ -1393,7 +1413,7 @@ def reconcile_discovery(d: Path, ts: float) -> None:
             return
         rows = proposal_queue(d)
     for row in rows:
-        if row.get("status") not in ("rejected", "approved"):
+        if row["id"] in auto_approved or row.get("status") not in ("rejected", "approved"):
             continue
         path = discovery.index_dir(d) / "proposals" / f'{row["id"]}.json'
         with locked(d):
