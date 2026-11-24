@@ -1566,7 +1566,7 @@ def evaluation_material(goal: Path, config: dict, excluded: set, remaining: int)
     for group in groups:
         rows = [verified[i][0] for i in group]
         kinds = "+".join(dict.fromkeys(row["kind"] for row in rows))
-        sources = " + ".join(labels[i] for i in group)
+        sources = " + ".join(dict.fromkeys(labels[i] for i in group))
         locations = ", ".join(dict.fromkeys(loc for row in rows for loc in row["locations"]))
         if len(rows) == 1:
             locations = ", ".join(rows[0]["locations"])
