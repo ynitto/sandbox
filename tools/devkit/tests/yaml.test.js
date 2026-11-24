@@ -37,5 +37,26 @@ test("yaml rejects unsupported syntax and reports its line", () => {
     assert.match(result.stderr, /2 行目: 対応していない記法です/);
   }
   assert.match(runCli(["yaml"], { input: "a: 1\n---\na: 2\n" }).stderr, /2 行目: 対応していない記法です/);
-  assert.equal(runCli(["yaml", "--to", "yaml"], { input: "a: 1" }).status, 2);
+});
+
+test("yaml keeps leading-zero and unsafe integers as strings", () => {
+  const result = runCli(["yaml"], { input: "code: 01\nid: 9007199254740993\nzero: 0\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { code: "01", id: "9007199254740993", zero: 0 });
+});
+
+test("yaml rejects excessively deep nesting instead of overflowing", () => {
+  const flow = "value: " + "[".repeat(150) + "1" + "]".repeat(150) + "\n";
+  assert.equal(runCli(["yaml"], { input: flow }).status, 2);
+  const blocks = Array.from({ length: 150 }, (_, i) => " ".repeat(i) + (i % 2 ? "- x" : `k${i}:`)).join("\n") + "\n";
+  assert.equal(runCli(["yaml"], { input: blocks }).status, 2);
+});
+
+test("yaml --to yaml normalizes YAML input", () => {
+  const result = runCli(["yaml", "--to", "yaml"], { input: "name: test\nitems:\n  - 1\n  - 2\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /name: test/);
+  const back = runCli(["yaml"], { input: result.stdout });
+  assert.equal(back.status, 0, back.stderr);
+  assert.deepEqual(JSON.parse(back.stdout), { name: "test", items: [1, 2] });
 });

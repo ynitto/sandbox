@@ -46,6 +46,9 @@ function run(argv, io) {
   const newline = Object.keys(endings).filter((key) => args[key]);
   if (newline.length > 1) throw new UsageError("改行コードは1種類だけ指定してください");
   if (args.bom && args.no_bom) throw new UsageError("--bom と --no-bom は併用できません");
+  if (args.check && (to || newline.length || args.bom || args.no_bom || out !== undefined || inPlace)) {
+    throw new UsageError("--check と変換オプションは併用できません");
+  }
   if (out !== undefined && inPlace) throw new UsageError("--out と --in-place は併用できません");
   if (args.backup && !inPlace) throw new UsageError("--backup には --in-place が必要です");
   if (inPlace && file === "-") throw new UsageError("--in-place には入力ファイルが必要です");

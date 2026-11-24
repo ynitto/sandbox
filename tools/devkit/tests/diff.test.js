@@ -29,3 +29,12 @@ test("diff reports zero-length ranges and missing final newlines", (t) => {
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "--- a/-\n+++ b/empty\n@@ -1 +0,0 @@\n-one\n\\ No newline at end of file\n");
 });
+
+test("diff refuses a middle section too large for the LCS table", (t) => {
+  const cwd = fs.mkdtempSync(join(tmpdir(), "devkit-diff-large-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const lines = (prefix) => Array.from({ length: 5000 }, (_, i) => `${prefix}${i}`).join("\n") + "\n";
+  fs.writeFileSync(join(cwd, "a.txt"), lines("a"));
+  fs.writeFileSync(join(cwd, "b.txt"), lines("b"));
+  assert.equal(runCli(["diff", "a.txt", "b.txt"], { cwd }).status, 2);
+});

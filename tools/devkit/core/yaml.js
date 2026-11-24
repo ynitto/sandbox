@@ -56,8 +56,11 @@ function plain(text, line) {
   if (/^(?:null|~)$/i.test(text)) return null;
   if (/^(?:true|false)$/i.test(text)) return text.toLowerCase() === "true";
   if (numberPattern.test(text)) {
+    // 先頭ゼロの整数と、倍精度では正確に表せない整数は、文字列のまま保持する。
+    if (/^[+-]?0\d/.test(text)) return text;
     const number = Number(text);
     if (!Number.isFinite(number)) fail(line, "数値が範囲外です");
+    if (Number.isInteger(number) && !Number.isSafeInteger(number)) return text;
     return number;
   }
   return text;
@@ -100,14 +103,15 @@ function inline(text, line) {
     else while (cursor < text.length && !stops.includes(text[cursor])) cursor++;
     return text.slice(start, cursor).trimEnd();
   }
-  function value() {
+  function value(depth) {
     skip();
-    if (text[cursor] === "[" || text[cursor] === "{") return collection();
+    if (text[cursor] === "[" || text[cursor] === "{") return collection(depth + 1);
     const raw = token(",]}");
     if (!raw) fail(line, "フロー記法に値が必要です");
     return inline(raw, line);
   }
-  function collection() {
+  function collection(depth) {
+    if (depth > 100) fail(line, "フロー記法のネストが深すぎます");
     const map = text[cursor++] === "{";
     const closing = map ? "}" : "]";
     const result = map ? Object.create(null) : [];
@@ -117,8 +121,8 @@ function inline(text, line) {
         const key = keyOf(token(":,]}"), line);
         skip();
         if (text[cursor++] !== ":") fail(line, "フローマップに : が必要です");
-        result[key] = value();
-      } else result.push(value());
+        result[key] = value(depth);
+      } else result.push(value(depth));
       skip();
       if (text[cursor] === closing) break;
       if (text[cursor++] !== ",") fail(line, `フロー記法に , または ${closing} が必要です`);
@@ -127,7 +131,7 @@ function inline(text, line) {
     cursor++;
     return result;
   }
-  const result = collection();
+  const result = collection(0);
   skip();
   if (cursor !== text.length) fail(line, "フロー記法の後に余分な文字があります");
   return result;
@@ -146,8 +150,9 @@ function parseYaml(input) {
   let cursor = 0;
   const listItem = (text) => /^-(?:\s|$)/.test(text);
 
-  function block(indent, first) {
+  function block(indent, first, depth = 0) {
     const initial = first ?? lines[cursor++];
+    if (depth > 100) fail(initial.line, "ネストが深すぎます");
     if (listItem(initial.text)) {
       const result = [];
       let entry = initial;
@@ -155,9 +160,9 @@ function parseYaml(input) {
         const prefix = entry.text.match(/^-\s*/)[0];
         const text = entry.text.slice(prefix.length);
         if (text && (listItem(text) || blockColon(text, entry.line) >= 0)) {
-          result.push(block(indent + prefix.length, { ...entry, text }));
+          result.push(block(indent + prefix.length, { ...entry, text }, depth + 1));
         } else if (text) result.push(inline(text, entry.line));
-        else result.push(nested(indent));
+        else result.push(nested(indent, false, depth));
         entry = lines[cursor];
         if (entry?.indent !== indent || !listItem(entry.text)) break;
         cursor++;
@@ -173,7 +178,7 @@ function parseYaml(input) {
       const key = keyOf(entry.text.slice(0, colon).trimEnd(), entry.line);
       const text = entry.text.slice(colon + 1).trimStart();
       if (text && blockColon(text, entry.line) >= 0) fail(entry.line, "値に含む : は引用符で囲んでください");
-      result[key] = text ? inline(text, entry.line) : nested(indent, true);
+      result[key] = text ? inline(text, entry.line) : nested(indent, true, depth);
       entry = lines[cursor];
       if (entry?.indent !== indent || listItem(entry.text)) break;
       cursor++;
@@ -181,10 +186,10 @@ function parseYaml(input) {
     return result;
   }
 
-  function nested(indent, allowIndentless = false) {
+  function nested(indent, allowIndentless = false, depth = 0) {
     const next = lines[cursor];
     if (next && (next.indent > indent || (allowIndentless && next.indent === indent && listItem(next.text)))) {
-      return block(next.indent);
+      return block(next.indent, undefined, depth + 1);
     }
     return null;
   }

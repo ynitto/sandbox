@@ -1,5 +1,6 @@
 "use strict";
 
+const { constants } = require("node:buffer");
 const { imageLength } = require("./png");
 
 function decodeBmp(buffer) {
@@ -22,6 +23,20 @@ function decodeBmp(buffer) {
   if (pixelOffset < 14 + headerSize || pixelOffset + stride * height > buffer.length) {
     throw new Error("BMP ピクセルデータが不正です");
   }
+  // 32bit BI_RGB の第4バイトは予約領域で 0 のことが多く、そのまま α にすると
+  // 全面透明になってしまう。全画素の第4バイトが 0 の場合だけ不透明として扱い、
+  // 非 0 の値が1つでもあれば α チャンネルとして尊重する。
+  let useAlpha = false;
+  if (depth === 32) {
+    for (let row = 0; row < height && !useAlpha; row++) {
+      for (let x = 0; x < width; x++) {
+        if (buffer[pixelOffset + row * stride + x * pixelBytes + 3] !== 0) {
+          useAlpha = true;
+          break;
+        }
+      }
+    }
+  }
   const data = Buffer.allocUnsafe(length);
   for (let y = 0; y < height; y++) {
     const row = signedHeight < 0 ? y : height - 1 - y;
@@ -31,7 +46,7 @@ function decodeBmp(buffer) {
       data[target] = buffer[source + 2];
       data[target + 1] = buffer[source + 1];
       data[target + 2] = buffer[source];
-      data[target + 3] = depth === 32 ? buffer[source + 3] : 255;
+      data[target + 3] = useAlpha ? buffer[source + 3] : 255;
     }
   }
   return { width, height, data };
@@ -39,7 +54,9 @@ function decodeBmp(buffer) {
 
 function encodeBmp({ width, height, data }) {
   const length = imageLength(width, height, 4);
-  if (length !== data.length || length + 54 > 0xffffffff) throw new Error("BMP ピクセルデータの長さが不正です");
+  if (length !== data.length || length + 54 > 0xffffffff || length + 54 > constants.MAX_LENGTH) {
+    throw new Error("BMP ピクセルデータの長さが不正です");
+  }
   const output = Buffer.alloc(length + 54);
   output.write("BM");
   output.writeUInt32LE(output.length, 2);

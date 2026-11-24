@@ -4,7 +4,9 @@ const { PNG_SIGNATURE } = require("./png");
 const { isJpeg } = require("./jpeg");
 
 function svgTag(buffer) {
-  let xml = buffer.toString("utf8").trimStart();
+  // SVG の開始タグはファイル先頭付近にあるため、先頭 64KiB だけを対象にする
+  // （巨大な非 SVG バッファの全展開と正規表現の暴走を避ける）。
+  let xml = buffer.subarray(0, 65536).toString("utf8").trimStart();
   const preamble = /^(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\s+svg\b(?:[^"'[>]|"[^"]*"|'[^']*'|\[[\s\S]*?\])*>)\s*/i;
   for (let match; (match = preamble.exec(xml));) xml = xml.slice(match[0].length);
   return xml.match(/^<svg(?=[\s/>]|$)((?:[^>"']|"[^"]*"|'[^']*')*)(?:>|$)/i);

@@ -20,7 +20,8 @@ function fromHue(hue, chroma, offset) {
   const h = (wrapped < 0 ? wrapped + 360 : wrapped) / 60;
   const x = chroma * (1 - Math.abs(h % 2 - 1));
   const sectors = [[chroma, x, 0], [x, chroma, 0], [0, chroma, x], [0, x, chroma], [x, 0, chroma], [chroma, 0, x]];
-  return sectors[Math.floor(h) % 6].map((channel) => (channel + offset) * 255);
+  // RGB は整数に正規化する（表示する hex と輝度・コントラスト計算が同じ値を使うため）。
+  return sectors[Math.floor(h) % 6].map((channel) => Math.round((channel + offset) * 255));
 }
 
 function fromHsl(h, s, l) {
@@ -45,7 +46,7 @@ function parseColor(input) {
       if (parts.length !== (hasAlpha ? 4 : 3)) throw new Error();
       const alpha = hasAlpha ? numeric(parts[3], 0, 1) : undefined;
       if (format.startsWith("rgb")) {
-        return { rgb: parts.slice(0, 3).map((channel) => numeric(channel, 0, 255)), alpha };
+        return { rgb: parts.slice(0, 3).map((channel) => Math.round(numeric(channel, 0, 255))), alpha };
       }
       const h = numeric(parts[0], -Infinity, Infinity);
       const s = numeric(parts[1], 0, 100, true) / 100;
@@ -137,7 +138,7 @@ function run(argv, io) {
     const other = parseColor(args.mix);
     const alpha = color.alpha === undefined && other.alpha === undefined
       ? undefined : ((color.alpha ?? 1) + (other.alpha ?? 1)) / 2;
-    result.mix = describe({ rgb: color.rgb.map((channel, i) => (channel + other.rgb[i]) / 2), alpha });
+    result.mix = describe({ rgb: color.rgb.map((channel, i) => Math.round((channel + other.rgb[i]) / 2)), alpha });
   }
   if (args.contrast !== undefined) result.contrast = contrastOf(color, parseColor(args.contrast));
   if (args.json) io.out(JSON.stringify(result) + "\n");

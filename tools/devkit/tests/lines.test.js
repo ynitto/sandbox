@@ -20,3 +20,13 @@ test("lines shuffles the given rows and rejects incompatible options", () => {
   assert.deepEqual(result.stdout.trimEnd().split("\n").sort(), ["a", "a", "b", "c"]);
   assert.equal(runCli(["lines", "--shuffle", "--reverse"]).status, 2);
 });
+
+test("lines treats --numeric as sorting and --count as deduplication", () => {
+  const sorted = runCli(["lines", "--numeric"], { input: "10\n2\n1\n" });
+  assert.equal(sorted.status, 0, sorted.stderr);
+  assert.equal(sorted.stdout, "1\n2\n10\n");
+  const counted = runCli(["lines", "--count"], { input: "b\na\nb\n" });
+  assert.equal(counted.status, 0, counted.stderr);
+  assert.equal(counted.stdout, "2\tb\n1\ta\n");
+  assert.equal(runCli(["lines", "--numeric", "--shuffle"], { input: "1\n2\n" }).status, 2);
+});

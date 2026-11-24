@@ -44,7 +44,7 @@ function parseTime(time) {
 function run(argv, io) {
   const parser = new ArgParser({ prog: `devkit ${name}`, usage, description: help });
   parser.addPositional("ulid", { nargs: "?" });
-  parser.addOption("--count", { type: integer(1) });
+  parser.addOption("--count", { type: integer(1, 10000) });
   parser.addOption("--time");
   parser.addFlag("--json");
   const { ulid, count, time, json } = parser.parse(argv);

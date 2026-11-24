@@ -50,6 +50,24 @@ function parse(input, delimiter) {
   return rows;
 }
 
+// 区切り文字は1行目だけを見て決める（引用符の中のタブ・カンマは数えない）。
+function detectDelimiter(input) {
+  let tabs = 0, commas = 0, quoted = false;
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (char === "\n" || char === "\r") break;
+    if (quoted) {
+      if (char === '"') {
+        if (input[i + 1] === '"') i++;
+        else quoted = false;
+      }
+    } else if (char === '"') quoted = true;
+    else if (char === "\t") tabs++;
+    else if (char === ",") commas++;
+  }
+  return tabs > commas ? "\t" : ",";
+}
+
 function width(text) {
   let columns = 0;
   for (const char of text) {
@@ -68,7 +86,7 @@ function run(argv, io) {
   const source = path ?? file;
   const input = readInput(undefined, source === "-" ? undefined : source, io).toString("utf8").replace(/^\ufeff/, "");
   if (!input.trim()) throw new UsageError("入力が空です");
-  const rows = parse(input, input.includes("\t") ? "\t" : ",");
+  const rows = parse(input, detectDelimiter(input));
   const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
   const cells = rows.map((row) => Array.from({ length: columns }, (_, i) => row[i] ?? ""));
   let output;

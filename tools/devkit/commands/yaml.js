@@ -1,6 +1,6 @@
 "use strict";
 
-const { ArgParser, UsageError } = require("../core/args");
+const { ArgParser } = require("../core/args");
 const { readInput } = require("../core/command-input");
 const { parseYaml, formatYaml } = require("../core/yaml");
 
@@ -19,8 +19,12 @@ function run(argv, io) {
     let value;
     try {
       value = JSON.parse(input);
-    } catch (error) {
-      if (to === "yaml") throw new UsageError(`JSON を読み込めません: ${error.message}`);
+    } catch {
+      // --to yaml で JSON でない入力は、YAML として読み直して正規化する。
+      if (to === "yaml") {
+        io.out(formatYaml(parseYaml(input)));
+        return 0;
+      }
     }
     if (value !== undefined) {
       io.out(formatYaml(value));

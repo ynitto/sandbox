@@ -36,19 +36,25 @@ function detect(buffer) {
   }
   if (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0 &&
       (buffer[1] & 0x18) !== 0x08 && (buffer[1] & 0x06) !== 0) return ["audio/mpeg", "MP3"];
+  let decoded;
   try {
-    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    // UTF-8 として読めない入力はバイナリとして扱う。
+    return ["application/octet-stream", "不明なバイナリ"];
+  }
+  // JSON の構文解析は大きな入力で高コストになるため、サイズに上限を設ける。
+  if (buffer.length <= 16 * 1024 * 1024) {
     try {
       JSON.parse(decoded);
       return ["application/json", "JSON"];
     } catch {
-      const printable = decoded.replace(/[\t\r\n]|[^\p{C}]/gu, "");
-      if (printable.length === 0 || (!decoded.includes("\0") && printable.length * 20 <= decoded.length)) {
-        return ["text/plain", "UTF-8 テキスト"];
-      }
+      // JSON として壊れている場合はテキストとして判定を続ける。
     }
-  } catch {
-    // UTF-8 として読めない入力はバイナリとして扱う。
+  }
+  const printable = decoded.replace(/[\t\r\n]|[^\p{C}]/gu, "");
+  if (printable.length === 0 || (!decoded.includes("\0") && printable.length * 20 <= decoded.length)) {
+    return ["text/plain", "UTF-8 テキスト"];
   }
   return ["application/octet-stream", "不明なバイナリ"];
 }

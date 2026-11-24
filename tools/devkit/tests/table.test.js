@@ -17,3 +17,9 @@ test("table aligns fullwidth TSV cells in ASCII and rejects empty or broken CSV"
   assert.equal(runCli(["table"]).status, 2);
   assert.equal(runCli(["table"], { input: 'a,"missing' }).status, 2);
 });
+
+test("table ignores tabs inside quoted CSV fields when detecting the delimiter", () => {
+  const result = runCli(["table"], { input: "\"a\tb\",c\n1,2\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "| a\tb | c |\n| --- | --- |\n| 1 | 2 |\n");
+});

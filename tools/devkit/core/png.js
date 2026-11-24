@@ -50,6 +50,7 @@ function decodePng(buffer) {
   let header, palette, transparency;
   const compressed = [];
   let ended = false;
+  let seenData = false;
   for (let offset = 8; offset + 12 <= buffer.length;) {
     const length = buffer.readUInt32BE(offset);
     const end = offset + 8 + length;
@@ -64,12 +65,22 @@ function decodePng(buffer) {
       if (header || length !== 13) throw new Error("PNG IHDR が不正です");
       header = bytes;
     }
-    if (type === "PLTE") palette = bytes;
-    if (type === "tRNS") transparency = bytes;
-    if (type === "IDAT") compressed.push(bytes);
+    if (type === "PLTE") {
+      if (palette || seenData) throw new Error("PNG PLTE の位置または重複が不正です");
+      palette = bytes;
+    }
+    if (type === "tRNS") {
+      if (transparency || seenData) throw new Error("PNG tRNS の位置または重複が不正です");
+      transparency = bytes;
+    }
+    if (type === "IDAT") {
+      seenData = true;
+      compressed.push(bytes);
+    }
     offset = end + 4;
     if (type === "IEND") {
-      if (length !== 0 || offset !== buffer.length) throw new Error("PNG IEND が不正です");
+      if (length !== 0) throw new Error("PNG IEND が不正です");
+      // IEND より後ろのバイトは無視する（多くのデコーダと同じ寛容な扱い）。
       ended = true;
       break;
     }
@@ -85,6 +96,9 @@ function decodePng(buffer) {
   if (colorType === 3 && (!palette?.length || palette.length % 3 || palette.length > 768)) {
     throw new Error("PNG パレットが不正です");
   }
+  if (transparency && (colorType === 4 || colorType === 6)) {
+    throw new Error("PNG tRNS が不正です");
+  }
   if (transparency && ((colorType === 0 && transparency.length !== 2) ||
       (colorType === 2 && transparency.length !== 6) ||
       (colorType === 3 && transparency.length > palette.length / 3))) {
@@ -96,6 +110,10 @@ function decodePng(buffer) {
   const bytesPerPixel = channels * sampleBytes;
   const rowLength = width * bytesPerPixel;
   const rawLength = (rowLength + 1) * height;
+  // 16bit 形式では生スキャンラインが出力 RGBA より大きくなるため、こちらにも上限を課す。
+  if (!Number.isSafeInteger(rawLength) || rawLength > constants.MAX_LENGTH) {
+    throw new Error("画像の寸法が不正か、大きすぎます");
+  }
   let raw;
   try {
     raw = zlib.inflateSync(Buffer.concat(compressed), { maxOutputLength: rawLength });
@@ -170,7 +188,9 @@ function encodePng({ width, height, data, colorType = 6 }) {
   header[8] = 8;
   header[9] = colorType;
   const stride = width * channels;
-  const raw = Buffer.alloc((stride + 1) * height);
+  const rawLength = (stride + 1) * height;
+  if (rawLength > constants.MAX_LENGTH) throw new Error("画像の寸法が不正か、大きすぎます");
+  const raw = Buffer.alloc(rawLength);
   for (let y = 0; y < height; y++) data.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
   return Buffer.concat([
     PNG_SIGNATURE, chunk("IHDR", header), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0)),

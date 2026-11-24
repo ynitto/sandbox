@@ -15,6 +15,7 @@ const ORIENTATION = [
 ];
 
 function parseExif(tiff) {
+  if (tiff.length < 8) throw new Error("TIFF ヘッダが不正です");
   const order = tiff.toString("latin1", 0, 2);
   if (order !== "II" && order !== "MM") throw new Error("TIFF のバイト順が不正です");
   const u16 = order === "II" ? (offset) => tiff.readUInt16LE(offset) : (offset) => tiff.readUInt16BE(offset);
@@ -39,7 +40,8 @@ function parseExif(tiff) {
     if (!entry || entry.type !== type || !entry.count || (count && count !== entry.count)) return undefined;
     const size = entry.count * unit;
     const offset = size <= 4 ? entry.field : u32(entry.field);
-    if (offset + size > tiff.length) throw new Error("TIFF タグの値が範囲外です");
+    // 4バイトを超える値は TIFF ヘッダ（先頭8バイト）の中を指してはいけない。
+    if ((size > 4 && offset < 8) || offset + size > tiff.length) throw new Error("TIFF タグの値が範囲外です");
     return { offset, size };
   }
 

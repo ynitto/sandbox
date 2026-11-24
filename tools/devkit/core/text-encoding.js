@@ -27,7 +27,25 @@ function decode(bytes, encoding, fatal = true) {
   }
 }
 
+// BOM の無い UTF-16 は、ASCII 文字の並びに現れる NUL バイトの偏りで見分ける
+// （LE は奇数位置、BE は偶数位置に 0 が並ぶ）。日本語だけの文章では判定できない。
+function detectUtf16(bytes) {
+  const limit = Math.min(bytes.length - (bytes.length % 2), 8192);
+  if (limit < 4) return undefined;
+  const pairs = limit / 2;
+  let evenZeros = 0, oddZeros = 0;
+  for (let i = 0; i < limit; i += 2) {
+    if (bytes[i] === 0) evenZeros++;
+    if (bytes[i + 1] === 0) oddZeros++;
+  }
+  if (oddZeros / pairs >= 0.3 && evenZeros / pairs < 0.05) return "utf-16le";
+  if (evenZeros / pairs >= 0.3 && oddZeros / pairs < 0.05) return "utf-16be";
+  return undefined;
+}
+
 function detect(bytes) {
+  const utf16 = detectUtf16(bytes);
+  if (utf16) return utf16;
   if (bytes.every((byte) => byte < 128)) return "ascii";
   try {
     decode(bytes, "utf8");

@@ -34,7 +34,7 @@ test("encode detects UTF-16 BOM and converts newlines and BOM independently", ()
     ["utf-16le", Buffer.concat([Buffer.from("fffe", "hex"), little])],
     ["utf-16be", Buffer.concat([Buffer.from("feff", "hex"), Buffer.from(little).swap16()])],
   ]) {
-    const check = runCli(["encode", "--check", "--json", "--to", "ascii"], { input: bytes });
+    const check = runCli(["encode", "--check", "--json"], { input: bytes });
     assert.equal(check.status, 0, check.stderr);
     assert.deepEqual(JSON.parse(check.stdout), { file: "-", encoding, bom: true, lineEnding: "LF" });
     const utf8 = runCliBuffer(["encode", "--to", "utf8", "--crlf", "--no-bom"], { input: bytes });
@@ -80,4 +80,20 @@ test("encode writes output and only creates an in-place backup when requested", 
     assert.equal(fs.readFileSync(alias, "utf8"), "a\r\nb\r\n");
     assert.equal(fs.readFileSync(alias + ".bak", "utf8"), "a\nb\n");
   }
+});
+
+test("encode detects BOM-less UTF-16 from the NUL byte pattern", () => {
+  const le = Buffer.from("abc test 123\n", "utf16le");
+  const checkLe = runCli(["encode", "--json"], { input: le });
+  assert.equal(checkLe.status, 0, checkLe.stderr);
+  assert.equal(JSON.parse(checkLe.stdout).encoding, "utf-16le");
+  const be = Buffer.from("abc test 123\n", "utf16le").swap16();
+  const checkBe = runCli(["encode", "--json"], { input: be });
+  assert.equal(checkBe.status, 0, checkBe.stderr);
+  assert.equal(JSON.parse(checkBe.stdout).encoding, "utf-16be");
+});
+
+test("encode rejects --check combined with conversion options", () => {
+  assert.equal(runCli(["encode", "--check", "--to", "sjis"], { input: Buffer.from(text) }).status, 2);
+  assert.equal(runCli(["encode", "--check", "--crlf"], { input: Buffer.from(text) }).status, 2);
 });

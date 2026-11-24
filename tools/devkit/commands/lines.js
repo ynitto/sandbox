@@ -22,7 +22,10 @@ function run(argv, io) {
   for (const flag of ["sort", "numeric", "uniq", "count", "reverse", "shuffle"]) parser.addFlag("--" + flag);
   parser.addPositional("file", { nargs: "?" });
   const { file, sort, numeric, uniq, count, reverse, shuffle } = parser.parse(argv);
-  if (shuffle && (sort || numeric || uniq || count || reverse)) {
+  // --numeric は並べ替え、--count は重複除去を暗に含む。
+  const doSort = sort || numeric;
+  const doUniq = uniq || count;
+  if (shuffle && (doSort || doUniq || reverse)) {
     throw new UsageError("--shuffle は他の処理と併用できません");
   }
   const input = readInput(undefined, file === "-" ? undefined : file, io).toString("utf8");
@@ -30,11 +33,11 @@ function run(argv, io) {
   let rows = input.split(/\r\n|\n|\r/);
   if (rows.at(-1) === "") rows.pop();
   const counts = new Map();
-  if (uniq) {
+  if (doUniq) {
     for (const row of rows) counts.set(row, (counts.get(row) ?? 0) + 1);
     rows = [...counts.keys()];
   }
-  if (sort) {
+  if (doSort) {
     rows.sort(numeric ? (a, b) => {
       const x = number(a), y = number(b);
       const aNumeric = Number.isFinite(x), bNumeric = Number.isFinite(y);
@@ -50,7 +53,7 @@ function run(argv, io) {
       [rows[i], rows[j]] = [rows[j], rows[i]];
     }
   }
-  if (uniq && count) rows = rows.map((row) => `${counts.get(row)}\t${row}`);
+  if (count) rows = rows.map((row) => `${counts.get(row)}\t${row}`);
   io.out(rows.join("\n") + "\n");
   return 0;
 }

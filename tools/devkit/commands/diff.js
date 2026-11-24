@@ -1,6 +1,6 @@
 "use strict";
 
-const { ArgParser } = require("../core/args");
+const { ArgParser, UsageError } = require("../core/args");
 const { integer, readInput } = require("../core/command-input");
 
 const name = "diff";
@@ -13,6 +13,10 @@ function editMiddle(a, b, emit) {
     for (const line of a) emit("-", line);
     for (const line of b) emit("+", line);
     return;
+  }
+  // LCS 表は行数×行数のメモリを使うため、巨大な中間部分は明示エラーにする。
+  if (a.length * b.length > 16_000_000) {
+    throw new UsageError("差分が大きすぎて計算できません（共通の前後を除いた行数が多すぎます）");
   }
   const lengths = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) {

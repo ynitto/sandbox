@@ -47,29 +47,49 @@ function decode32(input) {
   return output;
 }
 
+// Base58 は桁配列への繰り上げ方式で変換する（入力全体を BigInt 化すると
+// 大きな入力で極端に遅くなるため）。
 function encode58(input) {
   let zeros = 0;
-  while (input[zeros] === 0) zeros++;
+  while (zeros < input.length && input[zeros] === 0) zeros++;
   if (zeros === input.length) return "1".repeat(zeros);
-  let value = BigInt("0x" + input.subarray(zeros).toString("hex"));
-  let output = "";
-  while (value) {
-    output = BASE58[Number(value % 58n)] + output;
-    value /= 58n;
+  const digits = [0];
+  for (let i = zeros; i < input.length; i++) {
+    let carry = input[i];
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j] << 8;
+      digits[j] = carry % 58;
+      carry = Math.floor(carry / 58);
+    }
+    while (carry) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
   }
-  return "1".repeat(zeros) + output;
+  let output = "1".repeat(zeros);
+  for (let i = digits.length - 1; i >= 0; i--) output += BASE58[digits[i]];
+  return output;
 }
 
 function decode58(input) {
   const zeros = input.match(/^1*/)[0].length;
-  let value = 0n;
+  if (zeros === input.length) return Buffer.alloc(zeros);
+  const bytes = [0];
   for (const char of input.slice(zeros)) {
     const digit = BASE58.indexOf(char);
     if (digit < 0) throw new UsageError("Base58 に使用できない文字があります");
-    value = value * 58n + BigInt(digit);
+    let carry = digit;
+    for (let j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
   }
-  const hex = value ? value.toString(16) : "";
-  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(hex.length % 2 ? "0" + hex : hex, "hex")]);
+  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(bytes.reverse())]);
 }
 
 function run(argv, io) {
