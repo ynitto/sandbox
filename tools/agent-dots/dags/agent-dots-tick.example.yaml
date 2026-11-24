@@ -1,10 +1,12 @@
 # 目標 1 つを裏で進める例（Windows）。目標ごとに 1 つ置き、名前と DOT のパスを変える。
-# 起こす理由（始め・ハブの issue からの返事・決めた時刻）が無い回は tick が何も出さず、ここで終わる（Copilot アプリは動かない）。
+# 起こす理由（始め・ハブの issue からの返事・決めた時刻）が無い回は tick が何も出さず、ask をスキップして act に進む。
 #   tick     起こすかを決め、起こすなら依頼文を .dot/prompt.md に書く
 #   ask      Copilot のデスクトップアプリに依頼を渡し、終わるまで待つ（copilot-app-jobs）
 #   act      アプリが outbox に書いた提案を、policy.json の境界と照らして片付け、承認されたコマンドを動かす。ハブに送る文があれば、そのファイルのパスを出す
 #   compose  送る文をコメントの JSON にする（gitlab-issue-hub-agent）
 #   comment  ハブの issue にコメントする。GitLab がこの issue を見ている人へメールで知らせる
+# Discovery の評価では、ask が受け箱に残す結果（終了コード）を act が評価 ID と対応づけて処理する。
+# ask のスキップ・失敗後も act に進み、Discovery の採否を取り込む。
 # act は毎回動かす。提案があれば片付け、依頼が終わったのに提案が無ければ出来事を inbox に戻して次の回にやり直す。
 # アプリがまだ依頼に取りかかっている間（受け箱に残っている間）は、tick も act も何もしない。
 # パスは自分の場所に直す。change-watch と gitlab_hub は gitlab-issue-hub-agent のインストーラが置いたもの（README の「用意」）。
@@ -51,7 +53,7 @@ steps:
         - "--prompt-file"
         - "${DOT}/.dot/prompt.md"
         - "--name"
-        - "dot"                 # この名前の依頼が受け箱にある間、tick は次を起こさない
+        - "dot"
         - "--timeout"
         - "5400"
     timeout_sec: 5700

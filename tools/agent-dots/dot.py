@@ -19,9 +19,12 @@ copilot-app-jobs の受け箱で依頼を渡す。起こすかどうか（tick�
     event   出来事を inbox に置く（ハブの issue の変化 JSON、または文）。承認・却下・質問への返事もここで受ける
     tick    起こすかを決め、起こすなら依頼文を .dot/prompt.md に書いて理由を 1 行出す（起こさないなら何も出さない）
     act     outbox の提案を境界と照らして片付け、承認されたものを実行し、ハブに送るコメントがあればそのファイルのパスを出す
+    harvest 許可されたソースから候補を集めて .dot/discovery/ に保存する
+    proposals Discovery の提案を見て採否を記録する（list / show / approve / reject）
     status  いまの状態を出す
 
-終了コード: 0 = できた / 2 = 使い方の誤り / 3 = ほかの処理が state.json を使っていて待ちきれなかった（やり直してよい）。
+終了コード: 0 = できた / 1 = 収集・キュー操作の失敗 / 2 = 使い方の誤り /
+3 = ほかの処理が state.json を使っていて待ちきれなかった（やり直してよい）。
 標準ライブラリだけで動く（Windows の Python 3.9 以上）。
 """
 
@@ -30,6 +33,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import getpass
+import hashlib
+import uuid
 import json
 import os
 import re
@@ -38,6 +44,7 @@ import sys
 import time
 from pathlib import Path
 
+import discovery
 import routines
 
 EXIT_OK = 0
@@ -255,6 +262,13 @@ def cmd_init(a) -> int:
     if (d / "state.json").exists():
         print(f"既に目標のフォルダです: {d}", file=sys.stderr)
         return EXIT_USAGE
+    init_goal(d, name, now_ts())
+    print(f"作りました: {d}")
+    print("goal.md に目標と完了の条件を書いてから、このフォルダを Copilot アプリのプロジェクトとして開いてください。")
+    return EXIT_OK
+
+
+def init_goal(d: Path, name: str, ts: float, **extra) -> None:
     for sub in ("inbox", "outbox", "notes", WORK):
         (d / sub).mkdir(parents=True, exist_ok=True)
     if not (d / "goal.md").exists():
@@ -264,7 +278,7 @@ def cmd_init(a) -> int:
     save_state(d, {
         "name": name,
         "status": "active",
-        "created": iso(now_ts()),
+        "created": iso(ts),
         "last_wake": None,
         "next_wake": None,
         "wakes": {},
@@ -273,10 +287,8 @@ def cmd_init(a) -> int:
         "approvals": [],
         "held": [],
         "seq": 0,
+        **extra,
     })
-    print(f"作りました: {d}")
-    print("goal.md に目標と完了の条件を書いてから、このフォルダを Copilot アプリのプロジェクトとして開いてください。")
-    return EXIT_OK
 
 
 # ---------------------------------------------------------------- event
@@ -572,6 +584,8 @@ def _tick(d: Path, ts: float) -> int:
         return EXIT_OK                            # 前の依頼がまだ受け箱にある
     inflight = state.get("inflight")
     if inflight:
+        if inflight.get("kind") == "discovery" and evaluation_code(d, inflight) is not None:
+            return EXIT_OK
         if ts - float(inflight.get("since") or 0) < INFLIGHT_STALE_SEC:
             return EXIT_OK                        # act がまだ片付けていない
         restore_inflight(d, state)
@@ -592,6 +606,27 @@ def _tick(d: Path, ts: float) -> int:
         save_state(d, state)
         return EXIT_OK
 
+    evaluation = None
+    if reasons == ["proactive"]:
+        try:
+            config = discovery.parse_policy(policy, d)
+            if config["enabled"]:
+                rows = proposal_queue(d)
+                remaining = proposal_remaining(config, rows, ts)
+                excluded = {ident for row in rows for ident in row["signal_ids"]}
+                material = discovery.evaluation_material(d, config, excluded, remaining) if remaining else None
+                if not material:
+                    save_state(d, state)
+                    return EXIT_OK
+                prompt, sources = material
+                ident = "e" + uuid.uuid4().hex
+                evaluation = {"id": ident, "sources": sources, "remaining": remaining}
+                write_json(discovery.index_dir(d) / "evaluation.json", evaluation)
+        except discovery.SOURCE_ERRORS as e:
+            append_journal(d, {"kind": "tick", "result": "discovery-error", "why": str(e)}, ts)
+            save_state(d, state)
+            return EXIT_OK
+
     held = d / WORK / "inflight"
     held.mkdir(parents=True, exist_ok=True)
     events = []
@@ -599,7 +634,19 @@ def _tick(d: Path, ts: float) -> int:
         events.append(read_json(p, {}))
         os.replace(p, held / p.name)
 
-    (d / WORK / "prompt.md").write_text(build_prompt(d, state, policy, events, reasons, ts), encoding="utf-8")
+    for event in events:
+        ident = event.get("proposal_id")
+        link = state.get("discovery_links", {}).get(ident)
+        if event.get("from") == "discovery" and link:
+            link["delivered"] = True
+            if not link.get("machine"):
+                active = state.setdefault("discovery_active", [])
+                if ident not in active:
+                    active.append(ident)
+    if evaluation is None:
+        prompt = build_prompt(d, state, policy, events, reasons, ts)
+    (d / WORK / "prompt.md").write_text(prompt, encoding="utf-8")
+    state.pop("discovery_outbox", None)
     state["wakes"] = {day: used + 1}              # 今日の分だけ残す
     state["last_wake"] = iso(ts)
     state["last_wake_ts"] = ts
@@ -608,6 +655,8 @@ def _tick(d: Path, ts: float) -> int:
     if "due" in reasons:
         state["next_wake"] = None
     state["inflight"] = {"since": ts, "reasons": reasons, "tries": int(state.get("pending_tries") or 0)}
+    if evaluation:
+        state["inflight"].update(kind="discovery", evaluation_id=evaluation["id"])
     save_state(d, state)
     append_journal(d, {"kind": "tick", "result": "wake", "reasons": reasons, "events": len(events)}, ts)
     print("wake: " + ",".join(reasons))
@@ -687,6 +736,8 @@ def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: 
            proactive: bool = False) -> dict:
     """1 件の提案を片付け、journal に残す中身を返す。動かすものは to_run に足す（ロックの外で動かす）。"""
     kind = prop.get("kind")
+    if kind == "propose":
+        return {"result": "denied", "why": "対応する Discovery 評価がありません"}
     if proactive and kind not in PROACTIVE_KINDS:
         return {"result": "denied", "why": "調べものの回では、メモ・質問・時刻のほかは提案できない"}
     if kind == "note":
@@ -876,11 +927,32 @@ def cmd_act(a) -> int:
             text = f"【{state['name']}より】\n\n" + "\n\n".join(comments) + "\n"
             comment_file.write_text(text, encoding="utf-8")
             print(str(comment_file))
+    reconcile_discovery(d, ts)
     return EXIT_OK
 
 
 def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]", to_run: "list[dict]") -> None:
     proposals = sorted_files(d / "outbox", ".json")
+    inflight = state.get("inflight") or {}
+    evaluating = inflight.get("kind") == "discovery"
+    code = evaluation_code(d, inflight) if evaluating else None
+    evaluated = {}
+    if evaluating:
+        ident = inflight["evaluation_id"]
+        evaluated = {row["file"]: row for row in json_lines(d / "journal.jsonl")
+                     if row.get("kind") == "proposal" and row.get("evaluation_id") == ident}
+        if not proposals:
+            restore_inflight(d, state)
+            if not evaluated:
+                append_journal(d, {"kind": "act", "evaluation_id": ident,
+                                   "result": "empty" if code == 0 else "evaluation-failed", "code": code}, ts)
+            return
+    if not proposals and state.pop("discovery_outbox", None):
+        for p in sorted_files(d / WORK / "inflight", ".json"):
+            p.unlink()
+        state["inflight"] = None
+        state.pop("pending_tries", None)
+        return
     if not proposals:
         inflight = state.get("inflight")
         if not inflight:
@@ -908,22 +980,461 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
     done_dir = d / WORK / "outbox-done"
     done_dir.mkdir(parents=True, exist_ok=True)
     for p in proposals:
+        if p.name in evaluated:
+            row = evaluated[p.name]
+            received = dt.datetime.fromisoformat(row["at"]).timestamp()
+            os.replace(p, done_dir / f"{stamp(received)}-{inflight['evaluation_id']}-{p.name}")
+            continue
+        previous = (state.get("discovery_outbox") or {}).get(p.name)
+        if previous:
+            os.replace(p, done_dir / previous)
+            continue
+        job = state.get("routine") or {}
         try:
             prop = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             entry, prop = {"result": "denied", "why": f"JSON が読めない: {e}"}, None
         else:
-            if isinstance(prop, dict):
+            if evaluating and isinstance(prop, dict):
+                if code not in (None, 0):
+                    entry = {"result": "denied", "why": "Discovery 評価が正常終了していません"}
+                else:
+                    entry = receive_discovery(d, policy, inflight, p.name, prop, ts)
+            elif isinstance(prop, dict):
                 entry = handle(d, state, policy, prop, ts, comments, to_run, proactive)
             else:
                 entry, prop = {"result": "denied", "why": "JSON がオブジェクトでない"}, None
-        append_journal(d, {"kind": "proposal", "file": p.name, "proposal": prop, **entry}, ts)
-        os.replace(p, done_dir / f"{stamp(ts)}-{p.name}")
+        row = {"kind": "proposal", "file": p.name, "proposal": prop, **entry}
+        if evaluating:
+            row["evaluation_id"] = inflight["evaluation_id"]
+        if isinstance(prop, dict) and prop.get("kind") == "done" and not proactive and state.get("discovery_active"):
+            result_id = "done-" + uuid.uuid4().hex
+            row.update(result_id=result_id, proposal_ids=state["discovery_active"][:])
+            if entry["result"] == "done" and entry.get("status") != "review":
+                state["discovery_active"] = []
+            state.setdefault("discovery_done", []).append(result_id)
+        append_journal(d, row, ts)
+        suffix = f"{inflight['evaluation_id']}-" if evaluating else ""
+        archive = f"{stamp(ts)}-{suffix}{p.name}"
+        if row.get("result_id") or (job.get("discovery_id") and isinstance(prop, dict)
+                                    and prop.get("kind") == "routine" and prop.get("id") == job["id"]):
+            state.setdefault("discovery_outbox", {})[p.name] = archive
+            save_state(d, state)
+        os.replace(p, done_dir / archive)
 
     for p in sorted_files(d / WORK / "inflight", ".json"):
         p.unlink()
     state["inflight"] = None
     state.pop("pending_tries", None)
+    state.pop("discovery_outbox", None)
+
+
+def json_lines(path: Path):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    yield row
+    except FileNotFoundError:
+        pass
+
+
+def proposal_queue(d: Path) -> list[dict]:
+    return [read_json(p, {}) for p in sorted_files(discovery.index_dir(d) / "proposals", ".json")]
+
+
+def proposal_remaining(config: dict, rows: list[dict], ts: float) -> int:
+    used = sum(today(dt.datetime.fromisoformat(row["received_at"]).timestamp()) == today(ts) for row in rows)
+    return max(0, config["proposals_per_day"] - used)
+
+
+def evaluation_code(d: Path, inflight: dict) -> int | None:
+    """評価の起床後に受け箱へ置かれた最新の同名依頼の結果を返す。"""
+    box = d / JOB_BOX
+    since = dt.datetime.fromtimestamp(inflight["since"]).strftime("%Y%m%d-%H%M%S%f")
+    jobs = [(job.name, False) for job in sorted_files(box / "done", f"-{JOB_LABEL}.md")]
+    jobs.extend((job.name.removesuffix(".withdrawn.md") + ".md", True)
+                for job in sorted_files(box / "tmp", f"-{JOB_LABEL}.withdrawn.md"))
+    current = [(name, withdrawn) for name, withdrawn in jobs if name[:len(since)] >= since]
+    if not current:
+        return None
+    name, withdrawn = max(current)
+    if withdrawn:
+        return 3
+    with contextlib.suppress(FileNotFoundError):
+        for line in (box / "results" / name).read_text(encoding="utf-8-sig").splitlines():
+            if line.strip():
+                return {"status: ok": 0, "status: failed": 1}.get(line.strip().lower())
+    return None
+
+
+def receive_discovery(d: Path, policy: dict, inflight: dict, filename: str, prop: dict, ts: float) -> dict:
+    def denied(reason):
+        return {"result": "denied", "why": reason}
+
+    ident = inflight["evaluation_id"]
+    if prop.get("kind") != "propose":
+        return denied("今回の評価の propose ではありません")
+    try:
+        folder = discovery.index_dir(d)
+        evaluation = read_json(folder / "evaluation.json", {})
+        if evaluation.get("id") != ident:
+            return denied("対応する評価資料がありません")
+        pid = "p" + hashlib.sha256(f"{ident}/{filename}".encode()).hexdigest()[:32]
+        path = folder / "proposals" / f"{pid}.json"
+        if path.exists():
+            return {"result": "accepted", "id": pid}
+        if not discovery.proposal_fields(prop):
+            return denied("propose の必須項目または列挙値が不正です")
+        config = discovery.parse_policy(policy, d)
+        if not config["enabled"]:
+            return denied("Discovery が無効です")
+        active = {row["id"]: row for row in discovery.active_signals(d)}
+        coverage = read_json(folder / "coverage.json", {}).get("roots", {})
+        evidence = {}
+        for label in prop["sources"]:
+            matches = evaluation["sources"].get(label)
+            if not matches or "://" in label:
+                return denied(f"提示されていない出典: {label}")
+            if label not in prop["why"]:
+                return denied(f"why に出典がありません: {label}")
+            for source in matches:
+                sid = source["signal_id"]
+                row = active.get(sid)
+                if not row or any(row[k] != source[k] for k in ("source_path", "kind")) or not (
+                    discovery.current_source(config, source, unchanged=True, coverage=coverage)
+                ):
+                    return denied(f"変更・無効化されたか読み取れない出典: {label}")
+                evidence[sid] = source
+        rows = proposal_queue(d)
+        ids = sorted(evidence)
+        if any(set(row["signal_ids"]) == set(ids) or
+               (row["status"] == "rejected" and set(row["signal_ids"]).intersection(ids)) for row in rows):
+            return denied("同じ出典の仕事は受付済みまたは却下済みです")
+        if not proposal_remaining(config, rows, ts) or sum(
+            row.get("evaluation_id") == ident for row in rows
+        ) >= evaluation["remaining"]:
+            return denied("提案の受付枠を使い切りました")
+        record = {key: prop[key] for key in ("title", "why", "sources", "size", "risk", "suggested_route")}
+        record.update(id=pid, evaluation_id=ident, signal_ids=ids, evidence=list(evidence.values()),
+                      status="pending", received_at=iso(ts), decision=None, append_target=None)
+        record["append_target"] = discovery_append_target(config, record)
+        write_json(path, record)
+        return {"result": "accepted", "id": pid}
+    except (discovery.SOURCE_ERRORS + (routines.RoutineError,)) as e:
+        return denied(f"Discovery の照合に失敗しました: {e}")
+
+
+def discovery_append_target(config: dict, proposal: dict) -> dict | None:
+    ids = set(proposal["signal_ids"])
+    paths = {source["source_path"] for source in proposal["evidence"]}
+
+    def matches(record):
+        refs = {discovery.path_key(Path(path)) for path in record.get("source_paths") or []
+                if isinstance(path, str) and Path(path).is_absolute()}
+        return bool(ids.intersection(record.get("signal_ids") or []) or paths.intersection(refs))
+
+    root = config.get("goal_root")
+    if root and root.is_dir():
+        for target in sorted(root.iterdir()):
+            if target.is_symlink() or not (target / "state.json").is_file():
+                continue
+            state = load_state(target)
+            if any(not link.get("machine") and matches(link) for link in state.get("discovery_links", {}).values()):
+                return {"kind": "goal", "dir": str(target)}
+            goal = target / "goal.md"
+            if goal.is_file():
+                body = goal.read_text(encoding="utf-8")
+                tokens = re.findall(r"`([^`\n]+)`|\]\(([^)\n]+)\)", body)
+                refs = {code or link.split("#", 1)[0] for code, link in tokens}
+                file_refs = {discovery.path_key(target / ref) for ref in refs
+                             if ref and "://" not in ref and ("/" in ref or "\\" in ref or Path(ref).suffix)}
+                if ids & refs or paths & file_refs:
+                    return {"kind": "goal", "dir": str(target)}
+    target = config.get("routine_dir")
+    if target and (target / "state.json").is_file():
+        for source in proposal["evidence"]:
+            parts = inside(target / WORK / "runs", Path(source["source_path"]))
+            if parts and len(parts) == 2 and parts[1].endswith(".json"):
+                name, run_id = parts[0], Path(parts[1]).stem
+                run = routines.load_run(target, name, run_id)
+                if run and run.get("machine") == name and run.get("id") == run_id:
+                    return {"kind": "routine", "dir": str(target), "machine": name,
+                            "action": "improve", "run_id": run_id}
+        for name, record in routines.load_registry(target).items():
+            if matches(record) or matches(record.get("draft") or {}):
+                return {"kind": "routine", "dir": str(target), "machine": name}
+        state = load_state(target)
+        for link in state.get("discovery_links", {}).values():
+            if link.get("machine") and matches(link):
+                return {"kind": "routine", "dir": str(target), "machine": link["machine"]}
+    return None
+
+
+def discovery_plan(config: dict, proposal: dict) -> dict:
+    append = proposal.get("append_target")
+    if append:
+        plan = dict(append, append=True)
+    elif proposal["suggested_route"] == "routine":
+        target = config.get("routine_dir")
+        if not target:
+            raise ValueError("routine_dir が未設定です")
+        plan = {"kind": "routine", "dir": str(target), "machine": proposal["id"]}
+    else:
+        root = config.get("goal_root")
+        if not root:
+            raise ValueError("goal_root が未設定です")
+        plan = {"kind": "goal", "dir": str(root / proposal["id"])}
+    plan["event_id"] = "discovery-" + proposal["id"]
+    if plan["kind"] == "routine":
+        plan["job_key"] = proposal["id"]
+    target = Path(plan["dir"])
+    root = config.get("goal_root")
+    if target.resolve() != target or (
+        plan["kind"] == "goal" and (not root or target.parent != root or not root.is_dir())
+    ) or (plan["kind"] == "routine" and target != config.get("routine_dir")):
+        raise ValueError("登録先が現在の policy の範囲にありません")
+    return plan
+
+
+def discovery_history(d: Path, proposal: dict, event: str, status: str, reason: str, ts: float,
+                      ref: dict | None = None, result_id: str = "") -> None:
+    path = discovery.index_dir(d) / "history.jsonl"
+    event_id = ":".join(filter(None, (proposal["id"], event, result_id)))
+    if any(row.get("event_id") == event_id for row in json_lines(path)):
+        return
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"event_id": event_id, "at": iso(ts), "proposal_id": proposal["id"],
+                                 "signal_ids": proposal["signal_ids"], "event": event, "status": status,
+                                 "reason": reason, "execution_ref": ref}, ensure_ascii=False) + "\n")
+
+
+def register_discovery(plan: dict, proposal: dict, ts: float) -> dict:
+    target = Path(plan["dir"])
+    pid = proposal["id"]
+    is_goal = plan["kind"] == "goal"
+    creating = is_goal and not plan.get("append")
+    if not creating and not (target / "state.json").is_file():
+        raise ValueError("登録先の目標がありません")
+    if target.resolve() != target:
+        raise ValueError("登録先の実体が変わりました")
+    with locked(target, wait=0):
+        if target.resolve() != target:
+            raise ValueError("登録先の実体が変わりました")
+        text = f'{proposal["title"]}\n\n{proposal["why"]}'
+        details = {"signal_ids": proposal["signal_ids"],
+                   "source_paths": [source["source_path"] for source in proposal["evidence"]]}
+        ref = {"kind": plan["kind"], "dir": str(target), "event_id": plan["event_id"]}
+        if creating:
+            marker = target / WORK / "discovery-origin.json"
+            if read_json(marker, None) != pid:
+                if any(p.name != WORK for p in target.iterdir()) or any(
+                    p.name != "lock" for p in (target / WORK).iterdir()
+                ):
+                    raise ValueError("提案 ID の登録先に別の仕事があります")
+                write_json(marker, pid)
+            if not (target / "state.json").exists():
+                condition = ("1 回分の成果物または検証結果を示す" if proposal["suggested_route"] == "one-shot"
+                             else "提案の目的を満たした成果物と、その確認結果を示す")
+                (target / "goal.md").write_text(f"# {text}\n\n## 完了の条件\n\n- {condition}\n", encoding="utf-8")
+                write_json(target / ".github" / "hooks" / HOOK_FILE, hooks_json(sys.executable))
+                write_json(target / "policy.json", {**DEFAULT_POLICY, "actions": {"hub.comment": "deny", "run": "deny"},
+                                                   "tools": {"shell": "allowlist"}})
+                init_goal(target, pid, ts, discovery_links={pid: details}, discovery_active=[pid])
+            return dict(ref, goal=load_state(target)["name"])
+
+        state = load_state(target)
+        ref["goal"] = state["name"]
+        links = state.setdefault("discovery_links", {})
+        link = links.get(pid)
+        if link is None:
+            statuses = ("active", "review") if is_goal else ("active",)
+            if (job_busy(target) or state.get("inflight") or state.get("status") not in statuses
+                    or sorted_files(target / "outbox", ".json")):
+                raise ValueError("登録先の目標が使用中か、作業を受け付けられません")
+            if is_goal:
+                link = details
+            else:
+                link = register_discovery_routine(target, state, plan, details, text, ts)
+            links[pid] = link
+            save_state(target, state)
+        if not link.get("delivered"):
+            filename = f'{plan["event_id"]}.json'
+            inbox = target / "inbox" / filename
+            if not inbox.exists() and not (target / WORK / "inflight" / filename).exists():
+                write_json(inbox, {"from": "discovery", "proposal_id": pid, "at": iso(ts),
+                                   "text": link.get("message", text)})
+            link["delivered"] = True
+            save_state(target, state)
+        if not is_goal:
+            ref.update(machine=link["machine"], job_id=link["job_id"])
+        return ref
+
+
+def register_discovery_routine(target: Path, state: dict, plan: dict,
+                               details: dict, text: str, ts: float) -> dict:
+    policy = load_policy(target)
+    if not routines.enabled(policy) or not routines.statemachine_dir(policy):
+        raise ValueError("登録先で routines と statemachine の設定が必要です")
+    if state.get("routine"):
+        raise ValueError("業務係が使用中です")
+    pid = plan["job_key"]
+    name = plan["machine"]
+    h = routine_api(target)
+    messages = []
+    h["event"] = lambda state, message, ts, base=None: messages.append(message)
+    if plan.get("action") == "improve":
+        entry = routines.find_entry(target, policy, name)
+        prior = (routines.load_registry(target).get(name) or {}).get("draft") or {}
+        if (not entry or entry.get("broken") or entry["status"] != "ready"
+                or (prior.get("status") and prior.get("discovery_id") != pid) or state.get("routine_queue")):
+            raise ValueError("業務の改善を始められる版と空き枠が必要です")
+        routines.queue_improve(state, name, text, plan["run_id"], discovery_id=pid)
+        routines.advance(target, state, policy, ts, [], h)
+        job = state.get("routine")
+        if not job or job.get("discovery_id") != pid:
+            raise ValueError("業務の改善ジョブを開始できません")
+        return {**details, "machine": name, "job_id": job["id"], "message": "\n".join([text, *messages])}
+    if plan.get("append"):
+        entry = routines.find_entry(target, policy, name)
+        if entry is None or entry.get("broken") or entry["status"] not in ("ready", "unapproved"):
+            raise ValueError("登録済みの有効なマシンが必要です")
+        if routines.missing_inputs(entry, {}):
+            raise ValueError("既存マシンに必要な入力が未指定です")
+        if entry["status"] == "unapproved":
+            digest = routines.digest(Path(entry["path"]))
+            approvals = (item.get("proposal") or {} for item in state["approvals"])
+            if any(item.get("discovery_id") == pid and item.get("digest") == digest for item in approvals):
+                raise ValueError("既存マシンの版の承認が必要です")
+        request = {"action": "run", "machine": name, "request": text}
+    else:
+        request = {"action": "create", "name": name, "purpose": text, "request": text}
+    comments = []
+    result = routines.handle(target, state, policy, request, ts, comments, h, discovery_id=pid)
+    if result["result"] == "asked" and result.get("id"):
+        approval = find_approval(state, result["id"])
+        approval["proposal"]["discovery_id"] = pid
+        state["held"].extend(comments)
+        save_state(target, state)
+        raise ValueError("既存マシンの版の承認を待っています")
+    if result["result"] != "accepted":
+        raise ValueError(result.get("why") or "業務ジョブを開始できません")
+    return {**details, "machine": name, "job_id": result["id"], "message": "\n".join([text, *messages])}
+
+
+def discovery_results(proposal: dict):
+    ref = proposal["execution_ref"]
+    target = Path(ref["dir"])
+    if target.resolve() != target or not (target / "state.json").is_file():
+        return
+    # The target lock makes journal and state a consistent snapshot.
+    with locked(target, wait=0):
+        state = load_state(target)
+        if ref["kind"] == "routine":
+            name = ref["machine"]
+            for path in sorted_files(target / WORK / "runs" / name, ".json"):
+                run = routines.load_run(target, name, path.stem)
+                if (not run or run.get("machine") != name or run.get("id") != path.stem
+                        or run.get("mode") not in ("trial", "run")):
+                    continue
+                if run.get("discovery_id") != proposal["id"] or run.get("discovery_job") != ref["job_id"]:
+                    continue
+                if (state.get("routine") or {}).get("id") == run["id"]:
+                    continue
+                status = ("failed" if run["escalate"] or not run["ok"]
+                          else "progress" if run["mode"] == "trial" else "success")
+                reason = "escalate" if run["escalate"] else run["summary"]
+                yield run["id"], status, reason, dict(ref, run_id=run["id"])
+            return
+        committed = set(state.get("discovery_done") or [])
+        for row in json_lines(target / "journal.jsonl"):
+            ident = row.get("result_id")
+            if ident not in committed or proposal["id"] not in row.get("proposal_ids", []):
+                continue
+            if row.get("status") == "review":
+                status, reason = "pending", "人の確認待ち"
+            elif row.get("result") == "done":
+                status, reason = "success", "完了の検査が通りました"
+            elif row.get("why") == "完了の検査が通らない":
+                status, reason = "progress", row["why"]
+            else:
+                continue
+            yield ident, status, reason, dict(ref, result_id=ident)
+
+
+def reconcile_discovery(d: Path, ts: float) -> None:
+    if not (d / WORK / "discovery" / "proposals").is_dir():
+        return
+    with locked(d):
+        if job_busy(d) or load_state(d).get("inflight"):
+            return
+        rows = proposal_queue(d)
+    for row in rows:
+        if row["status"] not in ("rejected", "approved"):
+            continue
+        path = discovery.index_dir(d) / "proposals" / f'{row["id"]}.json'
+        with locked(d):
+            if job_busy(d) or load_state(d).get("inflight"):
+                return
+            proposal = read_json(path, {})
+            decision = proposal.get("decision") or {}
+            status = proposal["status"]
+            discovery_history(d, proposal, "decision", status, decision.get("reason", ""), ts)
+            if status != "approved":
+                continue
+            plan = None
+            if not proposal.get("execution_ref"):
+                try:
+                    config = discovery.parse_policy(load_policy(d), d)
+                    if not config["enabled"]:
+                        raise ValueError("Discovery が無効です")
+                    if not all(discovery.current_source(config, item, unchanged=False) for item in proposal["evidence"]):
+                        raise ValueError("現在の policy で読めない出典があります")
+                    if not proposal.get("registration"):
+                        latest = discovery_append_target(config, proposal)
+                        recorded = proposal.get("append_target")
+                        if recorded and recorded != latest:
+                            raise ValueError("追記先との出典の一致を確認できません")
+                        proposal["append_target"] = latest
+                    plan = discovery_plan(config, proposal)
+                    if proposal.get("registration") and proposal["registration"] != plan:
+                        raise ValueError("登録先が予約後に変更されました")
+                    if not proposal.get("registration"):
+                        proposal["registration"] = plan
+                        write_json(path, proposal)
+                except (discovery.SOURCE_ERRORS + (routines.RoutineError,)) as e:
+                    proposal["registration_reason"] = str(e)
+                    write_json(path, proposal)
+                    continue
+
+        if plan is not None:
+            try:
+                ref = register_discovery(plan, proposal, ts)
+                reason = ""
+            except (discovery.SOURCE_ERRORS + (Busy, routines.RoutineError)) as e:
+                ref, reason = None, str(e) or "登録先が使用中です"
+            with locked(d):
+                proposal = read_json(path, {})
+                if not proposal.get("execution_ref") and proposal.get("registration") == plan:
+                    proposal["registration_reason"] = reason
+                    if ref:
+                        proposal["execution_ref"] = ref
+                    write_json(path, proposal)
+        ref = proposal.get("execution_ref")
+        if ref:
+            with locked(d):
+                discovery_history(d, proposal, "registered", "registered", "", ts, ref)
+            try:
+                results = list(discovery_results(proposal))
+            except (Busy, OSError, ValueError):
+                continue
+            with locked(d):
+                for ident, status, reason, result_ref in results:
+                    discovery_history(d, proposal, "result", status, reason, ts, result_ref, ident)
 
 
 # ---------------------------------------------------------------- hook（Copilot の preToolUse）
@@ -1020,6 +1531,50 @@ def kind_of(name: str, args: dict) -> str:
     return "other"
 
 
+def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> bool:
+    # Only the mailbox executable and its local arguments may reach the shell.
+    body = command.strip().removeprefix("&").strip()
+    if re.search(r"[;&|`<>\r\n$%!*?^'()]", body):
+        return False
+    tokens = re.findall(r'"[^"]*"|[^"\s]+', body)
+    if " ".join(tokens) != re.sub(r'\s+(?=(?:[^"]*"[^"]*")*[^"]*$)', " ", body):
+        return False
+    tokens = [token.strip('"') for token in tokens]
+    if len(tokens) < 5 or len(tokens) % 2 != 1:
+        return False
+    python, script, action, *options = tokens
+    if python.lower() not in ("python", "python3", "py", "python.exe", "python3.exe", "py.exe") and (
+        not Path(python).is_absolute() or Path(python).resolve() != Path(sys.executable).resolve()
+    ):
+        return False
+    expected = Path(inflight.get("job_script") or Path(__file__).resolve().parent.parent /
+                    "copilot-app-jobs" / "copilot_app_job.py")
+    if (cwd / script).resolve() != expected.resolve() or action not in ("next", "done", "finish"):
+        return False
+    args = dict(zip(options[::2], options[1::2]))
+    if len(args) * 2 != len(options) or "--dir" not in args or (cwd / args.pop("--dir")).resolve() != d.resolve():
+        return False
+    box = d.resolve() / JOB_BOX
+    box_arg = args.pop("--box", str(box))
+    if (cwd / box_arg).resolve() != box or any(
+        (box / part).resolve() != box / part for part in ("tmp", "pending", "running", "dispatched", "done", "results")
+    ):
+        return False
+    if action != "next":
+        job = args.pop("--id", "")
+        if not re.fullmatch(r"[a-zA-Z0-9_.-]+-dot", job) or args.pop("--status", "") not in ("ok", "failed"):
+            return False
+        if not any((d / JOB_BOX / state / f"{job}.md").is_file() for state in ("running", "dispatched", "done")):
+            return False
+        report = args.pop("--report-file", str(box / "tmp" / f"{job}.report.md"))
+        if not inside(box / "tmp", cwd / report):
+            return False
+    if "--python" in args and args.pop("--python") != python:
+        return False
+    return all(key in ("--until", "--chunk", "--stale", "--stay", "--poll", "--dispatch-stale") and
+               re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value) for key, value in args.items())
+
+
 def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, policy: dict,
                scope: "dict | None" = None) -> "str | None":
     """この道が使えなければ理由を返す。"""
@@ -1028,6 +1583,13 @@ def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, polic
     if not target.is_absolute():
         target = cwd / target
     parts = inside(d, target)
+    if scope.get("evaluation"):
+        allowed = (JOB_TMP, ("outbox",)) if write else (
+            JOB_TMP, ("outbox",), (WORK, "prompt.md"), (JOB_BOX, "pending"), (JOB_BOX, "running"),
+        )
+        if parts is not None and any(parts[:len(prefix)] == prefix for prefix in allowed):
+            return None
+        return f"評価の回ではこのパスを使えません: {raw}"
     if not write:
         if parts is not None:
             return None
@@ -1060,15 +1622,19 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
     name = str(payload.get("toolName") or payload.get("tool_name") or payload.get("toolname") or "")
     args = tool_args(payload)
     proactive = ((state.get("inflight") or {}).get("reasons") or []) == ["proactive"]
-    scope = routines.hook_scope(d, state, policy)
+    evaluating = (state.get("inflight") or {}).get("kind") == "discovery"
+    scope = {"evaluation": True} if evaluating else routines.hook_scope(d, state, policy)
     if name in (tools.get("deny") or []):
         return f"このツールは止めています: {name}"
-    if name in (tools.get("allow") or []):
+    if not evaluating and name in (tools.get("allow") or []):
         return None
     kind = kind_of(name, args)
     if kind == "safe":
         return None
     if kind in ("read", "write"):
+        base = name.lower().rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+        if evaluating and base not in WRITE_TOOLS | {"view", "read", "read_file", "str_replace_editor"}:
+            return f"評価の回ではこのツールを使えません: {name}"
         paths = arg_paths(args)
         if kind == "write" and not paths:
             return f"書き込み先が分からないので止めました: {name}"
@@ -1080,6 +1646,10 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
     if kind == "shell":
         command = next((str(args[k]) for k in SHELL_KEYS if isinstance(args.get(k), str)), str(args.get("_raw") or ""))
         mode = str(tools.get("shell") or "allowlist")
+        if evaluating:
+            if mode != "deny" and evaluation_job_command(d, cwd, command, state["inflight"]):
+                return None
+            return "評価の回では受け箱の処理だけ実行できます"
         if mode == "allow" and not proactive:
             return None
         body = command.strip()
@@ -1095,6 +1665,8 @@ def decide(d: Path, cwd: Path, payload: dict, state: dict, policy: dict) -> "str
             if any(inside(Path(x), path) is not None for x in scope["scripts"]):
                 return None
         return "このコマンドは許していません（policy.json の tools.shell_allow に足すと動かせます）: " + command[:120]
+    if evaluating:
+        return f"評価の回ではこのツールを使えません: {name}"
     if kind == "web":
         allow = [str(h).lower() for h in tools.get("web_allow") or []]
         if "*" in allow:
@@ -1179,6 +1751,162 @@ def cmd_hooks(a) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------- harvest
+
+
+def cmd_harvest(a) -> int:
+    ts = a.now if a.now is not None else now_ts()
+    try:
+        d = Path(a.dir).resolve()
+        now = dt.datetime.fromtimestamp(ts).astimezone()
+        if not isinstance(read_json(d / "state.json", None), dict):
+            raise discovery.DiscoveryConfigError(f"有効な state.json がありません: {d}")
+        config = discovery.parse_policy(read_json(d / "policy.json", {}), d)
+    except (OSError, ValueError, OverflowError, RuntimeError) as e:
+        print(f"harvest: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    if not config["enabled"]:
+        return EXIT_OK
+
+    observed, candidates, events = discovery.harvest_sources(config, now)
+    failed = any(event["result"] == "failed" for event in events)
+    for event in events:
+        if event["result"] == "failed":
+            print(f"harvest: {event['collector']} {event['root']} — {event['why']}", file=sys.stderr)
+    try:
+        discovery.index_dir(d)
+        with locked(d):
+            try:
+                current = discovery.parse_policy(read_json(d / "policy.json", {}), d)
+            except (OSError, ValueError, RuntimeError) as e:
+                print(f"harvest: {e}", file=sys.stderr)
+                return EXIT_USAGE
+            if current != config:
+                print("harvest: 走査中に Discovery の設定が変わりました", file=sys.stderr)
+                return 1
+            for event in events:
+                try:
+                    if (d / "journal.jsonl").is_symlink():
+                        raise ValueError("journal.jsonl はシンボリックリンクです")
+                    append_journal(d, {"kind": "harvest", **event}, ts)
+                except (OSError, ValueError) as e:
+                    print(f"harvest: journal に記録できません: {e}", file=sys.stderr)
+                    failed = True
+            try:
+                discovery.merge_index(d, observed, candidates, now)
+            except (OSError, ValueError, TypeError, RuntimeError) as e:
+                print(f"harvest: 索引を保存できません: {e}", file=sys.stderr)
+                failed = True
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"harvest: {e}", file=sys.stderr)
+        return 1
+    return int(failed)
+
+
+# ---------------------------------------------------------------- proposals
+
+
+PROPOSAL_STATUSES = ("pending", "approved", "rejected")
+
+
+def read_proposal(path: Path) -> dict:
+    if path.is_symlink():
+        raise ValueError(f"提案ファイルにシンボリックリンクは使えません: {path}")
+    row = read_json(path, None)
+    if not isinstance(row, dict) or row.get("id") != path.stem or row.get("status") not in PROPOSAL_STATUSES:
+        raise ValueError(f"提案レコードの形式が不正です: {path}")
+    return row
+
+
+def list_proposals(folder: Path, status: str, as_json: bool) -> None:
+    try:
+        paths = list(folder.iterdir())
+    except FileNotFoundError:
+        paths = []
+    rows = [read_proposal(path) for path in paths if path.suffix == ".json"]
+    rows = [row for row in rows if status == "all" or row["status"] == status]
+    rows.sort(key=lambda row: row["id"])
+    rows.sort(key=lambda row: dt.datetime.fromisoformat(row["received_at"]), reverse=True)
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    columns = ("id", "status", "size", "risk", "suggested_route", "title")
+    table = [("ID", "状態", "規模", "リスク", "ルート", "題名")]
+    table.extend(tuple(row[key] for key in columns) for row in rows)
+    widths = [max(len(value) for value in col) for col in zip(*table)]
+    for line in table:
+        print("  ".join(value.ljust(width) for value, width in zip(line[:-1], widths)) + "  " + line[-1])
+
+
+def show_proposal(row: dict) -> None:
+    print(f'{row["id"]} {row["status"]}  {row["title"]}')
+    print(f'根拠: {row["why"]}')
+    print(f'規模: {row["size"]}  リスク: {row["risk"]}  推奨ルート: {row["suggested_route"]}')
+    print("出典:")
+    for source in row["evidence"]:
+        print(f'  {source["source_path"]}: {", ".join(source["locations"])}')
+    if row.get("decision"):
+        decision = row["decision"]
+        print(f'判断: {decision["at"]}  {decision["by"]}  {decision["reason"]}')
+    target = row.get("execution_ref") or row.get("registration") or row.get("append_target")
+    if target:
+        print(f"登録先: {json.dumps(target, ensure_ascii=False)}")
+    progress = {"pending": "承認待ち", "approved": "登録待ち", "rejected": "却下"}
+    print("処理状況: " + ("登録済み" if row.get("execution_ref") else progress[row["status"]]))
+    if row.get("registration_reason"):
+        print(f'登録待ちの理由: {row["registration_reason"]}')
+
+
+def cmd_proposals(a) -> int:
+    try:
+        d = Path(a.dir).resolve()
+        if not a.dir.strip() or not isinstance(read_json(d / "state.json", None), dict):
+            raise ValueError(f"有効な state.json がありません: {d}")
+        desired = {"approve": "approved", "reject": "rejected"}.get(a.operation)
+        if desired and not a.reason.strip():
+            raise ValueError("--reason に空白以外の文字を指定してください")
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"proposals: {e}", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        discovery.index_dir(d)
+        with locked(d) if desired else contextlib.nullcontext():
+            folder = discovery.index_dir(d) / "proposals"
+            if folder.is_symlink():
+                raise ValueError("提案キューにシンボリックリンクは使えません")
+            if a.operation == "list":
+                list_proposals(folder, a.status, a.json)
+                return EXIT_OK
+            if not re.fullmatch(r"p[a-zA-Z0-9]+", a.id):
+                raise ValueError(f"提案 ID がありません: {a.id}")
+            path = folder / f"{a.id}.json"
+            if not path.exists() and not path.is_symlink():
+                raise ValueError(f"提案 ID がありません: {a.id}")
+            row = read_proposal(path)
+            if a.operation == "show":
+                if a.json:
+                    print(json.dumps(row, ensure_ascii=False, indent=2))
+                else:
+                    show_proposal(row)
+            elif row["status"] == desired:
+                decision = row["decision"]
+                print(f'{a.id} {desired}（{decision["at"]} {decision["by"]}: {decision["reason"]}）')
+            elif row["status"] == "pending":
+                if path.with_name(path.name + ".tmp").is_symlink():
+                    raise ValueError(f"一時ファイルにシンボリックリンクは使えません: {path}")
+                row.update(status=desired, decision={"at": iso(now_ts()), "by": getpass.getuser(),
+                                                     "reason": a.reason.strip()})
+                write_json(path, row)
+                print(f"{a.id} {desired}（次の act で{'登録' if desired == 'approved' else '却下'}を確認）")
+            else:
+                raise ValueError(f'{a.id} は {row["status"]} として記録済みです')
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
+        print(f"proposals: {e}", file=sys.stderr)
+        return 1
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------- status
 
 
@@ -1252,6 +1980,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("tick", cmd_tick, "起こすかを決め、起こすなら依頼文を書く"),
         ("act", cmd_act, "outbox の提案を片付け、承認されたものを実行する"),
         ("review", cmd_review, "業務の実行記録を見直す"),
+        ("harvest", cmd_harvest, "許可されたソースから候補を集める"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--dir", required=True, help="目標のフォルダ")
@@ -1271,6 +2000,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="いまの状態を出す")
     p.add_argument("--dir", required=True, help="目標のフォルダ")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("proposals", help="Discovery の提案を見て採否を記録する")
+    proposals = p.add_subparsers(dest="operation", required=True)
+    for operation in ("list", "show", "approve", "reject"):
+        p = proposals.add_parser(operation)
+        p.add_argument("--dir", required=True, help="目標のフォルダ")
+        if operation != "list":
+            p.add_argument("id", help="提案 ID")
+        if operation in ("list", "show"):
+            p.add_argument("--json", action="store_true")
+        else:
+            p.add_argument("--reason", required=True, help="判断の理由")
+        if operation == "list":
+            p.add_argument("--status", choices=(*PROPOSAL_STATUSES, "all"), default="pending")
+        p.set_defaults(func=cmd_proposals)
     return parser
 
 
