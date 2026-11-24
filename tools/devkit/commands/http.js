@@ -68,7 +68,7 @@ async function run(argv, io) {
         const location = parseUrl(locationHeader, url);
         redirects.push({ status, location: location.href });
         if (!args.json) io.out(`${status} ${url.href} -> ${location.href}\n`);
-        if ([301, 302, 303].includes(status)) method = "GET";
+        if (method.toUpperCase() !== "HEAD" && [301, 302, 303].includes(status)) method = "GET";
         url = location;
         continue;
       }
