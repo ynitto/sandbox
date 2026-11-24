@@ -31,3 +31,10 @@ test("color clamps lightness and reports mix and WCAG grades", () => {
   }
   assert.equal(runCli(["color", "#f00", "--lighten", "101"]).status, 2);
 });
+
+test("color composites translucent colors over white for contrast", () => {
+  const result = runCli(["color", "rgba(0, 0, 0, 0.5)", "--contrast", "#ffffff", "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  // 白に重ねた 50% の黒は輝度 0.5 のグレーになり、比は手計算で約 3.98。
+  assert.equal(JSON.parse(result.stdout).contrast.ratio, 3.98);
+});

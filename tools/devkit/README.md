@@ -624,7 +624,7 @@ devkit case [--to 形式] [テキスト]
 devkit case --to camel hello_world_example
 ```
 
-区切り文字と大文字・小文字の境界から単語を切り出します。形式は snake、camel、pascal、kebab、upper-snake、lower、upper です。形式を省略すると全形式を、テキストを省略すると標準入力の変換結果を表示します。
+区切り文字と大文字・小文字の境界から単語を切り出します。形式は snake、camel、pascal、kebab、upper-snake、lower、upper です。lower と upper は単語分割をせず、文字列全体をそのまま大小変換します（区切り文字は残ります）。形式を省略すると全形式を、テキストを省略すると標準入力の変換結果を表示します。
 終了コードは成功時 0、入力・使用法のエラー時 2 です。
 
 ### lines
@@ -634,7 +634,7 @@ devkit lines [--sort] [--numeric] [--uniq] [--count] [--reverse] [--shuffle] [�
 devkit lines --sort --uniq --count items.txt
 ```
 
-ファイルまたは標準入力の行を、重複除去、ソート、反転の順に処理します。`--uniq --count` は出現回数を付けます。`--sort --numeric` は数値行、文字列行の順にそれぞれ安定ソートします。`--shuffle` は単独で指定し、暗号乱数で行を並べ替えます。
+ファイルまたは標準入力の行を、重複除去、ソート、反転の順に処理します。`--count` は出現回数を付けます（`--uniq` を暗に含みます）。`--numeric` は数値行、文字列行の順にそれぞれ安定ソートします（`--sort` を暗に含みます）。`--shuffle` は単独で指定し、暗号乱数で行を並べ替えます。
 終了コードは成功時 0、入力・使用法のエラー時 2 です。
 
 ### table

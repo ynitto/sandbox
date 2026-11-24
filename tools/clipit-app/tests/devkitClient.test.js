@@ -33,7 +33,8 @@ test("loads the repository devkit API from the app directory", async () => {
   assert.match(uuid.stdout.trim(), /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
   const color = await runCommand("color", ["#ff0000"]);
   assert.equal(color.code, 0, color.stderr);
-  assert.match(color.stdout, /255/);
+  assert.match(color.stdout, /hex: #ff0000/);
+  assert.match(color.stdout, /rgb: rgb\(255, 0, 0\)/);
   const image = path.resolve(appDir, "../devkit/tests/fixtures/sample-rgba.png");
   const info = await runCommand("img-info", [image]);
   assert.equal(info.code, 0, info.stderr);

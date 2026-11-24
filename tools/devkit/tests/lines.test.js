@@ -19,6 +19,12 @@ test("lines shuffles the given rows and rejects incompatible options", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.trimEnd().split("\n").sort(), ["a", "a", "b", "c"]);
   assert.equal(runCli(["lines", "--shuffle", "--reverse"]).status, 2);
+  // 行数が多ければ、シャッフル結果が入力順のままであることはまず起きない。
+  const many = Array.from({ length: 20 }, (_, i) => `row${i}`).join("\n");
+  const shuffled = runCli(["lines", "--shuffle"], { input: many });
+  assert.equal(shuffled.status, 0, shuffled.stderr);
+  assert.notEqual(shuffled.stdout, many + "\n");
+  assert.deepEqual(shuffled.stdout.trimEnd().split("\n").sort(), many.split("\n").sort());
 });
 
 test("lines treats --numeric as sorting and --count as deduplication", () => {

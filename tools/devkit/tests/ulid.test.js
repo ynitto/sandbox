@@ -25,3 +25,10 @@ test("ulid rejects invalid alphabets, overflow and invalid timestamps", () => {
     assert.equal(runCli(["ulid", ...args]).status, 2);
   }
 });
+
+test("ulid decodes a known timestamp from its Crockford base32 prefix", () => {
+  // 先頭10文字 01ARZ3NDEK は 1468930850259 ms を表す（基数変換を手計算で検証済み）。
+  const result = runCli(["ulid", "01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /2016-07-30T23:54:10\.259Z/);
+});

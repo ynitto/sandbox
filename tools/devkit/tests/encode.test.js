@@ -97,3 +97,13 @@ test("encode rejects --check combined with conversion options", () => {
   assert.equal(runCli(["encode", "--check", "--to", "sjis"], { input: Buffer.from(text) }).status, 2);
   assert.equal(runCli(["encode", "--check", "--crlf"], { input: Buffer.from(text) }).status, 2);
 });
+
+test("encode honors an explicit --from for detection reporting and conversion", () => {
+  const check = runCli(["encode", "--check", "--json", "--from", "sjis"], { input: samples[1][1] });
+  assert.equal(check.status, 0, check.stderr);
+  assert.equal(JSON.parse(check.stdout).encoding, "sjis");
+  const le = Buffer.from("abc\n", "utf16le");
+  const converted = runCliBuffer(["encode", "--from", "utf-16le", "--to", "utf8"], { input: le });
+  assert.equal(converted.status, 0, converted.stderr.toString());
+  assert.equal(converted.stdout.toString(), "abc\n");
+});
