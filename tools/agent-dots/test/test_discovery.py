@@ -21,6 +21,14 @@ NOW = dt.datetime(2026, 11, 24, 12, tzinfo=dt.timezone.utc)
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_root_key_matches_resolved_path_key(self):
+        root = self.root / "real"
+        root.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+        self.assertEqual(discovery._root_key(alias), discovery.path_key(root))
+        self.assertEqual(discovery._root_key(alias / "missing"), discovery.path_key(root / "missing"))
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -485,6 +493,17 @@ class DiscoveryActTests(unittest.TestCase):
         self.assertEqual(self.call("tick"), "wake: proactive\n")
         return dot.read_json(self.folder / "evaluation.json", {})
 
+    def finish_evaluation(self, status="ok"):
+        box = self.goal / dot.JOB_BOX
+        name = dt.datetime.fromtimestamp(self.ts + 1).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-dot.md"
+        done = box / "done" / name
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.touch()
+        if status is not None:
+            result = box / "results" / name
+            result.parent.mkdir(parents=True, exist_ok=True)
+            result.write_text(f"status: {status}\n", encoding="utf-8")
+
     def outbox(self, evaluation, filename="01.json", goal=None, **change):
         label = next(iter(evaluation["sources"]))
         prop = {"kind": "propose", "title": "集計を実装する",
@@ -584,6 +603,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.save_policy()
         self.harvest("plan.md", "other.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.outbox(evaluation, sources=["plan.md", "other.md"], why="plan.md と other.md の候補")
         self.call("act")
         proposal, = dot.proposal_queue(self.goal)
@@ -651,6 +671,7 @@ class DiscoveryActTests(unittest.TestCase):
     def test_denials_and_acceptance(self):
         self.harvest("gone.md", "unreadable.md", "valid.md", "changed.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         (self.sources / "gone.md").unlink()
         (self.sources / "unreadable.md").chmod(0)
         (self.sources / "changed.md").write_text("replacement", encoding="utf-8")
@@ -681,6 +702,7 @@ class DiscoveryActTests(unittest.TestCase):
         dot.write_json(self.folder / "proposals" / "prior.json",
                        {"id": "prior", "received_at": dot.iso(self.ts), "status": "rejected", "signal_ids": []})
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.assertEqual(evaluation["remaining"], 1)
         for i, label in enumerate(evaluation["sources"]):
             self.outbox(evaluation, f"{i:02}.json", sources=[label], why=f"{label} の候補")
@@ -711,7 +733,8 @@ class DiscoveryActTests(unittest.TestCase):
         withdrawn.parent.mkdir(parents=True)
         withdrawn.touch()
         self.call("act", self.ts + 2)
-        self.assertEqual(list(dot.json_lines(self.goal / "journal.jsonl"))[-1]["code"], 3)
+        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertEqual((row["result"], row["code"]), ("evaluation-failed", 3))
 
         self.ts += 60
         evaluation = self.evaluate()
@@ -733,6 +756,51 @@ class DiscoveryActTests(unittest.TestCase):
         self.call("act", self.ts + 5403)
         self.assertIsNone(dot.load_state(self.goal)["inflight"])
         self.assertEqual(list(dot.json_lines(self.goal / "journal.jsonl"))[-1]["result"], "empty")
+
+    def test_evaluation_without_result_cannot_submit_proposal(self):
+        self.harvest("plan.md")
+        evaluation = self.evaluate()
+        self.finish_evaluation(status=None)
+        path, _ = self.outbox(evaluation)
+        self.call("act")
+        self.assertEqual(dot.proposal_queue(self.goal), [])
+        self.assertFalse(path.exists())
+        self.assertIsNone(dot.load_state(self.goal)["inflight"])
+        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertEqual((row["result"], row["why"]), ("denied", "評価の終了コードが確認できない"))
+
+    def test_empty_outbox_with_unknown_evaluation_result(self):
+        self.harvest("plan.md")
+        evaluation = self.evaluate()
+        self.call("act")
+        self.assertIsNone(dot.load_state(self.goal)["inflight"])
+        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertEqual((row["evaluation_id"], row["result"], row["code"]),
+                         (evaluation["id"], "evaluation-unknown", None))
+
+    def test_corrupt_queue_files_do_not_block_tick_or_act(self):
+        self.harvest("plan.md")
+        folder = self.folder / "proposals"
+        partial = {"id": "partial", "status": "approved", "received_at": dot.iso(self.ts)}
+        dot.write_json(folder / "partial.json", partial)
+        dot.write_json(folder / "incomplete.json", {"id": "incomplete", "status": "pending"})
+        dot.write_json(folder / "bad-date.json", {**partial, "id": "bad-date", "received_at": "invalid"})
+        dot.write_json(folder / "scalar.json", [])
+        (folder / "broken.json").write_text("{", encoding="utf-8")
+        self.assertEqual(dot.proposal_queue(self.goal), [partial])
+        evaluation = self.evaluate()
+        self.finish_evaluation()
+        self.outbox(evaluation)
+        self.call("act")
+        self.assertEqual([row["status"] for row in dot.proposal_queue(self.goal)], ["pending", "approved"])
+
+    def test_tick_journal_classifies_discovery_error_without_exception_text(self):
+        with patch.object(discovery, "evaluation_material", side_effect=PermissionError("PRIVATE PATH")):
+            self.assertEqual(self.call("tick"), "")
+        journal = (self.goal / "journal.jsonl").read_text(encoding="utf-8")
+        self.assertNotIn("PRIVATE PATH", journal)
+        row = json.loads(journal.splitlines()[-1])
+        self.assertEqual((row["result"], row["why"]), ("discovery-error", "読み書きの権限がありません"))
 
     def test_evaluation_hook(self):
         self.harvest("plan.md")
@@ -759,6 +827,7 @@ class DiscoveryActTests(unittest.TestCase):
     def test_decision_goal_retry_and_results(self):
         self.harvest("yes.md", "no.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.outbox(evaluation, "yes.json", sources=["yes.md"], why="yes.md の候補")
         self.outbox(evaluation, "no.json", sources=["no.md"], why="no.md の候補")
         self.call("act")
@@ -811,6 +880,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.save_policy()
         self.harvest("plan.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.outbox(evaluation, suggested_route="routine")
         self.call("act")
         proposal, = dot.proposal_queue(self.goal)
@@ -853,6 +923,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.save_policy()
         self.harvest("a.md", "b.md", "c.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         tomorrow = self.ts + 86400
         dot.write_json(self.folder / "proposals/prior.json", {
             "id": "prior", "received_at": dot.iso(tomorrow), "status": "rejected", "signal_ids": [],
@@ -871,6 +942,7 @@ class DiscoveryActTests(unittest.TestCase):
         dot.init_goal(target, "existing", self.ts)
         (target / "goal.md").write_text(f'出典 `{self.sources / "plan.md"}`', encoding="utf-8")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.outbox(evaluation)
         self.call("act")
         proposal, = dot.proposal_queue(self.goal)
@@ -906,6 +978,7 @@ class DiscoveryActTests(unittest.TestCase):
         (machine / "workflow.yaml").write_text("states: {}", encoding="utf-8")
         dot.routines.save_registry(worker, {"daily": {"source_paths": [str(self.sources / "plan.md")]}})
         evaluation = self.evaluate()
+        self.finish_evaluation()
         self.outbox(evaluation, suggested_route="routine")
         self.call("act")
         proposal, = dot.proposal_queue(self.goal)
@@ -919,6 +992,18 @@ class DiscoveryActTests(unittest.TestCase):
             self.assertNotIn("routine", state)
             self.call("act")
             self.assertEqual(len(dot.load_state(worker)["approvals"]), 1)
+            for status in ("rejected", "expired"):
+                with self.subTest(status=status):
+                    approval["status"] = status
+                    dot.save_state(worker, state)
+                    self.call("act")
+                    previous_id = approval["id"]
+                    previous_count = len(state["approvals"])
+                    state = dot.load_state(worker)
+                    self.assertEqual(len(state["approvals"]), previous_count + 1)
+                    approval = state["approvals"][-1]
+                    self.assertNotEqual(approval["id"], previous_id)
+                    self.assertEqual(approval["status"], "pending")
             approval["status"] = "approved"
             dot.save_state(worker, state)
             self.call("act", self.ts, worker)
@@ -956,6 +1041,7 @@ class DiscoveryActTests(unittest.TestCase):
     def test_propose_without_matching_evaluation_is_denied(self):
         self.harvest("plan.md")
         evaluation = self.evaluate()
+        self.finish_evaluation()
         dot.write_json(self.folder / "evaluation.json", {**evaluation, "id": "another"})
         self.outbox(evaluation)
         self.call("act")

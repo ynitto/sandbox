@@ -1165,7 +1165,7 @@ def _error_reason(exc: Exception) -> str:
 
 
 def _root_key(root: Path) -> str:
-    return Path(os.path.normcase(os.path.abspath(root))).as_posix()
+    return path_key(root)
 
 
 def _inside_source(path: Path, root: Path, name: str) -> bool:

@@ -613,7 +613,7 @@ def _tick(d: Path, ts: float) -> int:
             if config["enabled"]:
                 rows = proposal_queue(d)
                 remaining = proposal_remaining(config, rows, ts)
-                excluded = {ident for row in rows for ident in row["signal_ids"]}
+                excluded = {ident for row in rows for ident in row.get("signal_ids", [])}
                 material = discovery.evaluation_material(d, config, excluded, remaining) if remaining else None
                 if not material:
                     save_state(d, state)
@@ -623,7 +623,8 @@ def _tick(d: Path, ts: float) -> int:
                 evaluation = {"id": ident, "sources": sources, "remaining": remaining}
                 write_json(discovery.index_dir(d) / "evaluation.json", evaluation)
         except discovery.SOURCE_ERRORS as e:
-            append_journal(d, {"kind": "tick", "result": "discovery-error", "why": str(e)}, ts)
+            append_journal(d, {"kind": "tick", "result": "discovery-error",
+                               "why": discovery._error_reason(e)}, ts)
             save_state(d, state)
             return EXIT_OK
 
@@ -944,8 +945,9 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
         if not proposals:
             restore_inflight(d, state)
             if not evaluated:
+                result = "empty" if code == 0 else "evaluation-unknown" if code is None else "evaluation-failed"
                 append_journal(d, {"kind": "act", "evaluation_id": ident,
-                                   "result": "empty" if code == 0 else "evaluation-failed", "code": code}, ts)
+                                   "result": result, "code": code}, ts)
             return
     if not proposals and state.pop("discovery_outbox", None):
         for p in sorted_files(d / WORK / "inflight", ".json"):
@@ -996,10 +998,12 @@ def _take_proposals(d: Path, state: dict, policy: dict, ts: float, comments: "li
             entry, prop = {"result": "denied", "why": f"JSON が読めない: {e}"}, None
         else:
             if evaluating and isinstance(prop, dict):
-                if code not in (None, 0):
-                    entry = {"result": "denied", "why": "Discovery 評価が正常終了していません"}
-                else:
+                if code == 0:
                     entry = receive_discovery(d, policy, inflight, p.name, prop, ts)
+                elif code is None:
+                    entry = {"result": "denied", "why": "評価の終了コードが確認できない"}
+                else:
+                    entry = {"result": "denied", "why": "Discovery 評価が正常終了していません"}
             elif isinstance(prop, dict):
                 entry = handle(d, state, policy, prop, ts, comments, to_run, proactive)
             else:
@@ -1043,12 +1047,26 @@ def json_lines(path: Path):
         pass
 
 
+def read_queued_proposal(path: Path) -> dict:
+    try:
+        row = read_proposal(path)
+        dt.datetime.fromisoformat(row.get("received_at", "")).timestamp()
+        ids = row.get("signal_ids", [])
+        if isinstance(ids, list) and all(isinstance(ident, str) for ident in ids):
+            return row
+    except (OSError, ValueError, TypeError, OverflowError):
+        pass
+    return {}
+
+
 def proposal_queue(d: Path) -> list[dict]:
-    return [read_json(p, {}) for p in sorted_files(discovery.index_dir(d) / "proposals", ".json")]
+    paths = sorted_files(discovery.index_dir(d) / "proposals", ".json")
+    return [row for path in paths if (row := read_queued_proposal(path))]
 
 
 def proposal_remaining(config: dict, rows: list[dict], ts: float) -> int:
-    used = sum(today(dt.datetime.fromisoformat(row["received_at"]).timestamp()) == today(ts) for row in rows)
+    used = sum(today(dt.datetime.fromisoformat(received).timestamp()) == today(ts)
+               for row in rows if (received := row.get("received_at")))
     return max(0, config["proposals_per_day"] - used)
 
 
@@ -1111,16 +1129,16 @@ def receive_discovery(d: Path, policy: dict, inflight: dict, filename: str, prop
                     return denied(f"変更・無効化されたか読み取れない出典: {label}")
                 evidence[sid] = source
         rows = proposal_queue(d)
-        ids = sorted(evidence)
-        if any(set(row["signal_ids"]) == set(ids) or
-               (row["status"] == "rejected" and set(row["signal_ids"]).intersection(ids)) for row in rows):
-            return denied("同じ出典の仕事は受付済みまたは却下済みです")
+        for row in rows:
+            prior_ids = set(row.get("signal_ids", []))
+            if prior_ids == evidence.keys() or (row.get("status") == "rejected" and prior_ids.intersection(evidence)):
+                return denied("同じ出典の仕事は受付済みまたは却下済みです")
         if not proposal_remaining(config, rows, ts) or sum(
             row.get("evaluation_id") == ident for row in rows
         ) >= evaluation["remaining"]:
             return denied("提案の受付枠を使い切りました")
         record = {key: prop[key] for key in ("title", "why", "sources", "size", "risk", "suggested_route")}
-        record.update(id=pid, evaluation_id=ident, signal_ids=ids, evidence=list(evidence.values()),
+        record.update(id=pid, evaluation_id=ident, signal_ids=sorted(evidence), evidence=list(evidence.values()),
                       status="pending", received_at=iso(ts), decision=None, append_target=None)
         record["append_target"] = discovery_append_target(config, record)
         write_json(path, record)
@@ -1209,7 +1227,7 @@ def discovery_history(d: Path, proposal: dict, event: str, status: str, reason: 
         return
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({"event_id": event_id, "at": iso(ts), "proposal_id": proposal["id"],
-                                 "signal_ids": proposal["signal_ids"], "event": event, "status": status,
+                                 "signal_ids": proposal.get("signal_ids", []), "event": event, "status": status,
                                  "reason": reason, "execution_ref": ref}, ensure_ascii=False) + "\n")
 
 
@@ -1307,7 +1325,8 @@ def register_discovery_routine(target: Path, state: dict, plan: dict,
             raise ValueError("既存マシンに必要な入力が未指定です")
         if entry["status"] == "unapproved":
             digest = routines.digest(Path(entry["path"]))
-            approvals = (item.get("proposal") or {} for item in state["approvals"])
+            approvals = (item.get("proposal") or {} for item in state["approvals"]
+                         if item.get("status") == "pending")
             if any(item.get("discovery_id") == pid and item.get("digest") == digest for item in approvals):
                 raise ValueError("既存マシンの版の承認が必要です")
         request = {"action": "run", "machine": name, "request": text}
@@ -1374,15 +1393,19 @@ def reconcile_discovery(d: Path, ts: float) -> None:
             return
         rows = proposal_queue(d)
     for row in rows:
-        if row["status"] not in ("rejected", "approved"):
+        if row.get("status") not in ("rejected", "approved"):
             continue
         path = discovery.index_dir(d) / "proposals" / f'{row["id"]}.json'
         with locked(d):
             if job_busy(d) or load_state(d).get("inflight"):
                 return
-            proposal = read_json(path, {})
+            proposal = read_queued_proposal(path)
+            status = proposal.get("status")
+            if status not in ("rejected", "approved"):
+                continue
             decision = proposal.get("decision") or {}
-            status = proposal["status"]
+            if not isinstance(decision, dict):
+                continue
             discovery_history(d, proposal, "decision", status, decision.get("reason", ""), ts)
             if status != "approved":
                 continue
@@ -1392,7 +1415,9 @@ def reconcile_discovery(d: Path, ts: float) -> None:
                     config = discovery.parse_policy(load_policy(d), d)
                     if not config["enabled"]:
                         raise ValueError("Discovery が無効です")
-                    if not all(discovery.current_source(config, item, unchanged=False) for item in proposal["evidence"]):
+                    if not proposal.get("evidence") or not all(
+                        discovery.current_source(config, item, unchanged=False) for item in proposal["evidence"]
+                    ):
                         raise ValueError("現在の policy で読めない出典があります")
                     if not proposal.get("registration"):
                         latest = discovery_append_target(config, proposal)
@@ -1418,7 +1443,7 @@ def reconcile_discovery(d: Path, ts: float) -> None:
             except (discovery.SOURCE_ERRORS + (Busy, routines.RoutineError)) as e:
                 ref, reason = None, str(e) or "登録先が使用中です"
             with locked(d):
-                proposal = read_json(path, {})
+                proposal = read_queued_proposal(path)
                 if not proposal.get("execution_ref") and proposal.get("registration") == plan:
                     proposal["registration_reason"] = reason
                     if ref:
@@ -1430,7 +1455,7 @@ def reconcile_discovery(d: Path, ts: float) -> None:
                 discovery_history(d, proposal, "registered", "registered", "", ts, ref)
             try:
                 results = list(discovery_results(proposal))
-            except (Busy, OSError, ValueError):
+            except (discovery.SOURCE_ERRORS + (Busy,)):
                 continue
             with locked(d):
                 for ident, status, reason, result_ref in results:
