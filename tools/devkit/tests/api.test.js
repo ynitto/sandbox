@@ -17,8 +17,10 @@ const token = [
 test("listCommands returns sorted command metadata", () => {
   const commands = listCommands();
   assert.deepEqual(commands.map(({ name }) => name), [
-    "b64", "branches", "cert", "cron", "csv", "dns", "env", "hash", "http", "ip",
-    "json", "jwt", "port", "pw", "regex", "semver", "toc", "ts", "url", "uuid",
+    "b32", "b64", "branches", "case", "cert", "color", "cron", "csv", "diff", "dns", "encode", "env", "hash", "http",
+    "img-convert", "img-exif", "img-info", "img-resize", "ip",
+    "json", "jwt", "lines", "mime", "port", "pw", "qr", "regex", "semver", "serve",
+    "table", "toc", "ts", "ulid", "url", "uuid", "yaml",
   ]);
   for (const { name, help, usage, example } of commands) {
     assert.equal(typeof help, "string");
@@ -131,6 +133,11 @@ for (const [name, args, expected] of [
   ["hash", ["abc"], /^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n$/],
   ["json", ["--path", "name", '{"name":"sample"}'], /^sample\n$/],
   ["regex", ["[0-9]+", "ID: 123"], /^match 1: 123/],
+  ["color", ["hsl(0, 100%, 50%)"], /^hex: #ff0000\nrgb: rgb\(255, 0, 0\)/],
+  ["ulid", ["00000000000000000000000000"], /^1970-01-01T00:00:00\.000Z\n$/],
+  ["b32", ["foo"], /^MZXW6===\n$/],
+  ["case", ["--to", "snake", "HTTPServer"], /^http_server\n$/],
+  ["mime", ["--json", path.join(__dirname, "fixtures", "sample-rgba.png")], /"mime":"image\/png"/],
 ]) {
   test("runCommand executes " + name, async () => {
     const result = await runCommand(name, args);
@@ -138,3 +145,34 @@ for (const [name, args, expected] of [
     assert.match(result.stdout, expected);
   });
 }
+
+test("runCommand round-trips binary Base32 output", async () => {
+  const input = Buffer.from([0, 128, 255]);
+  const encoded = await runCommand("b32", [], { stdin: input });
+  assert.equal(encoded.code, 0, encoded.stderr);
+  const decoded = await runCommand("b32", ["--decode"], { stdin: encoded.stdout });
+  assert.equal(decoded.code, 0, decoded.stderr);
+  assert.deepEqual(decoded.stdoutBuffer, input);
+});
+
+for (const [name, args, stdin, expected] of [
+  ["lines", ["--uniq", "--count"], "b\na\nb\n", "2\tb\n1\ta\n"],
+  ["table", [], "a,b\nc,d\n", "| a | b |\n| --- | --- |\n| c | d |\n"],
+  ["yaml", [], "enabled: true\n", '{\n  "enabled": true\n}\n'],
+  ["encode", ["--json"], "日本語\n", '{"file":"-","encoding":"utf8","bom":false,"lineEnding":"LF"}\n'],
+]) {
+  test("runCommand reads " + name + " input from stdin", async () => {
+    const result = await runCommand(name, args, { stdin });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, expected);
+  });
+}
+
+test("runCommand returns unified diff output with code 1", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "devkit-api-diff-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, "before"), "old\n");
+  const result = await runCommand("diff", ["before", "-"], { cwd, stdin: "new\n" });
+  assert.equal(result.code, 1, result.stderr);
+  assert.equal(result.stdout, "--- a/before\n+++ b/-\n@@ -1 +1 @@\n-old\n+new\n");
+});

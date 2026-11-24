@@ -9,8 +9,10 @@ const { discoverCommands } = require("../core/cli");
 const { runCli } = require("./helpers");
 
 const EXPECTED = [
-  "b64", "branches", "cert", "cron", "csv", "dns", "env", "hash", "http", "ip",
-  "json", "jwt", "port", "pw", "regex", "semver", "toc", "ts", "url", "uuid",
+  "b32", "b64", "branches", "case", "cert", "color", "cron", "csv", "diff", "dns", "encode", "env", "hash", "http",
+  "img-convert", "img-exif", "img-info", "img-resize", "ip",
+  "json", "jwt", "lines", "mime", "port", "pw", "qr", "regex", "semver", "serve",
+  "table", "toc", "ts", "ulid", "url", "uuid", "yaml",
 ];
 
 test("all commands are discovered", () => {
