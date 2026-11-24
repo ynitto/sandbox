@@ -1,0 +1,22 @@
+# 目標 1 つの発見候補を毎朝拾う例（Windows）。目標ごとに 1 つ置き、パスと時刻を合わせる。
+description: "目標「見積り」の発見候補を拾う"
+schedule: "0 8 * * *"
+type: graph
+hist_retention_days: 14
+env:
+  - DOT: "C:/work/dots/estimate"
+steps:
+  - name: harvest
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/agent-dots/dot.py"
+        - "harvest"
+        - "--dir"
+        - "${DOT}"
+    timeout_sec: 600
+    retry_policy:              # 目標ロックの競合（終了コード 3）だけ再試行する
+      limit: 5
+      interval_sec: 20
+      exit_code: [3]

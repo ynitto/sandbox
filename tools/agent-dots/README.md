@@ -139,6 +139,116 @@ Dagu（毎分）
 - フックが、ファイルを作れる先を `notes/` と `outbox/` に絞り、`tools.shell_allow` のコマンドも止めます。
 - `quiet_hours` の間と、決めた時刻がすぐ先にあるときは起こしません。`wake_per_day` の回数にも数えます。
 
+## 蓄積から次の仕事を見つける（Discovery）
+
+`harvest` は許可されたソースから候補を拾い、`.dot/discovery/` の索引に保存します。手が空いたときの
+`tick` で候補を評価し、`act` が受け付けた提案をキューに入れます。Phase 1 は全件が承認待ちになり、
+承認後の `act` が仕事を登録します。登録先の目標や業務係が既存のループで進め、結果は提案元の
+`.dot/discovery/history.jsonl` に残ります。
+
+### 設定
+
+目標の `policy.json` に次のように設定します。既存の目標は `discovery` 節を省略できます。
+
+```json
+{
+  "proactive_per_day": 1,
+  "discovery": {
+    "enabled": true,
+    "auto_execute": [],
+    "proposals_per_day": 5,
+    "require_approval": ["medium以上", "external"],
+    "collectors": {
+      "agent_dots": {"enabled": true, "paths": ["C:/work/dots/estimate"]},
+      "plans": {"enabled": true, "paths": ["C:/work/project/docs/plans"]},
+      "skill_feedback": {"enabled": true, "paths": ["C:/work/agent-home/skill-registry.json"]},
+      "vault": {"enabled": false, "paths": ["C:/work/Work Notes"], "vault": "Work Notes", "mode": "auto"}
+    },
+    "goal_root": "C:/work/dots",
+    "routine_dir": "C:/work/dots/routines"
+  }
+}
+```
+
+| 項目 | 型・既定 | 意味 |
+|---|---|---|
+| `enabled` | boolean、`false` | 収集、評価、新規提案の受付、承認済み提案の新規登録を有効にする。停止中もキューの表示と登録済みの仕事の結果照合はできる |
+| `proposals_per_day` | 0 以上の整数、`5` | 目標単位の 1 日の受付上限。0 で新規受付と評価を止める。提案を受け付けた日で数える |
+| `auto_execute` | 文字列配列、`[]` | Phase 2 の許可候補は `readonly` と `small/local-write`。前者はリスク、後者は規模とリスクの組で照合する。Phase 1 は全件を承認待ちにする |
+| `require_approval` | 文字列配列、`["medium以上", "external"]` | `medium以上` は `medium` と `large`、`external` はリスク区分との一致。自動承認の条件より優先する |
+| `collectors.<名前>.enabled` | boolean、下表 | ソースごとの有効化。省略したコレクタにも下表の既定を適用 |
+| `collectors.<名前>.paths` | パスの文字列配列、下表 | コレクタが読めるルートまたはファイル。相対パスは目標フォルダ基準。実体に解決して範囲を検査する |
+| `collectors.vault.vault` | 文字列、省略可 | CLI に渡す Vault 名または ID。CLI を使う場合は `paths` に Vault ルートを 1 つ指定し、そのルートと対応づける |
+| `collectors.vault.mode` | `auto` / `files`、`auto` | `auto` は公式 CLI を優先し、CLI が使えない場合に直接読みに切り替える。`files` は直接読みを使う |
+| `goal_root` / `routine_dir` | ディレクトリのパス文字列、省略可 | 管理対象の目標を並べる親フォルダと業務係の目標。相対パスは提案元の目標基準。登録先を解決できない承認済み提案は理由を記録して待つ |
+
+| コレクタ名 | Phase 1 既定 | `paths` の既定と指定先 |
+|---|---|---|
+| `agent_dots` | 有効 | 自分の目標。複数の目標を読むときは個別に指定 |
+| `plans` | 有効 | 未指定。対象リポジトリの `docs/plans` を指定 |
+| `skill_feedback` | 有効 | `skill-feedback-digest` と同じ規則で解決した `<AGENT_HOME>/skill-registry.json`。解決できなければ未指定扱い |
+| `prompt_assets` / `session_logs` | 無効 | 未指定。スニペットやスキルの置き場、または各ツールの履歴フォルダをそれぞれ指定 |
+| `knowledge` / `git_todo` | 無効 | 未指定。文書の置き場、またはローカルリポジトリのルートを指定 |
+| `codd_retro` / `ltm_use` / `moltbook` | 無効 | 未指定。振り返りの出力先、記憶のファイルやエクスポート、ナレッジの蓄積先をそれぞれ指定 |
+| `vault` | 無効 | 未指定。Vault のルートを指定 |
+
+任意のパスが未指定なら、そのソースはスキップします。評価を起こす条件は既存の
+`proactive_per_day`、`proactive_idle_min`、`wake_per_day`、`quiet_hours` です。
+`proactive_per_day` が既定の 0 なら収集だけが動きます。登録後の仕事には実行先の policy が適用されます。
+
+### 収集と採否
+
+```sh
+python dot.py harvest --dir C:/work/dots/estimate
+python dot.py proposals list --dir C:/work/dots/estimate
+python dot.py proposals show --dir C:/work/dots/estimate p123
+python dot.py proposals approve --dir C:/work/dots/estimate p123 --reason "計画と完了条件を確認した"
+python dot.py proposals reject --dir C:/work/dots/estimate p456 --reason "既存の計画で対応済み"
+```
+
+`--dir` には同じ目標フォルダを指定し、一覧に出た ID を使います。
+
+| コマンド | すること |
+|---|---|
+| `list --dir <目標> [--status pending\|approved\|rejected\|all] [--json]` | 既定は承認待ち。受付日時の新しい順、同時刻は ID 順。JSON は提案レコードの配列で、0 件なら `[]` |
+| `show --dir <目標> <id> [--json]` | 根拠、全出典と該当箇所、規模・リスク、推奨ルート、採否と理由、登録先・処理状況を表示。JSON は提案レコード 1 件 |
+| `approve --dir <目標> <id> --reason <理由>` | `pending` を `approved` にして、次の act に渡す |
+| `reject --dir <目標> <id> --reason <理由>` | `pending` を `rejected` にして、次の act に渡す |
+
+採否には空白以外の理由を書きます。同じ判断を再送すると最初の判断が表示されます。
+承認した提案の登録が止まっている場合は `show` で理由を確認できます。
+
+| 終了コード | harvest | proposals |
+|---|---|---|
+| 0 | 収集完了、または設定で無効 | 表示または判断の記録が完了。空の一覧、同じ判断の再送も含む |
+| 1 | ソースや索引の処理に失敗。stderr と journal を確認 | ID が無い、逆の判断が記録済み、またはキューの読み書きに失敗。stderr を確認 |
+| 2 | 引数、目標フォルダ、設定が不正 | 引数、目標フォルダ、理由の形式が不正 |
+| 3 | 目標ロックの競合 | 目標ロックの競合 |
+
+日次収集は [harvest の DAG 例](dags/agent-dots-harvest.example.yaml) を目標ごとに置き、
+パスと時刻を合わせます。例は毎朝 8 時に動き、ロック競合（終了コード 3）だけを再試行します。
+既存の tick DAG が公開済みの索引を使い、依頼を起こさなかった回も `act` が採否を取り込みます。
+
+### Obsidian Vault を読む
+
+1. Obsidian を **1.12.7+ のインストーラ**で更新し、設定 → 一般 →「コマンドラインインターフェイス」を
+   有効にして案内どおりに登録します。Windows ではターミナルを開き直し、ユーザーセッションで動く
+   Dagu も起動し直して PATH を反映します。[Obsidian 公式 CLI リファレンス](https://obsidian.md/help/cli)
+2. 対象 Vault を開き、harvest を動かすユーザーの GUI セッションで次を確認します。
+
+   ```sh
+   obsidian version
+   obsidian vault="Work Notes" search query="task-todo:" format=json
+   ```
+
+3. `collectors.vault` に同じ Vault のルート 1 つと Vault 名または ID を設定し、
+   `"enabled": true`、`"mode": "auto"` で harvest を一度動かします。出典が索引に載り、
+   Vault のファイルが変わっていないことを確認します。
+4. 公式 CLI は GUI セッションでアプリに接続します。Dagu が Windows サービスで動き、
+   対話セッションに届かない場合は、サービス実行ユーザーが Vault を読めることを確認し、
+   同じルートを指定して `"mode": "files"` で動かします。`auto` で CLI が使えなかった回は、
+   journal に理由を残してファイルの直接読みに切り替えます。
+
 ## ツールを止める（フック）
 
 `dot.py hooks --dir <目標のフォルダ>` は、目標のフォルダの `.github/hooks/agent-dots.json` に、Copilot がツールを使う前に

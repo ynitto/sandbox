@@ -348,7 +348,8 @@ def ask_inputs(h, state: dict, entry: dict, missing: "list[str]", rid: str, comm
     h["question"](state, f"業務 {entry['name']} の入力が足りません: {labels}。値を教えてください", [], comments, ts)
 
 
-def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: "list[str]", h: dict) -> dict:
+def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: "list[str]", h: dict, *,
+           discovery_id: str = "") -> dict:
     if not enabled(policy):
         return {"result": "denied", "why": "業務は使えるようにしていない（policy.json の routines）"}
     action = prop.get("action")
@@ -375,24 +376,33 @@ def handle(d: Path, state: dict, policy: dict, prop: dict, ts: float, comments: 
                                                          "digest": digest(folder)},
                                 f"業務 {name} を使えるようにする（使うスキル: {skills_line(skills)}）", comments, ts)
             return {"result": "asked", "id": aid}
-        start_run(d, state, policy, name, folder, inputs, str(prop.get("request") or ""), h, ts)
-        return {"result": "accepted", "id": state["routine"]["id"]}
+        job = start_run(d, state, policy, name, folder, inputs, str(prop.get("request") or ""), h, ts)
+        if discovery_id:
+            job.update(discovery_id=discovery_id, discovery_job=job["id"])
+        return {"result": "accepted", "id": job["id"]}
     if action == "create":
         if job:
             return {"result": "denied", "why": f"ほかの業務（{job['id']}）が進行中"}
         name = str(prop.get("name") or "")
         if not NAME_RE.match(name):
             return {"result": "denied", "why": f"名前は英小文字・数字・ハイフンで 3〜40 文字: {name}"}
-        if find_entry(d, policy, name):
+        reg = load_registry(d)
+        prior = (reg.get(name) or {}).get("draft") or {}
+        resuming = bool(discovery_id and prior.get("discovery_id") == discovery_id and prior.get("status") == "draft")
+        if not resuming and (find_entry(d, policy, name) or (discovery_id and (d / DRAFTS / name).exists()
+                                                              and any((d / DRAFTS / name).iterdir()))):
             return {"result": "denied", "why": f"{name} は既にある（直すなら「直す {name} 理由」）"}
         draft = d / DRAFTS / name
         draft.mkdir(parents=True, exist_ok=True)
         inputs = prop.get("inputs") if isinstance(prop.get("inputs"), dict) else {}
-        reg = load_registry(d)
         reg[name] = {"draft": {"status": "draft", "path": str(draft), "purpose": str(prop.get("purpose") or "")}}
+        if discovery_id:
+            reg[name]["draft"]["discovery_id"] = discovery_id
         save_registry(d, reg)
         job = new_job(state, "create", ts, name=name, draft=str(draft), purpose=str(prop.get("purpose") or ""),
                       request=str(prop.get("request") or ""), inputs=inputs, tries=0)
+        if discovery_id:
+            job.update(discovery_id=discovery_id, discovery_job=job["id"])
         h["event"](state, f"業務 {job['id']}: {name} を作ります", ts)
         return {"result": "accepted", "id": job["id"]}
     if action == "created":
@@ -456,7 +466,7 @@ def created(d: Path, state: dict, policy: dict, job: dict, prop: dict, ts: float
     rec = reg.setdefault(job["name"], {}).setdefault("draft", {"path": str(draft)})
     rec.update({"status": "trial", "path": str(draft), "skills": skills, "summary": str(prop.get("summary") or "")[:500]})
     save_registry(d, reg)
-    base = {k: job[k] for k in ("reason", "base_version", "base_path") if k in job}
+    base = {k: job[k] for k in ("reason", "base_version", "base_path", "discovery_id", "discovery_job") if k in job}
     start_run(d, state, policy, job["name"], draft, inputs, job.get("request", ""), h, ts, mode="trial", skills=skills,
               extra={"from": job["mode"], **base})
     return {"result": "accepted", "id": state["routine"]["id"]}
@@ -470,9 +480,9 @@ def record_run(d: Path, job: dict, prop: dict, ts: float) -> dict:
            "states": [{"state": str(s.get("state") or ""), "output": str(s.get("output") or "")[:200]}
                       for s in (prop.get("states") or []) if isinstance(s, dict)][:100],
            "started": job.get("started"), "finished": ts}
+    run.update({key: job[key] for key in ("discovery_id", "discovery_job") if key in job})
     folder = d / WORK / "runs" / job["name"]
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{job['id']}.json").write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _save_json(folder / f"{job['id']}.json", run)
     return run
 
 
@@ -518,10 +528,13 @@ def result(d: Path, state: dict, policy: dict, job: dict, prop: dict, ts: float,
     return {"result": "done", "id": job["id"], "ok": True}
 
 
-def queue_improve(state: dict, name: str, reason: str, run_id: str = "") -> None:
+def queue_improve(state: dict, name: str, reason: str, run_id: str = "", *, discovery_id: str = "") -> None:
     queue = list(state.get("routine_queue") or [])
     if not any(q.get("name") == name for q in queue):
-        queue.append({"name": name, "reason": reason, "run": run_id})
+        item = {"name": name, "reason": reason, "run": run_id}
+        if discovery_id:
+            item["discovery_id"] = discovery_id
+        queue.append(item)
     state["routine_queue"] = queue
 
 
@@ -543,7 +556,12 @@ def advance(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]"
     reg = load_registry(d)
     rec = reg.get(name) or {}
     draft = d / DRAFTS / name
-    if entry and entry["status"] in ("ready", "unapproved"):
+    discovery_id = item.get("discovery_id")
+    prior = rec.get("draft") or {}
+    resuming = bool(discovery_id and prior.get("discovery_id") == discovery_id and (draft / "workflow.yaml").is_file())
+    if resuming:
+        base_path = prior.get("base_path", "")
+    elif entry and entry["status"] in ("ready", "unapproved"):
         if draft.exists():
             shutil.rmtree(draft)
         shutil.copytree(entry["path"], draft, ignore=shutil.ignore_patterns("recordings", "teaching.json", "__pycache__"))
@@ -560,6 +578,8 @@ def advance(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]"
         evidence = [f"{run['id']}: {'成功' if run['ok'] else '失敗'}（最後のステート {run['final_state']}）{run['summary'][:200]}"]
         evidence += [f"{s['state']}: {s['output']}" for s in run.get("states", [])[-10:]]
     rec["draft"] = {**(rec.get("draft") or {}), "status": "draft", "path": str(draft), "base_path": base_path}
+    if discovery_id:
+        rec["draft"]["discovery_id"] = discovery_id
     reg[name] = rec
     save_registry(d, reg)
     job = new_job(state, "improve", ts, name=name, draft=str(draft), reason=item.get("reason", ""), evidence=evidence,
@@ -742,6 +762,8 @@ def on_approved(d: Path, state: dict, policy: dict, entry: dict, ts: float, comm
         rec.update({"status": "ready", "path": str(folder), "digest": prop["digest"], "skills": prop.get("skills") or [],
                     "approved_at": ts, "version": int(rec.get("version") or 1)})
         save_registry(d, reg)
+        if prop.get("discovery_id"):
+            return  # Discovery rechecks the approved version and starts the linked job.
         if state.get("routine"):
             comments.append(f"業務 {name} を使えるようにしました。ほかの業務が進行中なので、終わってからもう一度頼んでください。")
             return
