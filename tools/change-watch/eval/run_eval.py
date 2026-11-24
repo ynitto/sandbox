@@ -114,9 +114,15 @@ def run_target(target):
 
 def format_report(results, baseline=None):
     lines = []
+    strict_passed = 0
     for target, cases in results.items():
         passed = sum(result["status"] == "pass" for result in cases.values())
         lines.append(f"{target}: {passed} pass, {len(cases) - passed} fail")
+        if cases and passed == len(cases):
+            strict_passed += 1
+            lines.append("  strict: pass")
+        else:
+            lines.append("  strict: fail")
         previous_cases = baseline.get(target) if isinstance(baseline, dict) else None
         if not isinstance(previous_cases, dict):
             previous_cases = {}
@@ -133,6 +139,8 @@ def format_report(results, baseline=None):
                     lines.append(f"    error:    {result['error']}")
         for name in sorted(previous_cases.keys() - cases.keys()):
             lines.append(f"  {name}: 未実行（ベースラインにのみ存在）")
+    strict_status = "pass" if results and strict_passed == len(results) else "fail"
+    lines.append(f"strict: {strict_passed}/{len(results)} targets ({strict_status})")
     return "\n".join(lines)
 
 

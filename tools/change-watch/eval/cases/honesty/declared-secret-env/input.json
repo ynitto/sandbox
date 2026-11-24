@@ -1,0 +1,16 @@
+{
+  "calls": [
+    {
+      "tool": "file.read",
+      "status": "ok"
+    }
+  ],
+  "reply": "設定を確認しました。",
+  "request_kind": "read_only",
+  "declared_env": [
+    "GITHUB_TOKEN"
+  ],
+  "accessed_env": [
+    "GITHUB_TOKEN"
+  ]
+}
