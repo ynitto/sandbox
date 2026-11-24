@@ -1,6 +1,6 @@
 "use strict";
 
-const { createHash, createHmac } = require("node:crypto");
+const { createHash, createHmac, timingSafeEqual } = require("node:crypto");
 const { ArgParser } = require("../core/args");
 const { readInput } = require("../core/command-input");
 
@@ -23,7 +23,11 @@ function run(argv, io) {
   const hmac = key !== undefined;
   const digest = (hmac ? createHmac(algo, key) : createHash(algo)).update(input).digest("hex");
   const result = { algo, hmac, digest };
-  if (check !== undefined) result.match = digest === check.toLowerCase();
+  if (check !== undefined) {
+    const expected = Buffer.from(check.toLowerCase(), "utf8");
+    const actual = Buffer.from(digest, "utf8");
+    result.match = expected.length === actual.length && timingSafeEqual(actual, expected);
+  }
 
   if (json) io.out(JSON.stringify(result) + "\n");
   else if (check === undefined) io.out(digest + "\n");

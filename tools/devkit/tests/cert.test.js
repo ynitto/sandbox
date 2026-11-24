@@ -27,6 +27,9 @@ test("cert reads a local certificate and warns when below the requested threshol
     assert.ok(data.days_remaining <= Math.floor((expiry - start) / 86400000));
     assert.match(data.subjectaltname, /DNS:localhost/);
     assert.match(data.subjectaltname, /IP Address:127\.0\.0\.1/);
+    assert.equal(data.authorized, false);
+    assert.equal(typeof data.authorization_error, "string");
+    assert.ok(data.authorization_error.length > 0);
     const warning = await runCliAsync([...args, "--warn-days", "100000"]);
     assert.equal(warning.status, 1);
     for (const key of ["subject", "issuer", "valid_from", "valid_to", "days_remaining", "subjectaltname"]) {
@@ -45,4 +48,5 @@ test("cert rejects invalid options", () => {
   for (const args of [["--port", "65536"], ["--warn-days", "-1"], ["--warn-days", "1.5"]]) {
     assert.equal(runCli(["cert", "127.0.0.1", ...args]).status, 2);
   }
+  assert.equal(runCli(["cert"]).status, 2);
 });

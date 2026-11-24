@@ -7,7 +7,7 @@ const { ArgTypeError, UsageError } = require("./args");
 function integer(min, max = Number.MAX_SAFE_INTEGER) {
   return (raw) => {
     const value = Number(raw);
-    if (!/^[+-]?\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) {
+    if (typeof raw !== "string" || !/^[+-]?\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) {
       const range = max === Number.MAX_SAFE_INTEGER ? `${min} 以上` : `${min}〜${max}`;
       throw new ArgTypeError(`${range} の整数を指定してください: ${raw}`);
     }

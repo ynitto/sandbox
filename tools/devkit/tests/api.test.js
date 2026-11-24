@@ -125,7 +125,7 @@ test("runCommand preserves output written before an unexpected exception", async
 });
 
 for (const [name, args, expected] of [
-  ["uuid", ["--count", "1"], /^[\da-f-]{36}\n$/],
+  ["uuid", ["--count", "1"], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n$/],
   ["pw", ["--length", "12"], /^.{12}\n$/],
   ["b64", ["hello"], /^aGVsbG8=\n$/],
   ["hash", ["abc"], /^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n$/],

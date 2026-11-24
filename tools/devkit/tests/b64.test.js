@@ -24,7 +24,7 @@ test("b64 prioritizes arguments over files and files over stdin", (t) => {
 });
 
 test("b64 rejects invalid characters, padding, and missing files", () => {
-  for (const args of [["--decode", "!"], ["--decode", "a==="], ["--file", "missing-base64-input"]]) {
+  for (const args of [["--decode", "!"], ["--decode", "a==="], ["--decode", "a"], ["--file", "missing-base64-input"]]) {
     assert.equal(runCli(["b64", ...args]).status, 2);
   }
 });

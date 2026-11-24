@@ -18,4 +18,5 @@ test("uuid generates uppercase UUID v4 values and validates an existing value", 
 test("uuid rejects malformed input and invalid counts", () => {
   assert.equal(runCli(["uuid", "invalid"]).status, 2);
   assert.equal(runCli(["uuid", "--count", "0"]).status, 2);
+  assert.equal(runCli(["uuid", "--count", "2", "550e8400-e29b-41d4-a716-446655440000"]).status, 2);
 });

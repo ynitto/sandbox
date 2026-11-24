@@ -62,9 +62,10 @@ async function run(argv, io) {
     while (true) {
       const response = await request(url, method, args.timeout);
       const { statusCode: status, statusMessage: statusText, headers, rawHeaders } = response;
-      if (!args.no_follow && status >= 300 && status < 400 && headers.location) {
+      const locationHeader = Array.isArray(headers.location) ? headers.location[0] : headers.location;
+      if (!args.no_follow && status >= 300 && status < 400 && locationHeader) {
         if (redirects.length === 10) throw new Error("リダイレクトが上限の10回を超えました");
-        const location = parseUrl(headers.location, url);
+        const location = parseUrl(locationHeader, url);
         redirects.push({ status, location: location.href });
         if (!args.json) io.out(`${status} ${url.href} -> ${location.href}\n`);
         if ([301, 302, 303].includes(status)) method = "GET";

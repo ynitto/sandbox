@@ -15,11 +15,17 @@ function readCertificate(host, port) {
     const socket = tls.connect({
       host, port, servername: isIP(host) ? undefined : host, rejectUnauthorized: false,
     });
+    const onClose = () => reject(new Error("証明書を取得する前に接続が閉じました"));
     socket.once("error", reject);
-    socket.once("close", () => reject(new Error("証明書を取得する前に接続が閉じました")));
+    socket.once("close", onClose);
     socket.setTimeout(10000, () => socket.destroy(new Error("TLS 接続がタイムアウトしました")));
     socket.once("secureConnect", () => {
-      resolve(socket.getPeerCertificate());
+      socket.off("close", onClose);
+      resolve({
+        cert: socket.getPeerCertificate(),
+        authorized: socket.authorized,
+        authorizationError: socket.authorized ? null : String(socket.authorizationError ?? "不明な検証エラー"),
+      });
       socket.destroy();
     });
   });
@@ -33,16 +39,22 @@ async function run(argv, io) {
   parser.addFlag("--json", { help: "JSON 形式で出力する" });
   const args = parser.parse(argv);
   if (!args.host.trim()) throw new UsageError("ホストを指定してください");
+  const host = args.host.replace(/^\[(.*)\]$/, "$1");
 
   let result;
   try {
-    const { subject, issuer, valid_from, valid_to, subjectaltname } = await readCertificate(args.host, args.port);
+    const { cert, authorized, authorizationError } = await readCertificate(host, args.port);
+    const { subject, issuer, valid_from, valid_to, subjectaltname } = cert;
     const expiry = Date.parse(valid_to);
     if (!Number.isFinite(expiry)) throw new Error("証明書の有効期限を取得できません");
     const days_remaining = Math.floor((expiry - Date.now()) / 86400000);
-    result = { subject, issuer, valid_from, valid_to, days_remaining, subjectaltname: subjectaltname ?? null };
+    result = {
+      subject, issuer, valid_from, valid_to, days_remaining,
+      subjectaltname: subjectaltname ?? null,
+      authorized, authorization_error: authorizationError,
+    };
   } catch (error) {
-    io.err(`TLS 証明書を取得できません (${args.host}:${args.port}): ${error.message}\n`);
+    io.err(`TLS 証明書を取得できません (${host}:${args.port}): ${error.message}\n`);
     return 1;
   }
 

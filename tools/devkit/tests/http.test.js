@@ -79,3 +79,30 @@ test("http reports connection failures, timeouts, and redirect loops", async (t)
 test("http rejects invalid URLs and unsupported schemes", () => {
   for (const url of ["broken", "ftp://example.test"]) assert.equal(runCli(["http", url]).status, 2);
 });
+
+test("http exits 0 for a 404 response (only connection errors exit 1)", async (t) => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(404);
+    res.end();
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const result = await runCliAsync(["http", "http://127.0.0.1:" + port + "/missing"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^404 /);
+});
+
+test("http uses https and reports certificate errors for untrusted servers", async (t) => {
+  const { readFileSync } = require("node:fs");
+  const { join } = require("node:path");
+  const tls = require("node:tls");
+  const server = tls.createServer({
+    cert: readFileSync(join(__dirname, "fixtures", "cert.pem")),
+    key: readFileSync(join(__dirname, "fixtures", "key.pem")),
+  }, (socket) => socket.end());
+  const port = await listen(server);
+  t.after(() => close(server));
+  const result = await runCliAsync(["http", "https://127.0.0.1:" + port + "/"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /certificate|証明書/i);
+});

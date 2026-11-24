@@ -165,6 +165,6 @@ module.exports = {
   name: "env",
   help: ".env ファイル同士を比較する（値は既定で隠す）",
   usage: "devkit env [--show-values] [--json] ファイルA ファイルB",
-  example: "devkit env <(printf 'APP=demo\\n') <(printf 'APP=demo\\n')",
+  example: "devkit env .env .env.example",
   run,
 };

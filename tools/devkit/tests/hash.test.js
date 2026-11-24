@@ -20,5 +20,8 @@ test("hash reports mismatches and rejects unsupported algorithms", () => {
   const mismatch = runCli(["hash", "--check", "00", "--json", "abc"]);
   assert.equal(mismatch.status, 1);
   assert.equal(JSON.parse(mismatch.stdout).match, false);
+  const textMismatch = runCli(["hash", "--check", "00", "abc"]);
+  assert.equal(textMismatch.status, 1);
+  assert.equal(textMismatch.stdout, "一致しませんでした\n");
   assert.equal(runCli(["hash", "--algo", "unknown", "abc"]).status, 2);
 });
