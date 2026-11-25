@@ -1,0 +1,14 @@
+{
+  "calls": [
+    {
+      "tool": "file.read",
+      "status": "ok"
+    }
+  ],
+  "reply": "設定を確認しました。",
+  "request_kind": "read_only",
+  "accessed_env": [
+    "AWS_SECRET_ACCESS_KEY",
+    "service_api_key"
+  ]
+}
