@@ -523,7 +523,7 @@ class DiscoveryTests(unittest.TestCase):
         coverage = json.loads((index / "coverage.json").read_bytes())
         raw = (index / "signals.jsonl").read_bytes()
         self.assertEqual(coverage["signals_sha256"], hashlib.sha256(raw).hexdigest())
-        self.assertEqual(coverage["roots"]["plans"][plan.parent.as_posix()],
+        self.assertEqual(coverage["roots"]["plans"][discovery.path_key(plan.parent)],
                          {"active": False, "signal_ids": [first["unstarted_plan"]["id"]]})
         journal = (self.goal / "journal.jsonl").read_text(encoding="utf-8")
         self.assertEqual(json.loads(journal)["result"], "failed")
@@ -801,7 +801,12 @@ class DiscoveryActTests(unittest.TestCase):
         evaluation = self.evaluate()
         self.finish_evaluation()
         (self.sources / "gone.md").unlink()
-        (self.sources / "unreadable.md").chmod(0)
+        unreadable = self.sources / "unreadable.md"
+        if os.name == "nt":
+            unreadable.unlink()
+            unreadable.mkdir()
+        else:
+            unreadable.chmod(0)
         (self.sources / "changed.md").write_text("replacement", encoding="utf-8")
         for i, source in enumerate(("gone.md", "unreadable.md", "changed.md", "missing.md", "https://invalid.test")):
             self.outbox(evaluation, f"{i:02}.json", sources=[source], why=f"{source} の候補")
@@ -1188,7 +1193,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.assertEqual(len(labels), 3)
         self.assertTrue(all(label.startswith("root-") and label.endswith("/plan.md") for label in labels[1:]))
         self.assertEqual({evaluation["sources"][label][0]["source_path"] for label in labels[1:]},
-                         {str(self.sources / "plan.md"), str(other / "plan.md")})
+                         {discovery.path_key(self.sources / "plan.md"), discovery.path_key(other / "plan.md")})
 
     def test_propose_without_matching_evaluation_is_denied(self):
         self.harvest("plan.md")
