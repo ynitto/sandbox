@@ -1,4 +1,4 @@
-# 業務の見直しを週 1 回行う例（Windows）。目標と dot.py のパスを自分の場所に直す。
+# 業務の見直しを週 1 回行う例（Windows）。目標と goalie.py のパスを自分の場所に直す。
 description: "目標「見積り」の業務の実行記録を見直す"
 schedule: "0 9 * * 1"
 type: graph
@@ -11,7 +11,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/agent-dots/dot.py"
+        - "C:/tools/goalie/goalie.py"
         - "review"
         - "--dir"
         - "${DOT}"

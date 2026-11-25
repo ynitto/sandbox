@@ -38,6 +38,18 @@ PRIVATE_NAME = re.compile(
     re.I,
 )
 SOURCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError)
+WORK = ".goalie"
+LEGACY_WORK = ".dot"
+WORK_NAMES = (WORK, LEGACY_WORK)
+
+
+def work_path(d: Path) -> Path:
+    """現行の作業フォルダを優先し、旧フォルダも読み取れるようにする。"""
+    current = d / WORK
+    legacy = d / LEGACY_WORK
+    if current.exists() or current.is_symlink():
+        return current
+    return legacy if legacy.exists() or legacy.is_symlink() else current
 
 
 def digest_module():
@@ -178,14 +190,14 @@ def _allowed(parts: tuple[str, ...], special: bool, skills: bool) -> bool:
         i = parts.index(".github")
         if parts[i + 1:i + 2] == ("skills",) and parts[-1] == "SKILL.md":
             return True
-    return special and hidden == [".dot"] and (
-        parts == (".dot", "routines-review.json")
-        or len(parts) == 4 and parts[:2] == (".dot", "runs") and parts[-1].endswith(".json")
+    return special and parts[0] in WORK_NAMES and hidden == [parts[0]] and (
+        parts[1:] == ("routines-review.json",)
+        or len(parts) == 4 and parts[1] == "runs" and parts[-1].endswith(".json")
     )
 
 
 def _is_output(path: Path) -> bool:
-    return any(part.name.lower() == "discovery" and part.parent.name.lower() == ".dot"
+    return any(part.name.lower() == "discovery" and part.parent.name.lower() in WORK_NAMES
                for part in (path, *path.parents))
 
 
@@ -411,7 +423,7 @@ def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
         if _optional(journal) and safe_file(root, journal):
             if raw := read_text(journal):
                 found.extend(_action_failures(journal, raw))
-        review = root / ".dot/routines-review.json"
+        review = work_path(root) / "routines-review.json"
         if _optional(review) and safe_file(root, review, special=True):
             if raw := read_text(review):
                 try:
@@ -430,7 +442,7 @@ def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
                             locations.append(label)
                 if locations:
                     found.append(candidate("routine_review", review, locations, f"要見直し {len(locations)} 件"))
-        runs = root / ".dot/runs"
+        runs = work_path(root) / "runs"
         grouped = defaultdict(list)
         if _optional(runs) and runs.resolve().is_relative_to(root.resolve()):
             for path in files(runs, (".json",)):
@@ -1278,8 +1290,9 @@ def harvest_sources(config: dict, now: dt.datetime, *, runner=None) -> tuple[dic
 
 
 def index_dir(goal: Path) -> Path:
-    folder = goal / ".dot/discovery"
-    if folder.resolve() != goal.resolve() / ".dot/discovery":
+    work = work_path(goal)
+    folder = work / "discovery"
+    if folder.resolve() != goal.resolve() / work.name / "discovery":
         raise ValueError("Discovery の索引フォルダは目標の配下に置いてください")
     return folder
 

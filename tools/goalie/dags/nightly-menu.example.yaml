@@ -1,5 +1,5 @@
 # Dagu のスケジュール時刻で毎晩 02:00 に起動する。
-# スクリプト・作業フォルダ・プロンプトのパスを自分の場所に直す。
+# nightly_menu.py と goalie.py・作業フォルダ・プロンプトのパスを自分の場所に直す。
 # C:/work/prompts は先に作成する。nightly-inputs の入力は作業フォルダ内に事前に用意する。
 # 下書きの出力先は各メニューの既定値。次回実行までに検収し、必要なファイルを保管する。
 # --timeout はアプリの自動実行間隔 + 作業時間より長くし、timeout_sec は --timeout より長くする。
@@ -14,7 +14,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "C:/tools/goalie/nightly_menu.py"
         - "generate"
         - "--menu"
         - "docs-followup"
@@ -31,7 +31,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"
@@ -53,7 +54,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "C:/tools/goalie/nightly_menu.py"
         - "generate"
         - "--menu"
         - "test-maintenance"
@@ -70,7 +71,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"
@@ -92,7 +94,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "C:/tools/goalie/nightly_menu.py"
         - "generate"
         - "--menu"
         - "changelog-draft"
@@ -109,7 +111,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"
@@ -131,7 +134,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/nightly_menu.py"
+        - "C:/tools/goalie/nightly_menu.py"
         - "generate"
         - "--menu"
         - "drift-scan"
@@ -148,7 +151,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"

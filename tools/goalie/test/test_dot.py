@@ -1,4 +1,4 @@
-"""dot.py の起こす判定（tick）・境界のゲート（act）・出来事の受け取り（event）を、アプリ役をテストが演じて確かめる。"""
+"""goalie.py の起こす判定（tick）・境界のゲート（act）・出来事の受け取り（event）を、アプリ役をテストが演じて確かめる。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import dot  # noqa: E402
+import goalie as dot  # noqa: E402
 
 T0 = 1_800_000_000.0
 
@@ -86,7 +86,7 @@ class DotTest(unittest.TestCase):
 
     def test_first_tick_wakes_and_writes_prompt(self):
         self.assertEqual(self.tick(), "wake: start")
-        prompt = (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        prompt = (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("目標「見積り」", prompt)
         self.assertIn("outbox/", prompt)
         self.assertIn("【見積り】", prompt)
@@ -140,7 +140,7 @@ class DotTest(unittest.TestCase):
         self.finish_first_wake()
         run("event", "--dir", str(self.d), "--text", "前提は B で")
         self.assertEqual(self.tick(T0 + 60), "wake: events")
-        self.assertIn("前提は B で", (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8"))
+        self.assertIn("前提は B で", (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8"))
         self.assertEqual(list((self.d / "inbox").iterdir()), [])
 
     def test_wait_then_due(self):

@@ -39,7 +39,7 @@ steps:
     output: CHANGE
   - name: event
     depends: [get]
-    preconditions:              # 新しく付いた、人が書いた、1 行目が【で始まるコメント（名前の照合は dot.py がする）
+    preconditions:              # 新しく付いた、人が書いた、1 行目が【で始まるコメント（名前の照合は goalie.py がする）
       - condition: "${CHANGE.kind}"
         expected: "appeared"
       - condition: "${CHANGE.record.system}"
@@ -53,7 +53,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/agent-dots/dot.py"
+        - "C:/tools/goalie/goalie.py"
         - "event"
         - "--root"
         - "${DOTS}"

@@ -1,7 +1,7 @@
 # 目標 1 つを裏で進める例（Windows）。目標ごとに 1 つ置き、名前と DOT のパスを変える。
 # 起こす理由（始め・ハブの issue からの返事・決めた時刻）が無い回は tick が何も出さず、ask をスキップして act に進む。
-#   tick     起こすかを決め、起こすなら依頼文を .dot/prompt.md に書く
-#   ask      Copilot のデスクトップアプリに依頼を渡し、終わるまで待つ（copilot-app-jobs）
+#   tick     起こすかを決め、起こすなら依頼文を .goalie/prompt.md に書く
+#   ask      Copilot のデスクトップアプリに依頼を渡し、終わるまで待つ（goalie job）
 #   act      アプリが outbox に書いた提案を、policy.json の境界と照らして片付け、承認されたコマンドを動かす。ハブに送る文があれば、そのファイルのパスを出す
 #   compose  送る文をコメントの JSON にする（gitlab-issue-hub-agent）
 #   comment  ハブの issue にコメントする。GitLab がこの issue を見ている人へメールで知らせる
@@ -24,7 +24,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/agent-dots/dot.py"
+        - "C:/tools/goalie/goalie.py"
         - "tick"
         - "--dir"
         - "${DOT}"
@@ -46,14 +46,15 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "${DOT}"
         - "--prompt-file"
-        - "${DOT}/.dot/prompt.md"
+        - "${DOT}/.goalie/prompt.md"
         - "--name"
-        - "dot"
+        - "goalie"
         - "--timeout"
         - "5400"
     timeout_sec: 5700
@@ -63,7 +64,7 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/agent-dots/dot.py"
+        - "C:/tools/goalie/goalie.py"
         - "act"
         - "--dir"
         - "${DOT}"
@@ -88,7 +89,7 @@ steps:
         - "note"
         - "--text-file=${COMMENT_FILE}"
         - "--out"
-        - "${DOT}/.dot/hub-comment.json"
+        - "${DOT}/.goalie/hub-comment.json"
     timeout_sec: 60
     output: NOTE
   - name: comment
@@ -113,7 +114,7 @@ steps:
         - "--source"
         - "gitlab-hub-notes"
         - "--json-file"
-        - "${DOT}/.dot/hub-comment.json"
+        - "${DOT}/.goalie/hub-comment.json"
     timeout_sec: 120
     retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
       limit: 3

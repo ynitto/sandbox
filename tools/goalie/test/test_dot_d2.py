@@ -13,7 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import dot  # noqa: E402
+import goalie as dot  # noqa: E402
 
 T0 = 1_800_000_000.0
 JOB = '"C:\\Python\\python.exe" "C:\\tools\\copilot-app-jobs\\copilot_app_job.py" done --dir "C:\\work\\dots\\x" --id 1 --status ok'
@@ -78,7 +78,7 @@ class ProactiveTest(Base):
     def test_wakes_after_idle_with_budget(self):
         self.assertEqual(self.tick(T0 + 1800), "")             # まだ 1 時間たっていない
         self.assertEqual(self.tick(T0 + 3601), "wake: proactive")
-        prompt = (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        prompt = (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("今回は調べものの回", prompt)
         self.propose({"kind": "note", "body": "仕様書の 3 章に前提がある"})
         self.act(T0 + 3601)
@@ -143,10 +143,26 @@ class HookTest(Base):
         self.assertIsNone(self.hook("edit", {"path": str(self.d / "goal.md"), "old_str": "a", "new_str": "b"}))
         self.assertIn("外には書けません", self.hook("create", {"path": str(self.root / "x.md"), "file_text": "x"}))
         self.assertIn("外には書けません", self.hook("create", {"path": "../x.md", "file_text": "x"}))
-        for protected in ("policy.json", "state.json", "journal.jsonl", ".dot/prompt.md",
+        for protected in ("policy.json", "state.json", "journal.jsonl", ".dot/prompt.md", ".goalie/prompt.md",
                           ".github/hooks/agent-dots.json", ".copilot-jobs/pending/a.md"):
             self.assertIn("変えられません", self.hook("edit", {"path": protected, "new_str": "x"}), protected)
         self.assertIsNone(self.hook("create", {"path": ".copilot-jobs/tmp/1.report.md", "file_text": "ok"}))
+
+    def test_shell_allows_new_job_entry_points(self):
+        for command in (
+            r'"C:\Python\python.exe" "C:\tools\goalie\runner.py" done --dir "C:\work\dots\x" --id 1 --status ok',
+            r'"C:\Python\python.exe" "C:\tools\goalie\goalie.py" job next --dir "C:\work\dots\x"',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.hook("powershell", {"command": command}))
+
+    def test_shell_rejects_job_script_name_suffixes(self):
+        for command in (
+            "python3 /x/evilrunner.py next --dir /w",
+            "python3 x/my_goalie.py job next --dir /w",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("許していません", self.hook("bash", {"command": command}))
 
     def test_str_replace_editor_and_patch(self):
         self.assertIsNone(self.hook("str_replace_editor", {"command": "view", "path": "goal.md"}))
@@ -212,7 +228,7 @@ class HookTest(Base):
         (self.d / "drafts").mkdir()
         code, out = run("hook", stdin=json.dumps(payload))
         self.assertIn("deny", out)
-        log = [json.loads(x) for x in (self.d / ".dot" / "hook.jsonl").read_text(encoding="utf-8").splitlines()]
+        log = [json.loads(x) for x in (self.d / ".goalie" / "hook.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertEqual((log[-1]["tool"], log[-1]["decision"]), ("bash", "deny"))
 
     def test_broken_state_denies(self):
@@ -222,16 +238,16 @@ class HookTest(Base):
     def test_hooks_files(self):
         code, out = run("hooks", "--dir", str(self.d), "--python", "C:/Python/python.exe")
         self.assertEqual(code, 0)
-        data = json.loads((self.d / ".github" / "hooks" / "agent-dots.json").read_text(encoding="utf-8"))
+        data = json.loads((self.d / ".github" / "hooks" / "goalie.json").read_text(encoding="utf-8"))
         entry = data["hooks"]["preToolUse"][0]
         self.assertEqual((data["version"], entry["type"]), (1, "command"))
         self.assertTrue(entry["powershell"].startswith("& 'C:/Python/python.exe' "))
         self.assertTrue(entry["powershell"].endswith(" hook"))
         plugin = self.root / "plugin"
         self.assertEqual(run("hooks", "--plugin", str(plugin))[0], 0)
-        self.assertTrue((plugin / "plugins" / "agent-dots" / "hooks.json").is_file())
+        self.assertTrue((plugin / "plugins" / "goalie" / "hooks.json").is_file())
         market = json.loads((plugin / ".github" / "plugin" / "marketplace.json").read_text(encoding="utf-8"))
-        self.assertEqual(market["plugins"][0]["source"], "./plugins/agent-dots")
+        self.assertEqual(market["plugins"][0]["source"], "./plugins/goalie")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import discovery
-import dot
+import goalie as dot
 
 
 NOW = dt.datetime(2026, 11, 24, 12, tzinfo=dt.timezone.utc)
@@ -165,7 +165,7 @@ class DiscoveryTests(unittest.TestCase):
                          {"agent_dots", "plans", "skill_feedback"})
         self.assertEqual(config["collectors"]["agent_dots"]["paths"], [self.goal])
         self.assertEqual(self.harvest()[0], 0)
-        self.assertFalse((self.goal / ".dot").exists())
+        self.assertFalse((self.goal / ".goalie").exists())
         for change in (None, {"enabled": 1}, {"proposals_per_day": True}, {"proposals_per_day": -1},
                        {"auto_execute": ["unknown"]}, {"require_approval": [False]},
                        {"collectors": {"unknown": {}}}, {"collectors": {"plans": {"paths": "./"}}},
@@ -478,7 +478,7 @@ class DiscoveryTests(unittest.TestCase):
         plan = self.write("plans/one.md", "状態: 未着手\n")
         self.policy({"agent_dots": {"paths": [".", "."]}, "plans": {"paths": ["../plans"]},
                      "skill_feedback": {"enabled": False}})
-        index = self.goal / ".dot/discovery"
+        index = self.goal / ".goalie/discovery"
         self.assertEqual(self.harvest()[0], 0)
         first = {row["kind"]: row for row in discovery.active_signals(self.goal)}
         expected = discovery.path_key(note) + "\0open_note"
@@ -545,7 +545,7 @@ class DiscoveryTests(unittest.TestCase):
 
         with patch.object(discovery, "harvest_sources", side_effect=changed):
             self.assertEqual(self.harvest()[0], 1)
-        self.assertFalse((self.goal / ".dot/discovery/signals.jsonl").exists())
+        self.assertFalse((self.goal / ".goalie/discovery/signals.jsonl").exists())
         self.policy({"skill_feedback": {"enabled": False}})
         with patch.object(dot, "locked", side_effect=dot.Busy):
             self.assertEqual(self.harvest()[0], 3)
@@ -602,7 +602,7 @@ class DiscoveryActTests(unittest.TestCase):
 
     def finish_evaluation(self, status="ok"):
         box = self.goal / dot.JOB_BOX
-        name = dt.datetime.fromtimestamp(self.ts + 1).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-dot.md"
+        name = dt.datetime.fromtimestamp(self.ts + 1).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-goalie.md"
         done = box / "done" / name
         done.parent.mkdir(parents=True, exist_ok=True)
         done.touch()
@@ -741,7 +741,7 @@ class DiscoveryActTests(unittest.TestCase):
         dot.write_json(self.goal / "outbox" / "note.json", {"kind": "note", "body": "通常回"})
         self.call("act")
         evaluation = self.evaluate()
-        prompt = (self.goal / ".dot/prompt.md").read_text(encoding="utf-8")
+        prompt = (self.goal / ".goalie/prompt.md").read_text(encoding="utf-8")
         self.assertIn("unstarted_plan / plan.md", prompt)
         self.assertIn("5 件まで", prompt)
         self.assertNotIn("evaluation_id", prompt)
@@ -794,7 +794,7 @@ class DiscoveryActTests(unittest.TestCase):
         rows = list(dot.json_lines(self.goal / "journal.jsonl"))
         self.assertEqual([row["result"] for row in rows if row["kind"] == "proposal"],
                          ["denied"] * 9 + ["accepted"])
-        self.assertEqual(len(list((self.goal / ".dot/outbox-done").glob("*.json"))), 10)
+        self.assertEqual(len(list((self.goal / ".goalie/outbox-done").glob("*.json"))), 10)
         proposal, = dot.proposal_queue(self.goal)
         self.assertEqual(proposal["status"], "pending")
         self.assertIsNone(proposal["decision"])
@@ -834,7 +834,7 @@ class DiscoveryActTests(unittest.TestCase):
         box = self.goal / dot.JOB_BOX
 
         def job_name(ts):
-            return dt.datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-dot"
+            return dt.datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-goalie"
 
         withdrawn = box / "tmp" / (job_name(self.ts + 1) + ".withdrawn.md")
         withdrawn.parent.mkdir(parents=True)
@@ -919,17 +919,41 @@ class DiscoveryActTests(unittest.TestCase):
             return dot.decide(self.goal, self.goal, {"toolName": name, "toolArgs": args}, state, policy)
 
         for name, args in (("view", {"path": str(self.sources / "plan.md")}), ("view", {"path": "goal.md"}),
-                           ("view", {"path": ".dot/discovery/evaluation.json"}), ("view", {"path": "."}),
+                           ("view", {"path": ".goalie/discovery/evaluation.json"}), ("view", {"path": "."}),
                            ("web_fetch", {"url": "https://example.test"}), ("write", {"path": "notes/log.md"}),
                            ("shell", {"command": "python -c pass"})):
             with self.subTest(name=name, args=args):
                 self.assertIsNotNone(decide(name, **args))
         self.assertIsNone(decide("write", path="outbox/01.json"))
-        self.assertIsNone(decide("view", path=".dot/prompt.md"))
-        script = Path(dot.__file__).resolve().parent.parent / "copilot-app-jobs" / "copilot_app_job.py"
+        self.assertIsNone(decide("view", path=".goalie/prompt.md"))
+        script = Path(dot.__file__).resolve().parent / "runner.py"
         command = f'python "{script}" next --dir "{self.goal}"'
         self.assertIsNone(decide("shell", command=command))
         self.assertIsNotNone(decide("shell", command=command + ' --box "/outside"'))
+        running = self.goal / dot.JOB_BOX / "running"
+        running.mkdir(parents=True)
+        for job_id in ("20261124-eval-dot", "20261124-eval-goalie"):
+            with self.subTest(job_id=job_id):
+                (running / f"{job_id}.md").touch()
+                command = f'python "{script}" done --dir "{self.goal}" --id {job_id} --status ok'
+                self.assertIsNone(decide("shell", command=command))
+
+    def test_evaluation_job_command_entry_points(self):
+        goalie = Path(dot.__file__).resolve()
+        runner = goalie.with_name("runner.py")
+        job_id = "20261124-eval-goalie"
+        running = self.goal / dot.JOB_BOX / "running"
+        running.mkdir(parents=True)
+        (running / f"{job_id}.md").touch()
+        args = f'--dir "{self.goal}"'
+        for command, allowed in (
+            (f'python "{goalie}" job next {args}', True),
+            (f'python "{goalie}" job done {args} --id {job_id} --status ok', True),
+            (f'python "{goalie}" next {args}', False),
+            (f'python "{runner}" job next {args}', False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(dot.evaluation_job_command(self.goal, self.goal, command, {}), allowed)
 
     def test_decision_goal_retry_and_results(self):
         self.harvest("yes.md", "no.md")

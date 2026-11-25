@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import dot  # noqa: E402
+import goalie as dot  # noqa: E402
 
 T0 = 1_800_000_000.0
 
@@ -178,7 +178,7 @@ class D1Test(unittest.TestCase):
         self.act()
         run("event", "--dir", str(self.d), "--text", "続けて")
         self.tick(T0 + 60)
-        prompt = (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        prompt = (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("publish: 下書きを共有に置く（利用者が承認してから動く", prompt)
         self.assertIn("lint: 検査（すぐ動く", prompt)
         self.assertNotIn("nuke", prompt)
@@ -203,7 +203,7 @@ class D1Test(unittest.TestCase):
         self.assertEqual(self.reply("【見積り】q1 B で"), "受けました: answer")
         self.assertIn("q1 への返事: B で（質問: 前提は A と B のどちらですか）", self.inbox()[-1])
         self.tick(T0 + 60)
-        prompt = (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        prompt = (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
         self.assertNotIn("返事を待っている質問", prompt)
         self.assertEqual(self.reply("【見積り】ついでに C も"), "受けました: event")
 
@@ -230,7 +230,7 @@ class D1Test(unittest.TestCase):
     # -- ロック
 
     def test_busy_lock_returns_3(self):
-        lock = self.d / ".dot" / "lock"
+        lock = self.d / ".goalie" / "lock"
         lock.write_text("", encoding="utf-8")
         with unittest.mock.patch.object(dot, "LOCK_WAIT_SEC", 0.3):
             code, _ = run("event", "--dir", str(self.d), "--text", "x")
@@ -238,7 +238,7 @@ class D1Test(unittest.TestCase):
         self.assertEqual(self.inbox(), [])
 
     def test_stale_lock_is_taken(self):
-        lock = self.d / ".dot" / "lock"
+        lock = self.d / ".goalie" / "lock"
         lock.write_text("", encoding="utf-8")
         import os
         import time

@@ -21,7 +21,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import dot  # noqa: E402
+import goalie as dot  # noqa: E402
 import routines  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -129,7 +129,7 @@ class RoutineTest(unittest.TestCase):
         return out
 
     def prompt(self) -> str:
-        return (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        return (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
 
     def hook(self, name: str, args: dict) -> "str | None":
         payload = {"toolName": name, "toolArgs": json.dumps(args), "cwd": str(self.d)}
@@ -172,7 +172,7 @@ class RoutineTest(unittest.TestCase):
     def review(self):
         code, out = run("review", "--dir", str(self.d), "--now", str(self.at))
         self.assertEqual(code, 0)
-        report = json.loads((self.d / ".dot" / "routines-review.json").read_text(encoding="utf-8"))
+        report = json.loads((self.d / ".goalie" / "routines-review.json").read_text(encoding="utf-8"))
         self.assertEqual(report["reviewed_at"], self.at)
         self.assertIn(f"要見直し {sum(f['action'] == 'needs_review' for f in report['findings'])} 件", out)
         return report["findings"]
@@ -232,7 +232,7 @@ class RoutineTest(unittest.TestCase):
     def test_review_contradiction_and_orphan(self):
         first = self.run_existing()
         self.finish(first, ok=False, final="send")
-        folder = self.d / ".dot" / "runs"
+        folder = self.d / ".goalie" / "runs"
         job = {"name": "monthly-report", "id": "r80", "mode": "run",
                "path": str(self.source / "monthly-report"), "inputs": {"month": "2026-10"}}
         routines.record_run(self.d, job, {"ok": True}, self.at)
@@ -314,7 +314,7 @@ class RoutineTest(unittest.TestCase):
     def test_review_stale_draft_unfinished_trial(self):
         self.create_and_trial()
         draft = Path(self.job()["path"])
-        folder = self.d / ".dot" / "runs" / "weekly-digest"
+        folder = self.d / ".goalie" / "runs" / "weekly-digest"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "r90.json").write_text(json.dumps(
             {"id": "r90", "machine": "weekly-digest", "mode": "trial", "path": str(draft),
@@ -364,7 +364,7 @@ class RoutineTest(unittest.TestCase):
         again = self.review()
         self.assertEqual(again[0]["first_seen"], self.at - 3600)
 
-        path = self.d / ".dot" / routines.REVIEW
+        path = self.d / ".goalie" / routines.REVIEW
         report = json.loads(path.read_text(encoding="utf-8"))
         del report["findings"][0]["first_seen"]
         path.write_text(json.dumps(report), encoding="utf-8")
@@ -381,7 +381,7 @@ class RoutineTest(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
         self.assertIn("業務の見直し", err.getvalue())
         self.assertIn("skills_dirs", err.getvalue())
-        self.assertFalse((self.d / ".dot" / "routines-review.json").exists())
+        self.assertFalse((self.d / ".goalie" / "routines-review.json").exists())
 
     # -- 手持ちのものを使う
 
@@ -406,7 +406,7 @@ class RoutineTest(unittest.TestCase):
         self.assertIn(f"業務 {rid}（monthly-report）: できました", text)
         rec = self.registry()["monthly-report"]
         self.assertEqual((rec["status"], rec["runs"], rec["ok"]), ("ready", 1, 1))
-        record = json.loads((self.d / ".dot" / "runs" / "monthly-report" / f"{rid}.json").read_text(encoding="utf-8"))
+        record = json.loads((self.d / ".goalie" / "runs" / "monthly-report" / f"{rid}.json").read_text(encoding="utf-8"))
         self.assertEqual(record["inputs"], {"month": "2026-10"})
         self.assertIsNone(self.state()["routine"])
         # 2 回目は聞かずに始まる
@@ -609,7 +609,7 @@ class RoutineTest(unittest.TestCase):
         self.assertIn("monthly-report（unapproved・版 0・未実行）", out)
 
     def test_status_ignores_broken_review_report(self):
-        path = self.d / ".dot" / routines.REVIEW
+        path = self.d / ".goalie" / routines.REVIEW
         for content in ("{壊れた", '{"reviewed_at": 1}', '{"reviewed_at": 1, "findings": [null]}',
                         '{"reviewed_at": 1e99, "findings": []}'):
             with self.subTest(content=content):
