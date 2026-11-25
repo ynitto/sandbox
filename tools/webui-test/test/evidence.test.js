@@ -71,3 +71,16 @@ test('evidence: 落ちたケースに理由と失敗時の画面を書く', (t) 
   assert.equal(passed.error, undefined);
   assert.equal(passed.path, undefined);
 });
+
+test('evidence: 破損した items から最新の結果を書き直せる', (t) => {
+  const root = tmpDir(t);
+  const evidenceFile = path.join(root, 'latest.json');
+  const outDir = path.join(root, 'run');
+  const file = path.join(root, 'login.yaml');
+  const report = { suites: [{ suite: 'ログイン', file, cases: [{ id: 'S-01', title: '成功', status: 'passed' }] }] };
+  for (const previous of [{ items: {} }, { items: [null] }]) {
+    fs.writeFileSync(evidenceFile, JSON.stringify(previous));
+    writeEvidence(report, [], { root, outDir, evidenceFile });
+    assert.deepEqual(JSON.parse(fs.readFileSync(evidenceFile, 'utf8')).items.map((i) => i.id), ['login/S-01']);
+  }
+});

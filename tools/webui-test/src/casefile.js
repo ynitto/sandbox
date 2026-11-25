@@ -184,6 +184,7 @@ function checkStep(step, where, errors) {
       unknownKeys(v, ['name', 'fullPage', 'target', 'path', 'mask'], w, errors);
       if (typeof v.name !== 'string' || !v.name) errors.push(`${w}: name が要ります`);
       if (v.fullPage !== undefined && typeof v.fullPage !== 'boolean') errors.push(`${w}.fullPage: true か false で書きます`);
+      if (v.path !== undefined && (typeof v.path !== 'string' || !v.path.trim())) errors.push(`${w}.path: 出力先を空でない文字列で書きます`);
       if (v.target !== undefined) checkTarget(v.target, `${w}.target`, errors);
       if (v.mask !== undefined) {
         if (!Array.isArray(v.mask)) errors.push(`${w}.mask: 対象の配列で書きます`);

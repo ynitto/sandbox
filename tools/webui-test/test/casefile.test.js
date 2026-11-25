@@ -40,3 +40,10 @@ test('ケースが無いと落とす', () => {
   assert.match(normalize({ suite: 'x' }).errors.join(), /cases/);
   assert.match(normalize([]).errors.join(), /トップレベル/);
 });
+
+test('screenshot.path は空でない文字列を要求する', () => {
+  for (const path of [true, 42, {}, ' ']) {
+    const { errors } = normalize({ cases: [{ id: 'S-01', title: '画面', steps: [{ screenshot: { name: '画面', path } }] }] });
+    assert.ok(errors.some((error) => error.includes('cases[0].steps[0].screenshot.path')));
+  }
+});
