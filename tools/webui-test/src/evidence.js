@@ -64,7 +64,10 @@ function writeEvidence(report, screens, { outDir, root, evidenceFile = path.reso
   const latest = evidenceFile;
   const latestDir = path.dirname(latest);
   let prev = [];
-  try { prev = JSON.parse(fs.readFileSync(latest, 'utf8')).items || []; } catch (_) { /* 初めて */ }
+  try {
+    const stored = JSON.parse(fs.readFileSync(latest, 'utf8'))?.items;
+    if (Array.isArray(stored)) prev = stored.filter((item) => typeof item?.file === 'string');
+  } catch (_) { /* 初めて */ }
   const ran = new Set(items.map((i) => i.file));
   const merged = [...prev.filter((i) => !ran.has(i.file)), ...items];
   fs.mkdirSync(latestDir, { recursive: true });

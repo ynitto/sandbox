@@ -120,3 +120,8 @@ test('validate: 誤りがあれば終了コード 2 で場所を示す', async (
   assert.strictEqual(r.code, 2);
   assert.match(r.err, /bad.yaml: cases\[0\]\.steps\[0\]: 知らないキー「clik」/);
 });
+
+test('レポートのディレクトリ名は出力先の親・自身を指さない', () => {
+  const { slug } = require('../src/runner');
+  for (const name of ['.', '..', ' .. ']) assert.equal(slug(name), 'x');
+});

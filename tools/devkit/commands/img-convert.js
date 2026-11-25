@@ -14,13 +14,14 @@ const example = "devkit img-convert photo.png --out photo.bmp";
 
 function grayscale(image, to) {
   const { data, width, height } = image;
-  const gray = to === "png" ? Buffer.allocUnsafe(width * height) : data;
+  const opaquePng = to === "png" && data.every((value, index) => index % 4 !== 3 || value === 255);
+  const gray = opaquePng ? Buffer.allocUnsafe(width * height) : data;
   for (let index = 0; index < data.length; index += 4) {
     const value = Math.round((299 * data[index] + 587 * data[index + 1] + 114 * data[index + 2]) / 1000);
-    if (to === "png") gray[index / 4] = value;
+    if (opaquePng) gray[index / 4] = value;
     else gray.fill(value, index, index + 3);
   }
-  return { width, height, data: gray, colorType: to === "png" ? 0 : 6 };
+  return { width, height, data: gray, colorType: opaquePng ? 0 : 6 };
 }
 
 function run(argv, io) {

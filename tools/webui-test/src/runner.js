@@ -16,7 +16,8 @@ function loadPlaywright() {
 }
 
 function slug(s) {
-  return String(s).trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'x';
+  const name = String(s).trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  return !name || name === '.' || name === '..' ? 'x' : name;
 }
 
 function resolveUrl(u, baseUrl) {

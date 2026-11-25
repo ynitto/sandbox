@@ -82,3 +82,13 @@ test("img-convert requires a supported input and output type", () => {
     assert.equal(runCliBuffer(["img-convert", ...options], { cwd }).status, 2);
   }
 });
+
+test("img-convert preserves transparency when converting PNG to grayscale", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "devkit-gray-alpha-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "gray.png");
+  convert("sample-palette.png", "--out", file, "--grayscale");
+  const { colorType, pixels } = readPng(readFileSync(file));
+  assert.equal(colorType, 6);
+  assert.deepEqual(pixels, [[76, 76, 76, 255, 150, 150, 150, 128], [29, 29, 29, 64, 255, 255, 255, 0]]);
+});

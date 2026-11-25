@@ -414,12 +414,20 @@ def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
         review = root / ".dot/routines-review.json"
         if _optional(review) and safe_file(root, review, special=True):
             if raw := read_text(review):
+                try:
+                    report = json.loads(raw)
+                except ValueError:
+                    report = None
+                findings = report.get("findings") if isinstance(report, dict) else None
                 locations = []
-                for finding in json.loads(raw).get("findings", []):
-                    if finding.get("action") == "needs_review":
+                for finding in findings if isinstance(findings, list) else []:
+                    if isinstance(finding, dict) and finding.get("action") == "needs_review":
                         location = [_marker(finding.get(key)) for key in ("kind", "machine")]
-                        location.extend(_marker(run) for run in finding.get("runs", []))
-                        locations.append(" / ".join(filter(None, location)))
+                        run_ids = finding.get("runs")
+                        if isinstance(run_ids, list):
+                            location.extend(_marker(run) for run in run_ids)
+                        if label := " / ".join(filter(None, location)):
+                            locations.append(label)
                 if locations:
                     found.append(candidate("routine_review", review, locations, f"要見直し {len(locations)} 件"))
         runs = root / ".dot/runs"
@@ -1290,6 +1298,8 @@ def _decode_signals(raw: bytes) -> dict:
     for _, line in json_rows(raw.decode("utf-8"), True):
         if not isinstance(line, dict) or not isinstance(line.get("id"), str):
             raise ValueError("signals.jsonl の行形式が不正です")
+        line.setdefault("count", 1)
+        line.setdefault("last_seen", line.get("first_seen"))
         signals[line["id"]] = line
     return signals
 

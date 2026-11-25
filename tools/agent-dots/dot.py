@@ -1426,6 +1426,17 @@ def reconcile_discovery(d: Path, ts: float, auto_approved: set[str]) -> None:
             decision = proposal.get("decision") or {}
             if not isinstance(decision, dict):
                 continue
+            if status == "approved" and proposal.get("auto") and not proposal.get("registration") and not proposal.get("execution_ref"):
+                try:
+                    config = discovery.parse_policy(load_policy(d), d)
+                except discovery.SOURCE_ERRORS:
+                    continue
+                if (discovery.approval_requirement(config, proposal) is not None
+                        or discovery.auto_execute_match(config, proposal) != proposal["auto"]):
+                    proposal.update(status="pending", decision=None)
+                    del proposal["auto"]
+                    write_json(path, proposal)
+                    continue
             discovery_history(d, proposal, "decision", status, decision.get("reason", ""), ts)
             if status != "approved":
                 continue

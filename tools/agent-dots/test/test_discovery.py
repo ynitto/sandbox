@@ -84,6 +84,25 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(results, discovery.semantic_search(reversed(rows), "daily report"))
         self.assertEqual(results[:1], discovery.semantic_search(rows, "daily report", limit=1))
 
+    def test_evaluation_reads_legacy_signal_without_count_or_last_seen(self):
+        source = self.write("plans/legacy.md", "# Source")
+        root = source.parent
+        config = discovery.parse_policy({"discovery": {"enabled": True, "collectors": {
+            "plans": {"paths": [str(root)]},
+        }}}, self.goal)
+        ident = discovery.signal_id(str(source), "plan")
+        signals = self.jsonl("goal/.dot/discovery/signals.jsonl", [{
+            "id": ident, "kind": "plan", "source_path": str(source), "summary": "legacy plan",
+            "locations": [], "first_seen": NOW.isoformat(),
+        }])
+        self.json("goal/.dot/discovery/coverage.json", {
+            "signals_sha256": hashlib.sha256(signals.read_bytes()).hexdigest(),
+            "roots": {"plans": {discovery.path_key(root): {"active": True, "signal_ids": [ident]}}},
+        })
+        prompt, mapping = discovery.evaluation_material(self.goal, config, set(), 5)
+        self.assertIn("plan / legacy.md /  / 1 / legacy plan", prompt)
+        self.assertEqual(mapping["legacy.md"][0]["signal_id"], ident)
+
     def test_evaluation_semantic_expansion_and_grouping_keep_individual_sources(self):
         primary_summary = "daily report totals dashboard"
         candidates = [
@@ -185,6 +204,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotIn("confidential-text", str(rows))
         note.write_text("- [x] completed", encoding="utf-8")
         self.assertNotIn("open_note", self.kinds(discovery.agent_dots, self.goal))
+
+    def test_broken_review_preserves_other_collected_signals(self):
+        self.write("goal/notes/today.md", "- [ ] open\n")
+        for report in ("{", "[]", '{"findings": null}'):
+            self.write("goal/.dot/routines-review.json", report)
+            self.assertEqual(self.kinds(discovery.agent_dots, self.goal), {"open_note"})
+        self.json("goal/.dot/routines-review.json", {"findings": [
+            None, {"action": "needs_review", "kind": "contradiction", "runs": None},
+        ]})
+        rows = discovery.agent_dots([self.goal], NOW)
+        self.assertEqual({row["kind"] for row in rows}, {"open_note", "routine_review"})
 
     def test_plans_require_an_explicit_current_state(self):
         for name, text in {
@@ -1138,6 +1168,7 @@ class DiscoveryPhase2Tests(unittest.TestCase):
     finish_evaluation = DiscoveryActTests.finish_evaluation
     outbox = DiscoveryActTests.outbox
     history = DiscoveryActTests.history
+    proposals = DiscoveryActTests.proposals
 
     def receive(self, *, size="small", risk="readonly", **settings):
         self.policy["discovery"].update(settings)
@@ -1174,6 +1205,18 @@ class DiscoveryPhase2Tests(unittest.TestCase):
         self.assertEqual(decision["proposal_id"], proposal["id"])
         self.assertEqual(decision["status"], "approved")
         self.assertEqual(decision["decision"], proposal["decision"])
+
+    def test_current_policy_can_require_manual_approval_before_registration(self):
+        proposal = self.receive(size="medium", auto_execute=["readonly"], require_approval=[])
+        self.policy["discovery"]["require_approval"] = ["medium以上"]
+        self.save_policy()
+        self.call("act")
+        queued, = dot.proposal_queue(self.goal)
+        self.assertEqual(queued["status"], "pending")
+        self.assertFalse((self.goals / proposal["id"]).exists())
+        self.assertEqual(self.proposals("approve", proposal["id"], "--reason", "確認済み")[0], 0)
+        self.call("act")
+        self.assertTrue((self.goals / proposal["id"] / "state.json").is_file())
 
     def test_small_local_write_is_approved(self):
         proposal = self.receive(risk="local-write", auto_execute=["small/local-write"])
