@@ -59,6 +59,83 @@ class DiscoveryTests(unittest.TestCase):
     def policy(self, collectors=None):
         return self.json("goal/policy.json", {"discovery": {"enabled": True, "collectors": collectors or {}}})
 
+    def test_semantic_tokens(self):
+        self.assertEqual(discovery._semantic_tokens("Build_42, 日次集計！あ ＡＢ１２"),
+                         ["build_42", "日次", "次集", "集計", "あ", "ａｂ", "ｂ１", "１２"])
+
+    def test_semantic_similarity(self):
+        first = "日次集計の設計に着手する"
+        rephrased = "日次集計の設計を始める"
+        unrelated = "庭の花に水をやる"
+        rows = [{"kind": "plan", "summary": summary, "locations": []}
+                for summary in (first, rephrased, unrelated)]
+        idf, _ = discovery.semantic_vectors(rows)
+        self.assertEqual(discovery.semantic_similarity(first, first, idf), 1.0)
+        unrelated_score = discovery.semantic_similarity(first, unrelated, idf)
+        self.assertLess(unrelated_score, 0.3)
+        self.assertGreater(discovery.semantic_similarity(first, rephrased, idf), unrelated_score)
+        self.assertEqual(discovery.semantic_vectors([]), ({}, []))
+
+    def test_semantic_search_orders_ties_and_excludes_zero_scores(self):
+        rows = [{"id": ident, "kind": "plan", "summary": summary, "locations": []}
+                for ident, summary in [("b", "daily report"), ("c", "garden flowers"), ("a", "daily report")]]
+        results = discovery.semantic_search(rows, "daily report")
+        self.assertEqual([row["id"] for row, _ in results], ["a", "b"])
+        self.assertEqual(results, discovery.semantic_search(reversed(rows), "daily report"))
+        self.assertEqual(results[:1], discovery.semantic_search(rows, "daily report", limit=1))
+
+    def test_evaluation_semantic_expansion_and_grouping_keep_individual_sources(self):
+        primary_summary = "daily report totals dashboard"
+        candidates = [
+            ("primary.md", "plan", primary_summary, ["report", "review"]),
+            *[(f"other{i}.md", "plan", f"topic{i}", []) for i in range(19)],
+        ]
+        extras = [
+            ("grouped.md", "review", primary_summary, ["report", "review"]),
+            ("related.md", "plan", "daily report totals invoice", ["report"]),
+            ("unrelated.md", "plan", "garden flowers", []),
+            ("missing.md", "plan", primary_summary, ["report", "review"]),
+        ]
+        root = self.root / "plans"
+        config = discovery.parse_policy({"discovery": {"enabled": True, "collectors": {
+            "plans": {"paths": [str(root)]},
+        }}}, self.goal)
+        rows = []
+        for name, kind, summary, locations in candidates + extras:
+            path = self.write(f"plans/{name}", "# Source")
+            rows.append({"kind": kind, "summary": summary, "locations": locations, "source_path": str(path)})
+
+        def merge(items, now):
+            ids = {discovery.signal_id(row["source_path"], row["kind"]) for row in items}
+            discovery.merge_index(self.goal, {"plans": {discovery.path_key(root): ids}}, items, now)
+
+        merge(rows[:20], NOW)
+        prompt, mapping = discovery.evaluation_material(self.goal, config, set(), 5)
+        ordered = sorted(rows[:20], key=lambda row: discovery.signal_id(row["source_path"], row["kind"]))
+        expected = [" / ".join((row["kind"], Path(row["source_path"]).name, ", ".join(row["locations"]),
+                                "1", row["summary"])) for row in ordered]
+        self.assertEqual(prompt, discovery.EVALUATION_PROMPT.format(signals="\n".join(expected), remaining=5))
+        self.assertEqual(list(mapping), [Path(row["source_path"]).name for row in ordered])
+
+        merge(rows, NOW + dt.timedelta(minutes=1))
+        (root / "missing.md").unlink()
+        material = discovery.evaluation_material(self.goal, config, set(), 5)
+        self.assertEqual(material, discovery.evaluation_material(self.goal, config, set(), 5))
+        prompt, mapping = material
+        self.assertIn(f"plan+review / primary.md + grouped.md / report, review / 3 / {primary_summary}\n", prompt)
+        self.assertIn("plan / related.md / report / 1 / daily report totals invoice\n", prompt)
+        self.assertEqual(set(mapping), {name for name, *_ in candidates + extras[:2]})
+        for label in ("primary.md", "grouped.md", "related.md"):
+            self.assertTrue(discovery.current_source(config, mapping[label][0], unchanged=True))
+
+        kept = {mapping[label][0]["signal_id"] for label in ("primary.md", "grouped.md")}
+        excluded = {row["id"] for row in discovery.active_signals(self.goal)} - kept
+        prompt, mapping = discovery.evaluation_material(self.goal, config, excluded, 5)
+        expected = (f"plan / primary.md / report, review / 2 / {primary_summary}\n"
+                    f"review / grouped.md / report, review / 1 / {primary_summary}")
+        self.assertEqual(prompt, discovery.EVALUATION_PROMPT.format(signals=expected, remaining=5))
+        self.assertEqual(list(mapping), ["primary.md", "grouped.md"])
+
     def test_defaults_and_invalid_policy(self):
         config = discovery.parse_policy({}, self.goal)
         self.assertFalse(config["enabled"])
@@ -461,7 +538,7 @@ class DiscoveryActTests(unittest.TestCase):
         dot.init_goal(self.goal, "goal", self.ts)
         self.folder = discovery.index_dir(self.goal)
         self.policy = {"proactive_per_day": 3, "proactive_idle_min": 0, "discovery": {
-            "enabled": True, "goal_root": str(self.goals), "auto_execute": ["readonly"],
+            "enabled": True, "goal_root": str(self.goals),
             "collectors": {"plans": {"paths": [str(self.sources)]}, "skill_feedback": {"enabled": False}},
         }}
         self.save_policy()
@@ -1049,6 +1126,98 @@ class DiscoveryActTests(unittest.TestCase):
         row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
         self.assertEqual(row["result"], "denied")
         self.assertEqual(row["why"], "対応する評価資料がありません")
+
+
+class DiscoveryPhase2Tests(unittest.TestCase):
+    setUp = DiscoveryActTests.setUp
+    save_policy = DiscoveryActTests.save_policy
+    idle = DiscoveryActTests.idle
+    call = DiscoveryActTests.call
+    harvest = DiscoveryActTests.harvest
+    evaluate = DiscoveryActTests.evaluate
+    finish_evaluation = DiscoveryActTests.finish_evaluation
+    outbox = DiscoveryActTests.outbox
+    history = DiscoveryActTests.history
+
+    def receive(self, *, size="small", risk="readonly", **settings):
+        self.policy["discovery"].update(settings)
+        self.save_policy()
+        self.harvest("plan.md")
+        evaluation = self.evaluate()
+        self.finish_evaluation()
+        self.outbox(evaluation, size=size, risk=risk)
+        self.call("act")
+        proposal, = dot.proposal_queue(self.goal)
+        return proposal
+
+    def receipts(self):
+        return [row for row in dot.json_lines(self.goal / "journal.jsonl") if row["kind"] == "proposal"]
+
+    def assert_pending(self, proposal):
+        self.assertEqual(proposal["status"], "pending")
+        self.assertIsNone(proposal["decision"])
+        self.assertNotIn("auto", self.receipts()[-1])
+
+    def test_readonly_is_approved_and_registered_by_next_act(self):
+        proposal = self.receive(auto_execute=["readonly"])
+        self.assertEqual(proposal["status"], "approved")
+        self.assertEqual(proposal["decision"]["by"], "policy")
+        self.assertEqual(proposal["decision"]["at"], dot.iso(self.ts))
+        self.assertIn("auto_execute", proposal["decision"]["reason"])
+        receipt, = self.receipts()
+        self.assertEqual(receipt["auto"], "readonly")
+        self.assertEqual(self.history(), [])
+
+        self.call("act")
+        self.assertTrue((self.goals / proposal["id"] / "state.json").is_file())
+        decision, = [row for row in self.history() if row["event"] == "decision"]
+        self.assertEqual(decision["proposal_id"], proposal["id"])
+        self.assertEqual(decision["status"], "approved")
+        self.assertEqual(decision["decision"], proposal["decision"])
+
+    def test_small_local_write_is_approved(self):
+        proposal = self.receive(risk="local-write", auto_execute=["small/local-write"])
+        self.assertEqual(proposal["status"], "approved")
+        self.assertEqual(self.receipts()[-1]["auto"], "small/local-write")
+
+    def test_medium_readonly_needs_approval(self):
+        self.assert_pending(self.receive(size="medium", auto_execute=["readonly"]))
+
+    def test_large_readonly_needs_approval(self):
+        self.assert_pending(self.receive(size="large", auto_execute=["readonly"]))
+
+    def test_small_external_stays_pending(self):
+        self.assert_pending(self.receive(risk="external", auto_execute=["readonly", "small/local-write"]))
+
+    def test_medium_local_write_does_not_match(self):
+        self.assert_pending(self.receive(size="medium", risk="local-write",
+                                         auto_execute=["small/local-write"], require_approval=[]))
+
+    def test_default_auto_execute_leaves_readonly_pending(self):
+        self.assert_pending(self.receive())
+
+    def test_medium_readonly_is_approved_without_approval_rules(self):
+        proposal = self.receive(size="medium", auto_execute=["readonly"], require_approval=[])
+        self.assertEqual(proposal["status"], "approved")
+
+    def test_auto_approval_consumes_daily_quota(self):
+        self.policy["discovery"].update(auto_execute=["readonly"], proposals_per_day=2)
+        self.save_policy()
+        self.harvest("a.md", "b.md")
+        evaluation = self.evaluate()
+        self.assertEqual(evaluation["remaining"], 2)
+        self.policy["discovery"]["proposals_per_day"] = 1
+        self.save_policy()
+        self.finish_evaluation()
+        self.outbox(evaluation, "01.json", sources=["a.md"], why="a.md の候補")
+        self.outbox(evaluation, "02.json", sources=["b.md"], why="b.md の候補")
+        self.call("act")
+
+        proposal, = dot.proposal_queue(self.goal)
+        self.assertEqual(proposal["status"], "approved")
+        first, second = self.receipts()
+        self.assertEqual((first["result"], first["auto"]), ("accepted", "readonly"))
+        self.assertEqual((second["result"], second["why"]), ("denied", "提案の受付枠を使い切りました"))
 
 
 if __name__ == "__main__":

@@ -146,6 +146,11 @@ Dagu（毎分）
 承認後の `act` が仕事を登録します。登録先の目標や業務係が既存のループで進め、結果は提案元の
 `.dot/discovery/history.jsonl` に残ります。
 
+Phase 2 の意味検索の第1段階では、標準ライブラリのみでローカル索引の候補間の TF-IDF
+コサイン類似度を計算します。出典を確認済みの候補が 20 件を超える場合、評価資料に関連候補を
+最大 10 件追加し、類似性の高い候補を同じ行にまとめます。提案の `sources` には各出典の表記を
+個別に指定します。sqlite-vec などのベクトル永続化は後段で扱います。
+
 ### 設定
 
 目標の `policy.json` に次のように設定します。既存の目標は `discovery` 節を省略できます。
@@ -174,7 +179,7 @@ Dagu（毎分）
 |---|---|---|
 | `enabled` | boolean、`false` | 収集、評価、新規提案の受付、承認済み提案の新規登録を有効にする。停止中もキューの表示と登録済みの仕事の結果照合はできる |
 | `proposals_per_day` | 0 以上の整数、`5` | 目標単位の 1 日の受付上限。0 で新規受付と評価を止める。提案を受け付けた日で数える |
-| `auto_execute` | 文字列配列、`[]` | Phase 2 の許可候補は `readonly` と `small/local-write`。前者はリスク、後者は規模とリスクの組で照合する。Phase 1 は全件を承認待ちにする |
+| `auto_execute` | 文字列配列、`[]` | Phase 2 で有効。許可条件は `readonly` と `small/local-write`。前者はリスク、後者は規模とリスクの組で照合する |
 | `require_approval` | 文字列配列、`["medium以上", "external"]` | `medium以上` は `medium` と `large`、`external` はリスク区分との一致。自動承認の条件より優先する |
 | `collectors.<名前>.enabled` | boolean、下表 | ソースごとの有効化。省略したコレクタにも下表の既定を適用 |
 | `collectors.<名前>.paths` | パスの文字列配列、下表 | コレクタが読めるルートまたはファイル。相対パスは目標フォルダ基準。実体に解決して範囲を検査する |
@@ -197,6 +202,12 @@ Dagu（毎分）
 `proactive_per_day` が既定の 0 なら収集だけが動きます。登録後の仕事には実行先の policy が適用されます。
 
 ### 収集と採否
+
+`require_approval` に該当せず `auto_execute` に一致する提案は、受付時に自動承認します。
+キューには `decision.by = "policy"` と承認理由が残り、journal には一致した条件が残ります。
+次の `act` が承認を履歴に記録して登録を進めます。自動承認の効力は登録までで、
+実行には登録先の既存 policy・フック・`done_check` が適用されます。
+自動承認された提案も `proposals_per_day` の受付枠を消費します。
 
 ```sh
 python dot.py harvest --dir C:/work/dots/estimate
