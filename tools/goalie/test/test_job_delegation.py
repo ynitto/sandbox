@@ -43,7 +43,7 @@ class JobDelegationTests(unittest.TestCase):
                         ("harvest",), ("proposals", "list")):
             with self.subTest(command=command):
                 result = self.call(GOALIE, *command, *args)
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 2)
                 self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", result.stderr)
                 self.assertEqual(result.stdout, "")
                 self.assertFalse(current.exists())
@@ -61,9 +61,19 @@ class JobDelegationTests(unittest.TestCase):
 
         result = self.call(GOALIE, "init", "--dir", str(self.goal))
 
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 2)
         self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", result.stderr)
         self.assertEqual(list(self.goal.iterdir()), [legacy])
+
+    def test_status_uses_current_work_directory_when_legacy_work_exists(self):
+        args = ("--dir", str(self.goal))
+        self.assert_ok(self.call(GOALIE, "init", *args, "--name", "current-goal"))
+        (self.goal / ".dot").mkdir()
+
+        result = self.call(GOALIE, "status", *args)
+
+        self.assert_ok(result)
+        self.assertIn("名前: current-goal", result.stdout)
 
     def test_job_delegates_status(self):
         args = ("status", "--dir", str(self.mailbox))

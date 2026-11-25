@@ -487,6 +487,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([row["source_path"] for row in discovery.active_signals(self.goal)],
                          [discovery.path_key(note)])
 
+        index = self.goal / ".goalie/discovery"
+        coverage = json.loads((index / "coverage.json").read_bytes())
+        roots = coverage["roots"]["goalie"]
+        self.assertEqual(roots[discovery.path_key(self.root / "legacy")],
+                         {"active": False, "signal_ids": []})
+        self.assertIs(roots[discovery.path_key(self.goal)]["active"], True)
+
     def test_index_merge_dedup_resolves_and_preserves_failed_coverage(self):
         note = self.write("goal/notes/today.md", "- [ ] one\n- [ ] two\n")
         plan = self.write("plans/one.md", "状態: 未着手\n")

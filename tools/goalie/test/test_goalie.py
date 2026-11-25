@@ -24,7 +24,7 @@ def run(*argv: str) -> "tuple[int, str]":
     return code, out.getvalue().strip()
 
 
-class GoalTest(unittest.TestCase):
+class GoalieTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
