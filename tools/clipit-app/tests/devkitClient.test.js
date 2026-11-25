@@ -11,8 +11,14 @@ test("loads the repository devkit API from the app directory", async () => {
   assert.equal(resolveDevkitDir(options), path.resolve(appDir, "../devkit"));
   const { listCommands, runCommand } = loadDevkit(options);
   const commands = listCommands();
-  assert.equal(commands.length, 20);
-  assert.ok(commands.some(({ name }) => name === "jwt"));
+  assert.equal(commands.length, 36);
+  const names = new Set(commands.map(({ name }) => name));
+  for (const name of [
+    "jwt", "img-info", "img-resize", "img-convert", "img-exif", "qr",
+    "color", "ulid", "b32", "mime", "serve", "diff", "case", "lines", "table", "yaml", "encode",
+  ]) {
+    assert.ok(names.has(name), name);
+  }
   for (const { name, example } of commands) {
     assert.equal(typeof example, "string", `${name} must have an example`);
     const invocation = `devkit ${name}`;
@@ -25,6 +31,14 @@ test("loads the repository devkit API from the app directory", async () => {
   const uuid = await runCommand("uuid", []);
   assert.equal(uuid.code, 0);
   assert.match(uuid.stdout.trim(), /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
+  const color = await runCommand("color", ["#ff0000"]);
+  assert.equal(color.code, 0, color.stderr);
+  assert.match(color.stdout, /hex: #ff0000/);
+  assert.match(color.stdout, /rgb: rgb\(255, 0, 0\)/);
+  const image = path.resolve(appDir, "../devkit/tests/fixtures/sample-rgba.png");
+  const info = await runCommand("img-info", [image]);
+  assert.equal(info.code, 0, info.stderr);
+  assert.match(info.stdout, /PNG/);
   assert.equal((await runCommand("unknown-clipit-test-command", [])).code, 2);
 });
 

@@ -1,8 +1,8 @@
 # devkit
 
-IT 系の小物 CLI 10本を、1つのコマンド `devkit` のサブコマンドに統合したツールキットです。
+IT 系の小物 CLI 36コマンドをまとめたツールキットです。
 Node.js の標準ライブラリだけで動作し、外部依存はありません。
-各コマンドは元の独立ツール（jwt-inspect、ip-calc など）の挙動・オプション・終了コードをそのまま再現しています。
+元の独立ツール（jwt-inspect、ip-calc など）を移植したコマンドも含みます。
 
 ## ローカルコマンドとして登録する
 
@@ -53,6 +53,22 @@ devkit <コマンド> --help   # 各コマンドの使い方
 | `http` | HTTP(S) 応答のステータス、所要時間、ヘッダを表示する | — |
 | `port` | 指定したホストの TCP ポートに接続できるかを調べる | — |
 | `cert` | TLS 証明書の発行先、発行者、有効期間、残り日数、SAN を表示する | — |
+| `img-info` | 画像の形式・寸法・ファイルサイズ・アスペクト比を表示する | — |
+| `img-resize` | PNG 画像を指定サイズにリサイズする | — |
+| `img-convert` | PNG と BMP を変換し、必要に応じてグレースケール化する | — |
+| `img-exif` | JPEG 画像の EXIF 撮影情報と GPS 座標を表示する | — |
+| `qr` | テキストから QR コードを SVG で生成する | — |
+| `color` | 色の表記変換・明度調整・混色・コントラスト比の計算を行う | — |
+| `ulid` | ULID を生成し、指定された ULID の生成時刻を表示する | — |
+| `b32` | Base32・Base58・16進数をエンコードまたはデコードする | — |
+| `mime` | ファイルの内容から MIME タイプを判定する | — |
+| `serve` | ディレクトリをローカルの静的 HTTP サーバーで配信する | — |
+| `diff` | 2つのファイルを行単位で比較し unified diff を表示する | — |
+| `case` | テキストを snake・camel などの表記に変換する | — |
+| `lines` | 行を重複除去・並べ替え・反転・シャッフルする | — |
+| `table` | CSV または TSV を Markdown・ASCII 表に整形する | — |
+| `yaml` | JSON と基本的な YAML を相互変換する | — |
+| `encode` | 文字エンコーディングと改行コードを判定・変換する | — |
 
 ## プログラムから使う（API）
 
@@ -486,6 +502,171 @@ TLS 証明書の発行先、発行者、有効期間、残り日数、SAN を表
 | `--port PORT` | 接続先ポート。既定は 443。 |
 | `--warn-days DAYS` | 残り日数の警告しきい値。既定は 30 日。 |
 | `--json` | 証明書情報を JSON で出力します。警告は標準エラーに出力します。 |
+
+### img-info
+
+```sh
+devkit img-info [--json] <ファイル>...
+devkit img-info photo.jpg
+```
+
+PNG、JPEG、GIF、WebP、BMP、SVG の形式・寸法・バイト数と、既約分数および小数のアスペクト比を表示します。
+`--json` はファイルごとの結果を配列で出力します。`aspect` は `ratio` と `decimal` を持ち、取得できない値は `null` になります。
+終了コードは全ファイルの形式を判定できれば 0、不明な形式があれば 1、読み込みや使用法のエラーは 2 です。
+
+### img-resize
+
+```sh
+devkit img-resize <入力.png> [--out 出力.png] [--width N] [--height N] [--scale F] [--keep-aspect] [--method nearest|bilinear]
+devkit img-resize photo.png --width 800 --out photo-small.png
+```
+
+幅または高さだけを指定すると縦横比を維持します。両方を指定した場合は指定寸法で出力し、`--keep-aspect` を付けると枠内に収めます。
+`--scale` は幅・高さ指定と排他的です。既定の補間方式は `bilinear`、`--out` 省略時の出力先は標準出力です。
+入力は非インターレースの 8/16 ビット PNG に対応します。終了コードは成功時 0、入力・出力・使用法のエラー時 2 です。
+
+### img-convert
+
+```sh
+devkit img-convert <入力> [--out 出力] [--to png|bmp] [--grayscale]
+devkit img-convert photo.png --out photo.bmp
+```
+
+PNG と BMP を変換します。変換先は `--to` を優先し、省略時は `--out` の拡張子で判定します。`--out` を省略すると標準出力に書き出します。
+非インターレースの 8/16 ビット PNG と無圧縮の 24/32 ビット BMP を読み込み、BMP は 32 ビットで出力します。
+`--grayscale` は BT.601 の輝度を使います。終了コードは成功時 0、入力・出力・使用法のエラー時 2 です。
+
+### img-exif
+
+```sh
+devkit img-exif [--json] <ファイル.jpg>
+devkit img-exif photo.jpg
+```
+
+JPEG の EXIF からメーカー、機種、向き、撮影日時、GPS 座標を取得します。存在する項目を表示し、`--json` で JSON に切り替えます。
+終了コードは成功時 0、EXIF がなければ 1、入力・使用法のエラー時 2 です。
+
+### qr
+
+```sh
+devkit qr [--level L|M|Q|H] [--out ファイル.svg] [--border N] [テキスト]
+devkit qr "HELLO WORLD" --out hello.svg
+```
+
+テキストからバージョン 1〜10 の QR コードを SVG で生成します。テキスト省略時は標準入力から読み込み、`--out` 省略時は標準出力に書き出します。
+誤り訂正レベルの既定値は M、余白の既定値は 4 モジュールです。終了コードは成功時 0、容量超過や入出力・使用法のエラー時 2 です。
+
+### color
+
+```sh
+devkit color [--json] [--lighten P] [--darken P] [--mix 色] [--contrast 色] <色>
+devkit color '#3b82f6' --contrast '#ffffff'
+```
+
+HEX、RGB、HSL、HSV を表示します。明度調整は HSL のポイント単位で指定でき、混色は RGB の平均を使います。コントラストは通常・大きなテキストの WCAG AA／AAA を判定します。半透明の背景色は白に重ねて計算します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### ulid
+
+```sh
+devkit ulid [--count N] [--time 時刻] [--json]
+devkit ulid <ULID> [--json]
+devkit ulid --count 3
+```
+
+48 ビットのミリ秒タイムスタンプと 80 ビットの暗号乱数から ULID を生成します。時刻は ISO 8601 またはミリ秒で指定でき、既存の ULID を渡すと UTC の生成時刻を表示します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### b32
+
+```sh
+devkit b32 [--decode] [--format base32|base58|hex] [--file FILE] [text]
+devkit b32 hello
+```
+
+Base32（既定）、Bitcoin Base58、16進数を相互変換します。入力の優先順は位置引数、`--file`、標準入力です。Base32 のデコードでは小文字とパディング省略を受理し、デコード結果はバイト列のまま出力します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### mime
+
+```sh
+devkit mime [--json] <ファイル>...
+devkit mime photo.png
+```
+
+ファイルの内容から画像、文書、圧縮形式、メディア、実行形式、空ファイルを判定します。テキストと JSON も識別し、不明なバイナリは `application/octet-stream` と表示します。`--json` はファイルごとの `file`、`mime`、`description` を配列で出力します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### serve
+
+```sh
+devkit serve [--port N] [--dir DIR]
+devkit serve --port 8000 --dir public
+```
+
+ディレクトリを localhost で配信します。既定はカレントディレクトリとポート 8000 です。`--port 0` は空きポートを割り当てます。GET／HEAD に対応し、ディレクトリは `index.html` または一覧を返します。配信ルート外のパスは HTTP 403 になります。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### diff
+
+```sh
+devkit diff [--context N] <ファイルA> <ファイルB>
+devkit diff old.txt new.txt
+```
+
+UTF-8 テキストを行単位で比較し、unified diff を出力します。`-` で標準入力を指定できます。`--context` は差分の前後に表示する不変行数で、既定は 3 です。
+終了コードは同一なら 0、差分があれば 1、入力・使用法のエラー時は 2 です。
+
+### case
+
+```sh
+devkit case [--to 形式] [テキスト]
+devkit case --to camel hello_world_example
+```
+
+区切り文字と大文字・小文字の境界から単語を切り出します。形式は snake、camel、pascal、kebab、upper-snake、lower、upper です。lower と upper は単語分割をせず、文字列全体をそのまま大小変換します（区切り文字は残ります）。形式を省略すると全形式を、テキストを省略すると標準入力の変換結果を表示します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### lines
+
+```sh
+devkit lines [--sort] [--numeric] [--uniq] [--count] [--reverse] [--shuffle] [ファイル]
+devkit lines --sort --uniq --count items.txt
+```
+
+ファイルまたは標準入力の行を、重複除去、ソート、反転の順に処理します。`--count` は出現回数を付けます（`--uniq` を暗に含みます）。`--numeric` は数値行、文字列行の順にそれぞれ安定ソートします（`--sort` を暗に含みます）。`--shuffle` は単独で指定し、暗号乱数で行を並べ替えます。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### table
+
+```sh
+devkit table [--format md|ascii] [--file FILE] [ファイル]
+devkit table --format ascii data.csv
+```
+
+CSV または TSV の先頭行をヘッダとし、Markdown 表（既定）または ASCII 表に整形します。ASCII 表では全角文字を 2 桁として幅を揃えます。ファイルは `--file` または位置引数で指定でき、省略時は標準入力を読みます。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### yaml
+
+```sh
+devkit yaml [--to json|yaml] [ファイル]
+devkit yaml config.yaml
+```
+
+JSON と基本的な YAML を相互変換します。既定では入力が JSON として読めれば YAML に変換します。`--to` で出力形式を指定できます。YAML のマップ、リスト、スカラー、引用符、コメント、簡易フロー記法に対応し、アンカー、エイリアス、ブロックスカラー、タグ、複数ドキュメントは行番号付きエラーになります。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
+
+### encode
+
+```sh
+devkit encode [--check] [--json] [--from ENC] [--to ENC] [--lf|--crlf|--cr] [--bom|--no-bom] [--out ファイル] [--in-place] [--backup] [ファイル]
+devkit encode --to sjis --crlf report.txt
+```
+
+utf8 / sjis / euc-jp / utf-16le / utf-16be / ascii と、LF / CRLF / CR の判定・変換に対応します。変換指定を省略するか `--check` を指定すると判定結果を表示し、`--json` で JSON に切り替えます。判定が曖昧な場合は `--from` で入力文字コードを指定できます。
+変換結果は既定で標準出力にバイト列として書き出します。`--out` で別ファイルに保存できます。`--in-place` はバックアップを作りません。`--backup` を併用すると元の内容を `<ファイル>.bak` に残せます。表現できない文字がある場合は、該当文字を報告します。
+終了コードは成功時 0、入力・使用法のエラー時 2 です。
 
 ## 新しいコマンドの追加方法
 
