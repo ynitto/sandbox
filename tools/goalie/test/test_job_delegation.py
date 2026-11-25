@@ -29,38 +29,41 @@ class JobDelegationTests(unittest.TestCase):
     def assert_ok(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_dot_only_directory_is_ignored(self):
+    def test_legacy_work_directory_requires_rename(self):
+        args = ("--dir", str(self.goal))
+        self.assert_ok(self.call(GOALIE, "init", *args))
+        current = self.goal / ".goalie"
         legacy = self.goal / ".dot"
-        legacy.mkdir(parents=True)
+        current.rename(legacy)
         report = legacy / "routines-review.json"
         body = json.dumps({"reviewed_at": 0, "findings": []})
         report.write_text(body, encoding="utf-8")
-        args = ("--dir", str(self.goal))
-        current = self.goal / ".goalie"
 
-        status = self.call(GOALIE, "status", *args)
-        self.assertNotEqual(status.returncode, 0)
-        self.assertIn("目標のフォルダではありません", status.stderr)
-        self.assertFalse(current.exists())
+        for command in (("init",), ("status",), ("event", "--text", "test"),
+                        ("harvest",), ("proposals", "list")):
+            with self.subTest(command=command):
+                result = self.call(GOALIE, *command, *args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse(current.exists())
 
-        self.assert_ok(self.call(GOALIE, "init", *args))
-        self.assertTrue(current.is_dir())
-        policy_path = self.goal / "policy.json"
-        policy = json.loads(policy_path.read_text(encoding="utf-8"))
-        policy["routines"] = {"skills_dirs": [str(self.root / "skills")]}
-        policy_path.write_text(json.dumps(policy), encoding="utf-8")
-        current.rmdir()
-        status = self.call(GOALIE, "status", *args)
-        self.assert_ok(status)
-        self.assertIn("業務の進行", status.stdout)
-        self.assertNotIn("要見直しなし", status.stdout)
-        self.assertFalse(current.exists())
-        self.assert_ok(self.call(GOALIE, "event", *args, "--text", "test"))
-
-        self.assertTrue(current.is_dir())
         self.assertEqual(list(legacy.iterdir()), [report])
         self.assertEqual(report.read_text(encoding="utf-8"), body)
-        self.assertFalse((current / report.name).exists())
+        legacy.rename(current)
+        self.assert_ok(self.call(GOALIE, "status", *args))
+        self.assert_ok(self.call(GOALIE, "event", *args, "--text", "test"))
+        self.assertEqual((current / report.name).read_text(encoding="utf-8"), body)
+
+    def test_init_does_not_modify_directory_with_only_legacy_work(self):
+        legacy = self.goal / ".dot"
+        legacy.mkdir(parents=True)
+
+        result = self.call(GOALIE, "init", "--dir", str(self.goal))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", result.stderr)
+        self.assertEqual(list(self.goal.iterdir()), [legacy])
 
     def test_job_delegates_status(self):
         args = ("status", "--dir", str(self.mailbox))

@@ -150,6 +150,7 @@ def append_journal(d: Path, entry: dict, ts: float) -> None:
 
 
 def load_state(d: Path) -> dict:
+    work_path(d)
     state = read_json(d / "state.json", None)
     if state is None:
         raise SystemExit(f"目標のフォルダではありません（state.json が無い）: {d}")
@@ -257,6 +258,7 @@ def next_id(state: dict, prefix: str) -> str:
 
 def cmd_init(a) -> int:
     d = Path(a.dir)
+    work_path(d)
     name = a.name or d.name
     if not NAME_RE.match(name):
         print(f"名前に空白と【】は使えません（40 文字まで）: {name}", file=sys.stderr)
@@ -271,8 +273,9 @@ def cmd_init(a) -> int:
 
 
 def init_goal(d: Path, name: str, ts: float, **extra) -> None:
-    for sub in ("inbox", "outbox", "notes", WORK):
-        (d / sub).mkdir(parents=True, exist_ok=True)
+    work = work_path(d)
+    for folder in (d / "inbox", d / "outbox", d / "notes", work):
+        folder.mkdir(parents=True, exist_ok=True)
     if not (d / "goal.md").exists():
         (d / "goal.md").write_text(GOAL_TEMPLATE.format(name=name), encoding="utf-8")
     if not (d / "policy.json").exists():
@@ -1837,6 +1840,7 @@ def cmd_harvest(a) -> int:
     ts = a.now if a.now is not None else now_ts()
     try:
         d = Path(a.dir).resolve()
+        work_path(d)
         now = dt.datetime.fromtimestamp(ts).astimezone()
         if not isinstance(read_json(d / "state.json", None), dict):
             raise discovery.DiscoveryConfigError(f"有効な state.json がありません: {d}")
@@ -1939,6 +1943,7 @@ def show_proposal(row: dict) -> None:
 def cmd_proposals(a) -> int:
     try:
         d = Path(a.dir).resolve()
+        work_path(d)
         if not a.dir.strip() or not isinstance(read_json(d / "state.json", None), dict):
             raise ValueError(f"有効な state.json がありません: {d}")
         desired = {"approve": "approved", "reject": "rejected"}.get(a.operation)
@@ -2114,6 +2119,9 @@ def main(argv: "list[str] | None" = None) -> int:
         return EXIT_USAGE
     try:
         return args.func(args)
+    except discovery.WorkDirMigrationError as e:
+        print(e, file=sys.stderr)
+        return EXIT_USAGE
     except Busy:
         print("ほかの処理が state.json を使っています。少し待ってやり直してください", file=sys.stderr)
         return EXIT_BUSY

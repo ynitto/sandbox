@@ -41,8 +41,15 @@ SOURCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, Runti
 WORK = ".goalie"
 
 
+class WorkDirMigrationError(ValueError):
+    pass
+
+
 def work_path(d: Path) -> Path:
-    return d / WORK
+    work = d / WORK
+    if (d / ".dot").is_dir() and not work.exists():
+        raise WorkDirMigrationError(f"{d}: .dot フォルダが残っています。.goalie に名前変更してください")
+    return work
 
 
 def digest_module():
@@ -404,6 +411,7 @@ def goalie(paths: list[Path], now: dt.datetime) -> list[dict]:
     for root in paths:
         if not stat.S_ISDIR(root.stat().st_mode):
             raise ValueError("目標フォルダが必要です")
+        work = work_path(root)
         notes = root / "notes"
         if _optional(notes) and notes.resolve().is_relative_to(root.resolve()):
             for path in files(notes, (".md", ".markdown", ".txt")):
@@ -416,7 +424,7 @@ def goalie(paths: list[Path], now: dt.datetime) -> list[dict]:
         if _optional(journal) and safe_file(root, journal):
             if raw := read_text(journal):
                 found.extend(_action_failures(journal, raw))
-        review = work_path(root) / "routines-review.json"
+        review = work / "routines-review.json"
         if _optional(review) and safe_file(root, review, special=True):
             if raw := read_text(review):
                 try:
@@ -435,7 +443,7 @@ def goalie(paths: list[Path], now: dt.datetime) -> list[dict]:
                             locations.append(label)
                 if locations:
                     found.append(candidate("routine_review", review, locations, f"要見直し {len(locations)} 件"))
-        runs = work_path(root) / "runs"
+        runs = work / "runs"
         grouped = defaultdict(list)
         if _optional(runs) and runs.resolve().is_relative_to(root.resolve()):
             for path in files(runs, (".json",)):
@@ -1183,6 +1191,8 @@ COLLECTORS = dict(zip(COLLECTOR_NAMES, (
 
 def _error_reason(exc: Exception) -> str:
     # 例外本文に含まれうるログや CLI 出力は記録しない。
+    if isinstance(exc, WorkDirMigrationError):
+        return str(exc)
     if isinstance(exc, subprocess.CalledProcessError):
         return f"コマンド異常終了 (exit {exc.returncode})"
     if isinstance(exc, subprocess.TimeoutExpired):

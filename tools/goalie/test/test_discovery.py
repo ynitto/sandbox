@@ -473,6 +473,20 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in active], [prior["one.md"]["id"]])
         self.assertEqual(active[0]["count"], 2)
 
+    def test_harvest_skips_legacy_work_directory_and_keeps_other_goals(self):
+        self.write("legacy/.dot/routines-review.json", "{}")
+        note = self.write("goal/notes/today.md", "- [ ] open")
+        self.policy({"goalie": {"paths": ["../legacy", "."]},
+                     "skill_feedback": {"enabled": False}})
+
+        code, err = self.harvest()
+
+        self.assertEqual(code, 1)
+        self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", err)
+        self.assertFalse((self.root / "legacy" / ".goalie").exists())
+        self.assertEqual([row["source_path"] for row in discovery.active_signals(self.goal)],
+                         [discovery.path_key(note)])
+
     def test_index_merge_dedup_resolves_and_preserves_failed_coverage(self):
         note = self.write("goal/notes/today.md", "- [ ] one\n- [ ] two\n")
         plan = self.write("plans/one.md", "状態: 未着手\n")
