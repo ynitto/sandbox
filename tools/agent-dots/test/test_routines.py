@@ -364,6 +364,15 @@ class RoutineTest(unittest.TestCase):
         again = self.review()
         self.assertEqual(again[0]["first_seen"], self.at - 3600)
 
+        path = self.d / ".dot" / routines.REVIEW
+        report = json.loads(path.read_text(encoding="utf-8"))
+        del report["findings"][0]["first_seen"]
+        path.write_text(json.dumps(report), encoding="utf-8")
+        self.assertEqual(self.review()[0]["first_seen"], self.at)
+
+        path.write_text("[]", encoding="utf-8")
+        self.assertEqual(self.review()[0]["first_seen"], self.at)
+
     def test_review_disabled(self):
         self.set_policy(routines={})
         out, err = io.StringIO(), io.StringIO()
@@ -600,11 +609,15 @@ class RoutineTest(unittest.TestCase):
         self.assertIn("monthly-report（unapproved・版 0・未実行）", out)
 
     def test_status_ignores_broken_review_report(self):
-        (self.d / ".dot" / "routines-review.json").write_text("{壊れた", encoding="utf-8")
-        code, out = run("status", "--dir", str(self.d))
-        self.assertEqual(code, 0)
-        self.assertIn("業務の進行: なし", out)
-        self.assertNotIn("見直し:", out)
+        path = self.d / ".dot" / routines.REVIEW
+        for content in ("{壊れた", '{"reviewed_at": 1}', '{"reviewed_at": 1, "findings": [null]}',
+                        '{"reviewed_at": 1e99, "findings": []}'):
+            with self.subTest(content=content):
+                path.write_text(content, encoding="utf-8")
+                code, out = run("status", "--dir", str(self.d))
+                self.assertEqual(code, 0)
+                self.assertIn("業務の進行: なし", out)
+                self.assertNotIn("見直し:", out)
 
 
 class HelperTest(unittest.TestCase):

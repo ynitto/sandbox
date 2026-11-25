@@ -733,10 +733,11 @@ def review_routines(d: Path, state: dict, policy: dict, ts: float) -> dict:
     previous = {}
     try:
         old = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
-        for f in old.get("findings") or []:
-            if f.get("action") == "needs_review":
-                previous[(f.get("kind"), f.get("machine"), tuple(f.get("runs") or []))] = f.get("first_seen")
-    except (OSError, ValueError, KeyError, TypeError):
+        for f in old["findings"]:
+            if (isinstance(f, dict) and f.get("action") == "needs_review"
+                    and type(f.get("first_seen")) in (int, float)):
+                previous[(f.get("kind"), f.get("machine"), tuple(f.get("runs") or []))] = f["first_seen"]
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         pass
     for f in findings:
         if f["action"] == "needs_review":
@@ -906,8 +907,11 @@ def status_lines(d: Path, state: dict, policy: dict) -> "list[str]":
     try:
         report = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
         reviewed_at = dt.datetime.fromtimestamp(report["reviewed_at"]).astimezone().isoformat(timespec="seconds")
-    except (OSError, ValueError, KeyError, TypeError):
+        findings = report["findings"]
+        if not isinstance(findings, list):
+            return out
+        count = sum(f["action"] == "needs_review" for f in findings)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return out                       # 見直しの報告が壊れていても、様子を見るだけは止めない
-    count = sum(f["action"] == "needs_review" for f in report["findings"])
     out.append(f"見直し: {reviewed_at}・" + (f"要見直し {count} 件" if count else "要見直しなし"))
     return out

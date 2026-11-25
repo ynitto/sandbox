@@ -3,6 +3,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const http = require("node:http");
+const { EventEmitter } = require("node:events");
+const { runCommand } = require("..");
 const { runCli, runCliAsync, listen, close } = require("./helpers");
 
 test("http reports the final response and discards the body", async (t) => {
@@ -52,6 +54,31 @@ test("http follows relative redirects and switches or preserves the method", asy
   assert.equal(preserved.status, 0, preserved.stderr);
   assert.ok(preserved.stdout.startsWith("307 " + base + "/start -> " + base + "/switch\n"));
   assert.deepEqual(methods, ["POST", "POST"]);
+});
+
+test("http preserves HEAD across redirects", async (t) => {
+  const methods = [];
+  const redirects = new Map([
+    ["/start", [301, "/second"]],
+    ["/second", [302, "/third"]],
+    ["/third", [303, "/final"]],
+  ]);
+  t.mock.method(http, "request", (url, { method }, onResponse) => {
+    methods.push(method);
+    const [statusCode, location] = redirects.get(url.pathname) ?? [200];
+    const response = Object.assign(new EventEmitter(), {
+      statusCode,
+      headers: { location },
+      resume() { this.emit("end"); },
+    });
+    const request = new EventEmitter();
+    request.end = () => onResponse(response);
+    return request;
+  });
+  const result = await runCommand("http", ["--method", "HEAD", "--json", "http://example.test/start"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).status, 200);
+  assert.deepEqual(methods, ["HEAD", "HEAD", "HEAD", "HEAD"]);
 });
 
 test("http reports connection failures, timeouts, and redirect loops", async (t) => {
