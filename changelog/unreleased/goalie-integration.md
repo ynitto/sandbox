@@ -1,4 +1,4 @@
 ### tools/goalie
 
-- 目標管理の agent-dots と受け箱の copilot-app-jobs を統合し、`goalie.py job` で runner を呼び出せるようにした。旧スクリプトのパスも互換 shim から利用できる。
-- 既存の目標の `.dot/` を初回の書き込み時に `.goalie/` へ移行する。DAG 例と新規フックの名前を goalie に更新した。
+- 目標管理と受け箱を goalie に統合し、旧パス `tools/agent-dots/` と `tools/copilot-app-jobs/` を廃止した。目標管理は `goalie.py`、受け箱は `goalie.py job` を使う。DAG 例と Teams ブリッジの提出先も更新した。
+- 既存の目標は `.dot/` を `.goalie/` に、フックの `.github/hooks/agent-dots.json` を `.github/hooks/goalie.json` に手動で名前変更する。フックや自動実行のコマンドも新しいパスに更新する。進行中の `-dot` 依頼は切り替え前に完了させるか、`--name goalie` で出し直す。

@@ -11,7 +11,7 @@
     outbox/          エージェントの提案（1 件 1 ファイルの JSON）
     notes/           エージェントの自分へのメモ（日ごと）
     journal.jsonl    やったこと・捨てたことの記録（追記のみ）
-    .goalie/            作業用（依頼文・送るコメント・取りかかり中の出来事・ロック。旧 .dot/ は移行対象）
+    .goalie/            作業用（依頼文・送るコメント・取りかかり中の出来事・ロック）
 
 コマンド:
     init    フォルダを作る
@@ -46,7 +46,7 @@ from pathlib import Path
 
 import discovery
 import routines
-from discovery import LEGACY_WORK, WORK, work_path
+from discovery import WORK, work_path
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -176,34 +176,16 @@ def sorted_files(folder: Path, suffix: str) -> "list[Path]":
     return sorted(p for p in folder.iterdir() if p.is_file() and p.name.endswith(suffix))
 
 
-def migrate_work(d: Path) -> None:
-    legacy = d / LEGACY_WORK
-    current = d / WORK
-    if legacy.is_dir() and not current.exists() and not current.is_symlink():
-        if legacy.is_symlink():
-            raise ValueError(f"作業フォルダにシンボリックリンクは使えません: {legacy}")
-        if (d / "journal.jsonl").is_symlink():
-            raise ValueError("journal.jsonl はシンボリックリンクです")
-        os.rename(legacy, current)
-        append_journal(d, {"kind": "migration", "result": "moved",
-                           "from": LEGACY_WORK, "to": WORK}, now_ts())
-
-
 @contextlib.contextmanager
 def locked(d: Path, wait: "float | None" = None):
     """state.json を読み書きする間だけ持つロック。返事の受け取りと片付けが重なっても壊さない。"""
     deadline = time.monotonic() + (LOCK_WAIT_SEC if wait is None else wait)
+    folder = work_path(d)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "lock"
     while True:
-        folder = work_path(d)
-        if folder.name == WORK:
-            folder.mkdir(parents=True, exist_ok=True)
-        path = folder / "lock"
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileNotFoundError:
-            if folder.name != LEGACY_WORK or not (d / WORK).is_dir():
-                raise
-            continue                         # 待っている間に作業フォルダが移行された
         except FileExistsError:
             try:
                 if time.time() - path.stat().st_mtime > LOCK_STALE_SEC:
@@ -215,13 +197,11 @@ def locked(d: Path, wait: "float | None" = None):
                 raise Busy()
             time.sleep(0.2)
         else:
-            os.close(fd)                     # Windows でもロックごとフォルダを移行できるようにする
+            os.close(fd)
             break
     try:
         yield
     finally:
-        if folder.name == LEGACY_WORK and not folder.exists():
-            path = d / WORK / "lock"
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
 
@@ -237,7 +217,7 @@ def put_event(d: Path, state: dict, event: dict, ts: float) -> Path:
 def routine_api(d: Path) -> dict:
     """routines.py が台帳の外（出来事・質問・承認の依頼）を触るときの口。"""
     def event(state: dict, text: str, ts: float, base: "dict | None" = None) -> None:
-        put_event(d, state, {**(base or {"from": "dot"}), "text": text}, ts)
+        put_event(d, state, {**(base or {"from": "goalie"}), "text": text}, ts)
 
     def question(state: dict, text: str, options: list, comments: list, ts: float) -> str:
         return add_question(state, text, options, comments, ts)
@@ -316,7 +296,7 @@ def init_goal(d: Path, name: str, ts: float, **extra) -> None:
 # ---------------------------------------------------------------- event
 
 
-def find_dot(root: Path, name: str) -> "Path | None":
+def find_goal(root: Path, name: str) -> "Path | None":
     if not root.is_dir():
         return None
     for child in sorted(root.iterdir()):
@@ -399,7 +379,7 @@ def cmd_event(a) -> int:
         if not hit:
             return EXIT_OK
         name, text = hit
-        d = Path(a.dir) if a.dir else find_dot(Path(a.root), name)
+        d = Path(a.dir) if a.dir else find_goal(Path(a.root), name)
         if d is None:
             return EXIT_OK                       # 知らない名前（ほかの用途のコメント）
         author = (record.get("author") or {}).get("username") or ""
@@ -409,7 +389,6 @@ def cmd_event(a) -> int:
                 return EXIT_OK
             if not text:
                 return EXIT_OK
-            migrate_work(d)
             result = take_reply(d, state, load_policy(d), author,
                                 text, {"from": "hub", "author": author, "id": record.get("id")}, ts)
             state["last_event_ts"] = ts
@@ -428,7 +407,6 @@ def cmd_event(a) -> int:
         print("出来事の本文が空です", file=sys.stderr)
         return EXIT_USAGE
     with locked(d):
-        migrate_work(d)
         state = load_state(d)
         path = put_event(d, state, {"from": a.source, "text": text.strip()}, ts)
         state["last_event_ts"] = ts
@@ -597,7 +575,6 @@ def cmd_tick(a) -> int:
     d = Path(a.dir)
     ts = a.now if a.now is not None else now_ts()
     with locked(d):
-        migrate_work(d)
         return _tick(d, ts)
 
 
@@ -851,7 +828,7 @@ def expire_approvals(d: Path, state: dict, policy: dict, ts: float) -> None:
     for entry in state["approvals"]:
         if entry.get("status") == "pending" and ts - float(entry.get("created_ts") or ts) > days * 86400:
             entry["status"] = "expired"
-            put_event(d, state, {"from": "dot", "text": f"{entry['id']}（{entry.get('summary', '')}）は返事が無いまま {days:g} 日たったので取り下げました"}, ts)
+            put_event(d, state, {"from": "goalie", "text": f"{entry['id']}（{entry.get('summary', '')}）は返事が無いまま {days:g} 日たったので取り下げました"}, ts)
             append_journal(d, {"kind": "approval", "id": entry["id"], "result": "expired"}, ts)
 
 
@@ -882,7 +859,6 @@ def cmd_act(a) -> int:
     comments: list[str] = []
     auto_approved: set[str] = set()
     with locked(d):
-        migrate_work(d)
         state = load_state(d)
         policy = load_policy(d)
         comment_file = d / WORK / "hub-comment.txt"
@@ -902,7 +878,7 @@ def cmd_act(a) -> int:
         for entry in state["approvals"]:
             if entry.get("status") == "running" and ts - float(entry.get("started_ts") or 0) > RUNNING_STALE_SEC:
                 entry["status"] = "failed"        # 前の act が実行の途中で止まった。二重に動かさないよう、やり直さない
-                put_event(d, state, {"from": "dot", "approval": entry["id"],
+                put_event(d, state, {"from": "goalie", "approval": entry["id"],
                                      "text": f"{entry['id']}（{entry.get('summary', '')}）は実行の途中で止まったようです。結果は分かりません"}, ts)
                 comments.append(f"{entry['id']}（{entry.get('summary', '')}）は実行の途中で止まったようです。結果を確かめてください")
                 append_journal(d, {"kind": "run", "id": entry["id"], "result": "lost"}, ts)
@@ -935,7 +911,7 @@ def cmd_act(a) -> int:
                 continue
             word = "動かしました" if ok else "失敗しました"
             tail = (res.get("output") or "").strip()
-            put_event(d, state, {"from": "dot", "approval": aid,
+            put_event(d, state, {"from": "goalie", "approval": aid,
                                  "text": f"{aid}（{entry.get('summary', '')}）を{word}（終了コード {res['code']}）\n{tail}"}, ts)
             if entry.get("decided_by") != "policy" or not ok:
                 comments.append(f"{aid}（{entry.get('summary', '')}）を{word}（終了コード {res['code']}）"
@@ -1301,7 +1277,6 @@ def register_discovery(plan: dict, proposal: dict, ts: float) -> dict:
                     p.name != "lock" for p in work.iterdir()
                 ):
                     raise ValueError("提案 ID の登録先に別の仕事があります")
-            migrate_work(target)
             if not marked:
                 write_json(target / WORK / "discovery-origin.json", pid)
             if not (target / "state.json").exists():
@@ -1314,7 +1289,6 @@ def register_discovery(plan: dict, proposal: dict, ts: float) -> dict:
                 init_goal(target, pid, ts, discovery_links={pid: details}, discovery_active=[pid])
             return dict(ref, goal=load_state(target)["name"])
 
-        migrate_work(target)
         state = load_state(target)
         ref["goal"] = state["name"]
         links = state.setdefault("discovery_links", {})
@@ -1526,16 +1500,13 @@ def reconcile_discovery(d: Path, ts: float, auto_approved: set[str]) -> None:
 # ---------------------------------------------------------------- hook（Copilot の preToolUse）
 
 HOOK_FILE = "goalie.json"
-LEGACY_HOOK_FILE = "agent-dots.json"
 
 
 def hook_path(d: Path) -> Path:
-    folder = d / ".github" / "hooks"
-    legacy = folder / LEGACY_HOOK_FILE
-    return legacy if legacy.exists() else folder / HOOK_FILE
+    return d / ".github" / "hooks" / HOOK_FILE
 
 
-PROTECTED = ("policy.json", "state.json", "journal.jsonl", WORK, LEGACY_WORK, ".github")
+PROTECTED = ("policy.json", "state.json", "journal.jsonl", WORK, ".github")
 JOB_TMP = (JOB_BOX, "tmp")                    # 受け箱のうち、エージェントが報告を書く場所
 PROACTIVE_WRITABLE = (("notes",), ("outbox",), JOB_TMP)
 ROUTINE_DIRS = (routines.DRAFTS, ".statemachine")   # 業務の下書きと登録先（作る・直す回の下書きのほかは書かせない）
@@ -1553,12 +1524,12 @@ SHELL_META = re.compile(r"[;|`<>\r\n]|&&|\$\(")
 JOB_COMMAND = re.compile(
     r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+(?P<quote>")?'
     r'(?:(?(quote)[^"]*|[^"\s]*)[\\/])?'
-    r'(?:(?:copilot_app_job|runner)\.py(?(quote)")\s+|goalie\.py(?(quote)")\s+job\s+)'
+    r'(?:runner\.py(?(quote)")\s+|goalie\.py(?(quote)")\s+job\s+)'
     r'(next|done|dispatched|finish)(\s|$)', re.I,
 )
 
 
-def find_dot_from(start: Path) -> "Path | None":
+def find_goal_from(start: Path) -> "Path | None":
     """start とその親から、目標のフォルダ（state.json と policy.json がある）を探す。"""
     try:
         here = start.resolve()
@@ -1669,7 +1640,7 @@ def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> 
         return False
     if action != "next":
         job = args.pop("--id", "")
-        if not re.fullmatch(r"[a-zA-Z0-9_.-]+-(?:dot|goalie)", job) or args.pop("--status", "") not in ("ok", "failed"):
+        if not re.fullmatch(r"[a-zA-Z0-9_.-]+-goalie", job) or args.pop("--status", "") not in ("ok", "failed"):
             return False
         if not any((d / JOB_BOX / state / f"{job}.md").is_file() for state in ("running", "dispatched", "done")):
             return False
@@ -1794,7 +1765,7 @@ def cmd_hook(a) -> int:
     except json.JSONDecodeError:
         payload = {}
     cwd = Path(str(payload.get("cwd") or os.getcwd()))
-    d = Path(a.dir) if a.dir else find_dot_from(cwd)
+    d = Path(a.dir) if a.dir else find_goal_from(cwd)
     if d is None:
         return EXIT_OK                            # 目標のフォルダの外のセッションには何もしない
     ts = now_ts()
@@ -1853,7 +1824,6 @@ def cmd_hooks(a) -> int:
     d = Path(a.dir)
     load_state(d)
     with locked(d):
-        migrate_work(d)
         path = hook_path(d)
         write_json(path, data)
     print(f"フックを置きました: {path}")
@@ -1885,7 +1855,6 @@ def cmd_harvest(a) -> int:
     try:
         discovery.index_dir(d)
         with locked(d):
-            migrate_work(d)
             try:
                 current = discovery.parse_policy(read_json(d / "policy.json", {}), d)
             except (OSError, ValueError, RuntimeError) as e:
@@ -1982,8 +1951,6 @@ def cmd_proposals(a) -> int:
     try:
         discovery.index_dir(d)
         with locked(d) if desired else contextlib.nullcontext():
-            if desired:
-                migrate_work(d)
             folder = discovery.index_dir(d) / "proposals"
             if folder.is_symlink():
                 raise ValueError("提案キューにシンボリックリンクは使えません")
@@ -2026,7 +1993,6 @@ def cmd_review(a) -> int:
     d = Path(a.dir)
     ts = a.now if a.now is not None else now_ts()
     with locked(d):
-        migrate_work(d)
         policy = load_policy(d)
         if not routines.enabled(policy):
             print("業務の見直しには policy.json の routines.skills_dirs の設定が必要です", file=sys.stderr)

@@ -4,7 +4,7 @@ schedule: "0 9 * * 1"
 type: graph
 hist_retention_days: 14
 env:
-  - DOT: "C:/work/dots/estimate"
+  - GOAL: "C:/work/goals/estimate"
 steps:
   - name: review
     action: exec
@@ -14,7 +14,7 @@ steps:
         - "C:/tools/goalie/goalie.py"
         - "review"
         - "--dir"
-        - "${DOT}"
+        - "${GOAL}"
     timeout_sec: 60
     retry_policy:              # ほかの処理が state.json を使っていた（終了コード 3）ときだけやり直す
       limit: 5

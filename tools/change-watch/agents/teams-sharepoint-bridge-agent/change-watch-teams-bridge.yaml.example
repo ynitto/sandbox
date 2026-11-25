@@ -1,7 +1,7 @@
 # install.py install --agent teams-sharepoint-bridge-agent が ~/.config/dagu/dags/ にこの PC のパスで置く。
 # 手で置くなら /home/you を自分の場所に直す。Windows では command を python にし、
 # args の先頭に change-watch.pyz のフルパスを入れる（インストーラはそうして置く）。
-# インストールしたプラグインには、Dagu の環境変数 TEAMS_BRIDGE_COPILOT_JOB で copilot_app_job.py のパスを渡す。
+# インストールしたプラグインには、Dagu の環境変数 TEAMS_BRIDGE_GOALIE_JOB で goalie.py のパスを渡す。
 description: "受信フォルダに届いた Teams の依頼を 1 件受け取り、Copilot アプリに提出する"
 schedule: "* * * * *"
 type: graph

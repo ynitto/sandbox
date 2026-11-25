@@ -89,7 +89,7 @@ def _resolve_target(request, path):
     """宛先を決める。決まる順: 投稿の 1 行目の #名前・【名前】 → フローの target → チャンネル → キーワード
     → （ハブがあれば）ハブのセッションに選ばせる → 既定。返すのは {name, reason, target} か {auto, choices, default}。
 
-    宛先表は copilot-app-jobs の振り先の表と同じファイル。gitlab_project・mode の無い宛先（Teams 以外から振るために
+    宛先表は goalie の振り先の表と同じファイル。gitlab_project・mode の無い宛先（Teams 以外から振るために
     登録したもの）は、Teams の振り分けには使わない。"""
     config = _read_json(path)
     if not isinstance(config, dict) or not isinstance(config.get("targets"), dict):
@@ -358,21 +358,21 @@ def _submit(args, request, target, ledger_path):
 
     job = None if args.dry_run else _existing_job(target, request)
     if job is None:
-        jobs_py = args.jobs_py or os.environ.get("TEAMS_BRIDGE_COPILOT_JOB")
+        jobs_py = args.jobs_py or os.environ.get("TEAMS_BRIDGE_GOALIE_JOB")
         if jobs_py:
             jobs_py = Path(jobs_py).expanduser()
         else:
-            jobs_py = Path(__file__).resolve().parent / "../../../copilot-app-jobs/copilot_app_job.py"
+            jobs_py = Path(__file__).resolve().parent / "../../../goalie/goalie.py"
             jobs_py = jobs_py.resolve()
         if not jobs_py.is_file():
-            return _error(f"copilot_app_job.py が見つかりません（{jobs_py}）。--jobs-py または TEAMS_BRIDGE_COPILOT_JOB で指定してください")
+            return _error(f"goalie.py が見つかりません（{jobs_py}）。--jobs-py または TEAMS_BRIDGE_GOALIE_JOB で指定してください")
 
         prompt = _prompt(request, target)
         with tempfile.TemporaryDirectory(prefix="teams-bridge-") as tmp:
             prompt_path = Path(tmp) / "prompt.txt"
             choices_path = Path(tmp) / "choices.json"
             command = [
-                args.python, str(jobs_py), "run", "--dir", _box_dir(target), "--no-wait",
+                args.python, str(jobs_py), "job", "run", "--dir", _box_dir(target), "--no-wait",
                 "--name", f"teams-{request_id}", "--prompt-file", str(prompt_path),
             ]
             if target.get("auto"):
@@ -390,7 +390,7 @@ def _submit(args, request, target, ledger_path):
                 choices_path.write_text(json.dumps(_choices(request, target), ensure_ascii=False), encoding="utf-8")
             result = subprocess.run(command, stdout=subprocess.PIPE)
             if result.returncode != 0:
-                print(f"copilot-app-jobs への提出に失敗しました（終了コード {result.returncode}）", file=sys.stderr)
+                print(f"goalie への提出に失敗しました（終了コード {result.returncode}）", file=sys.stderr)
                 return result.returncode if result.returncode > 0 else 1
             job = result.stdout.decode("utf-8").strip()
 
@@ -451,8 +451,8 @@ def _arguments(parser, name):
     if name in ("check-file", "submit"):
         parser.add_argument("--ledger", help="処理済み台帳の JSON ファイル")
     if name == "submit":
-        parser.add_argument("--jobs-py", help="copilot_app_job.py のパス")
-        parser.add_argument("--python", default=sys.executable, help="copilot-app-jobs を動かす Python")
+        parser.add_argument("--jobs-py", help="goalie.py のパス")
+        parser.add_argument("--python", default=sys.executable, help="goalie を動かす Python")
         parser.add_argument("--dry-run", action="store_true", help="提出せず依頼文とコマンドを出す")
     if name == "record-invalid":
         parser.add_argument("--log", help="様式違反を追記する JSON Lines ファイル")

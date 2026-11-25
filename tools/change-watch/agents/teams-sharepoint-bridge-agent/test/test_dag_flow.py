@@ -1,4 +1,4 @@
-"""Dagu の例（change-watch-teams-bridge）を、Dagu と同じ順で本物の change-watch・teams_bridge.py・copilot_app_job.py で流す。
+"""Dagu の例（change-watch-teams-bridge）を、Dagu と同じ順で本物の change-watch・teams_bridge.py・goalie.py で流す。
 
 受信フォルダの依頼は、Dagu に Windows の道（\\ を含む）を展開させず、--inbox と受信フォルダからの相対の名前
 （${CHANGE.record.rel}）で渡す。依頼の名前は往路のフローと同じ tm- で始める（道に \\t が現れる形）。
@@ -18,7 +18,7 @@ import dagrun  # noqa: E402
 
 CHANGE_WATCH = CHANGE_WATCH_DIR / "change_watch.py"
 DAG = HERE / "change-watch-teams-bridge.yaml.example"
-JOBS_PY = CHANGE_WATCH_DIR.parent / "copilot-app-jobs" / "copilot_app_job.py"
+JOBS_PY = CHANGE_WATCH_DIR.parent / "goalie" / "goalie.py"
 EXAMPLE = "/home/you"
 
 
@@ -64,7 +64,7 @@ class DagFlowTest(unittest.TestCase):
 
     def run_dag(self) -> dict:
         return dagrun.run(DAG, aw=[sys.executable, str(CHANGE_WATCH)], head=[], paths=self.paths,
-                          env={"TEAMS_BRIDGE_COPILOT_JOB": str(JOBS_PY)})
+                          env={"TEAMS_BRIDGE_GOALIE_JOB": str(JOBS_PY)})
 
     def pending(self) -> "list[str]":
         return sorted(p.name for p in (self.hub / ".copilot-jobs" / "pending").glob("*.md"))

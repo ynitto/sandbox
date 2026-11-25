@@ -1,4 +1,4 @@
-"""copilot_app_job の受け箱のやりとりを、アプリ役をテストが演じて確かめる。"""
+"""runner の受け箱のやりとりを、アプリ役をテストが演じて確かめる。"""
 
 from __future__ import annotations
 

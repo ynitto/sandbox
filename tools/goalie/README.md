@@ -35,7 +35,7 @@ Dagu（毎分）
 1. 目標のフォルダを作ります。名前は、ハブの issue で呼びかけるときに使います（空白と【】は使えません）。
 
    ```powershell
-   python C:\tools\goalie\goalie.py init --dir C:\work\dots\estimate --name 見積り
+   python C:\tools\goalie\goalie.py init --dir C:\work\goals\estimate --name 見積り
    ```
 
 2. `goal.md` に、目標と**完了の条件**を書きます。
@@ -43,23 +43,23 @@ Dagu（毎分）
    `goalie.py job prompt` が出します（間隔は 1 時間、`--stay 50` で居座らせると、依頼を置いてすぐ拾われます）。
 
    ```powershell
-   python C:\tools\goalie\goalie.py job prompt --dir C:\work\dots\estimate --stay 50
+   python C:\tools\goalie\goalie.py job prompt --dir C:\work\goals\estimate --stay 50
    ```
 
 4. ツールを止めるフックを置きます（下の「ツールを止める」）。
 
    ```powershell
-   python C:\tools\goalie\goalie.py hooks --dir C:\work\dots\estimate
+   python C:\tools\goalie\goalie.py hooks --dir C:\work\goals\estimate
    ```
 
-5. [`dags/agent-dots-tick.example.yaml`](./dags/agent-dots-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
-   名前・`DOT`・パスを直します。目標ごとに 1 つ置きます。
-6. [`dags/agent-dots-listen.example.yaml`](./dags/agent-dots-listen.example.yaml) を 1 つだけ置き、`DOTS`（目標のフォルダを並べた
+5. [`dags/goalie-tick.example.yaml`](./dags/goalie-tick.example.yaml) を Dagu のワークフローの置き場にコピーし、
+   名前・`GOAL`・パスを直します。目標ごとに 1 つ置きます。
+6. [`dags/goalie-listen.example.yaml`](./dags/goalie-listen.example.yaml) を 1 つだけ置き、`GOALS`（目標のフォルダを並べた
    親フォルダ）とパスを直します。目標がいくつあっても 1 つで足ります。
 7. 一度ハブの issue の今のコメントを読み飛ばします（今あるコメントを覚えるだけで、何もしません）。
 
    ```powershell
-   change-watch --plugin gitlab_hub --config <設定> --connections <接続設定> get --source gitlab-hub-notes --consumer dots --no-jitter
+   change-watch --plugin gitlab_hub --config <設定> --connections <接続設定> get --source gitlab-hub-notes --consumer goalie --no-jitter
    ```
 
 最初の tick で目標が動き出し、計画やメモを作って、報告か質問をハブの issue に書きます。
@@ -166,13 +166,13 @@ Phase 2 の意味検索の第1段階では、標準ライブラリのみでロ�
     "proposals_per_day": 5,
     "require_approval": ["medium以上", "external"],
     "collectors": {
-      "agent_dots": {"enabled": true, "paths": ["C:/work/dots/estimate"]},
+      "goalie": {"enabled": true, "paths": ["C:/work/goals/estimate"]},
       "plans": {"enabled": true, "paths": ["C:/work/project/docs/plans"]},
       "skill_feedback": {"enabled": true, "paths": ["C:/work/agent-home/skill-registry.json"]},
       "vault": {"enabled": false, "paths": ["C:/work/Work Notes"], "vault": "Work Notes", "mode": "auto"}
     },
-    "goal_root": "C:/work/dots",
-    "routine_dir": "C:/work/dots/routines"
+    "goal_root": "C:/work/goals",
+    "routine_dir": "C:/work/goals/routines"
   }
 }
 ```
@@ -191,7 +191,7 @@ Phase 2 の意味検索の第1段階では、標準ライブラリのみでロ�
 
 | コレクタ名 | Phase 1 既定 | `paths` の既定と指定先 |
 |---|---|---|
-| `agent_dots` | 有効 | 自分の目標。複数の目標を読むときは個別に指定 |
+| `goalie` | 有効 | 自分の目標。複数の目標を読むときは個別に指定 |
 | `plans` | 有効 | 未指定。対象リポジトリの `docs/plans` を指定 |
 | `skill_feedback` | 有効 | `skill-feedback-digest` と同じ規則で解決した `<AGENT_HOME>/skill-registry.json`。解決できなければ未指定扱い |
 | `prompt_assets` / `session_logs` | 無効 | 未指定。スニペットやスキルの置き場、または各ツールの履歴フォルダをそれぞれ指定 |
@@ -213,11 +213,11 @@ Phase 2 の意味検索の第1段階では、標準ライブラリのみでロ�
 自動承認された提案も `proposals_per_day` の受付枠を消費します。
 
 ```sh
-python goalie.py harvest --dir C:/work/dots/estimate
-python goalie.py proposals list --dir C:/work/dots/estimate
-python goalie.py proposals show --dir C:/work/dots/estimate p123
-python goalie.py proposals approve --dir C:/work/dots/estimate p123 --reason "計画と完了条件を確認した"
-python goalie.py proposals reject --dir C:/work/dots/estimate p456 --reason "既存の計画で対応済み"
+python goalie.py harvest --dir C:/work/goals/estimate
+python goalie.py proposals list --dir C:/work/goals/estimate
+python goalie.py proposals show --dir C:/work/goals/estimate p123
+python goalie.py proposals approve --dir C:/work/goals/estimate p123 --reason "計画と完了条件を確認した"
+python goalie.py proposals reject --dir C:/work/goals/estimate p456 --reason "既存の計画で対応済み"
 ```
 
 `--dir` には同じ目標フォルダを指定し、一覧に出た ID を使います。
@@ -239,7 +239,7 @@ python goalie.py proposals reject --dir C:/work/dots/estimate p456 --reason "既
 | 2 | 引数、目標フォルダ、設定が不正 | 引数、目標フォルダ、理由の形式が不正 |
 | 3 | 目標ロックの競合 | 目標ロックの競合 |
 
-日次収集は [harvest の DAG 例](dags/agent-dots-harvest.example.yaml) を目標ごとに置き、
+日次収集は [harvest の DAG 例](dags/goalie-harvest.example.yaml) を目標ごとに置き、
 パスと時刻を合わせます。例は毎朝 8 時に動き、ロック競合（終了コード 3）だけを再試行します。
 既存の tick DAG が公開済みの索引を使い、依頼を起こさなかった回も `act` が採否を取り込みます。
 
@@ -306,7 +306,7 @@ python C:\tools\goalie\goalie.py hooks --plugin C:\tools\goalie-plugin
 回します。合うものが無ければ、スキルを組み合わせて新しく作り、試運転してから登録します。実行の記録から直して、版を上げていきます。
 
 ```powershell
-python C:\tools\goalie\goalie.py init --dir C:\work\dots\work --name 業務
+python C:\tools\goalie\goalie.py init --dir C:\work\goals\work --name 業務
 ```
 
 ```json
@@ -367,10 +367,10 @@ python C:\tools\goalie\goalie.py init --dir C:\work\dots\work --name 業務
 ### 見直し（定期）
 
 ```powershell
-python goalie.py review --dir C:/work/dots/estimate
+python goalie.py review --dir C:/work/goals/estimate
 ```
 
-業務が有効な目標で、台帳と実行記録を決定的な条件で検査します。定期実行には週 1 回の [Dagu の例](dags/agent-dots-review.example.yaml) を使えます。最新の報告は `.goalie/routines-review.json` にあり、`status` で日時と要見直しの件数を確認できます。
+業務が有効な目標で、台帳と実行記録を決定的な条件で検査します。定期実行には週 1 回の [Dagu の例](dags/goalie-review.example.yaml) を使えます。最新の報告は `.goalie/routines-review.json` にあり、`status` で日時と要見直しの件数を確認できます。
 
 | 検査 | 処置 |
 |---|---|
@@ -386,7 +386,7 @@ python goalie.py review --dir C:/work/dots/estimate
 ## 様子を見る
 
 ```powershell
-python C:\tools\goalie\goalie.py status --dir C:\work\dots\estimate
+python C:\tools\goalie\goalie.py status --dir C:\work\goals\estimate
 ```
 
 やったこと・捨てた提案・起きた理由は `journal.jsonl` に 1 行ずつ残ります。
@@ -479,7 +479,7 @@ python C:\tools\goalie\goalie.py job run --dir C:\work\my-folder --prompt "docs 
 待つ時間は `--timeout <秒>`（既定 3600）です。**自動実行の間隔 + 作業にかかる時間**より長くします。
 置くだけで待たないときは `--no-wait`、受け箱の様子は `status --dir <フォルダ>` で見られます。
 
-Dagu から呼ぶ例は [`dags/copilot-app-job.example.yaml`](./dags/copilot-app-job.example.yaml) にあります。
+Dagu から呼ぶ例は [`dags/goalie-job.example.yaml`](./dags/goalie-job.example.yaml) にあります。
 
 ## 定型メニュー
 
@@ -645,19 +645,13 @@ git で管理しているなら、`.copilot-jobs/` を無視の対象に入れ�
 
 ## 既存の目標と自動実行の移行
 
-作業フォルダの新しい名前は `.goalie/` です。`.dot/` だけがある目標は、初回の書き込み系コマンドで
-ロックを取得してからディレクトリごと移行し、`journal.jsonl` に記録します。`status` と
-`proposals list` / `show` は読み取り時に旧フォルダも参照できます。両方が存在する場合は `.goalie/` を使います。
-この場合、`.dot/` はそのまま残り、自動で統合されることはありません。
-
-移行前に、受け箱に残っている `-dot` の依頼を完了しておくことを推奨します。
-新しい DAG では `--name goalie` を指定します。Dagu の例は [dags/](./dags/) にあります。
-
-旧パスの `tools/agent-dots/dot.py` と `tools/copilot-app-jobs/copilot_app_job.py` は互換 shim として
-それぞれ `goalie.py` と `runner.py` を呼びます。新規フック設定のファイル名は `goalie.json` です。
-既に `.github/hooks/agent-dots.json` がある場合は引き続きそのファイルを使います。
-新規出力のフックプラグイン名は `goalie` です。導入済みの `agent-dots` プラグインはその名前で残り、
-既存の呼び出しは shim 経由で動きます。
+1. 目標管理と受け箱の旧ツールパスは廃止しました。廃止したパスは [変更履歴](../../changelog/unreleased/goalie-integration.md) を参照してください。
+   スクリプトや Copilot アプリの自動実行では、目標管理に `goalie.py`、受け箱に `goalie.py job` を使います。
+2. 既存の目標では、作業フォルダの `.dot/` を手動で `.goalie/` に名前変更します。
+3. `.github/hooks/` に旧目標管理ツールと同名の JSON 設定がある場合は、手動で `goalie.json` に名前変更し、
+   設定内のコマンドも更新します。`goalie.py hooks --dir <目標フォルダ>` で現行の設定を出力できます。
+4. `-dot` で終わる依頼名は受け付けません。進行中の依頼は切り替え前に完了させるか、
+   `--name goalie` を使う形式で出し直します。Dagu の例は [dags/](./dags/) にあります。
 
 ## テスト
 

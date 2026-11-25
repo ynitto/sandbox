@@ -1,6 +1,6 @@
 """投稿の中身で宛先を振る: 投稿の #名前 → フローの target → チャンネル → キーワード → ハブのセッション → 既定。
 
-ハブがあるときは、本物の copilot_app_job.py でハブの受け箱に置き、選ぶ指示・route・振る指示までをたどる。
+ハブがあるときは、本物の goalie.py でハブの受け箱に置き、選ぶ指示・route・振る指示までをたどる。
 """
 from __future__ import annotations
 
@@ -12,14 +12,15 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("teams_bridge", HERE / "teams_bridge.py")
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
-JOBS_PY = HERE.parents[2] / "copilot-app-jobs" / "copilot_app_job.py"
+JOBS_PY = HERE.parents[2] / "goalie" / "goalie.py"
 sys.path.insert(0, str(JOBS_PY.parent))
-import copilot_app_job as jobs  # noqa: E402
+import runner as jobs  # noqa: E402
 
 REQUEST_ID = "req-1"
 
@@ -133,7 +134,7 @@ class RoutingTest(unittest.TestCase):
     # -- ハブの受け箱をたどる
 
     def use_hub_file(self) -> None:
-        """宛先表をハブの受け箱に置く（copilot-app-jobs の振り先の表と同じファイル）。hub は書かない。"""
+        """宛先表をハブの受け箱に置く（goalie の振り先の表と同じファイル）。hub は書かない。"""
         self.targets = self.hub / ".copilot-jobs" / "targets.json"
         self.targets.parent.mkdir(parents=True)
         self.config["targets"]["scratch"] = {"dir": str(self.ops)}   # Teams 以外から振るために登録した振り先
@@ -151,8 +152,9 @@ class RoutingTest(unittest.TestCase):
     def test_end_to_end_through_hub(self):
         self.use_hub_file()
         self.write(text="先月の障害の再発防止策を手順書にまとめて")   # 障害・手順書 → 同点で ops と docs
-        code, out, err = call(bridge, "submit", "--path", str(self.path), "--targets", str(self.targets),
-                              "--ledger", str(self.ledger), "--jobs-py", str(JOBS_PY), "--python", sys.executable)
+        with patch.dict(bridge.os.environ, {"TEAMS_BRIDGE_GOALIE_JOB": ""}):
+            code, out, err = call(bridge, "submit", "--path", str(self.path), "--targets", str(self.targets),
+                                  "--ledger", str(self.ledger), "--python", sys.executable)
         self.assertEqual(code, 0, err)
         submitted = json.loads(out)
         self.assertEqual((submitted["status"], submitted["target"]), ("submitted", "auto"))

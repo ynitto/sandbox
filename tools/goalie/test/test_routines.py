@@ -21,7 +21,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import goalie as dot  # noqa: E402
+import goalie  # noqa: E402
 import routines  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -54,7 +54,7 @@ def run(*argv: str, stdin: str = "") -> "tuple[int, str]":
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
             mock.patch.object(sys, "stdin", io.StringIO(stdin)):
-        code = dot.main(list(argv))
+        code = goalie.main(list(argv))
     return code, out.getvalue().strip()
 
 
@@ -78,7 +78,7 @@ class RoutineTest(unittest.TestCase):
             (self.skills / name / "scripts" / "main.py").write_text("print('ok')\n", encoding="utf-8")
         self.source = self.root / "repo" / ".statemachine"
         write_machine(self.source / "monthly-report")
-        self.d = self.root / "dots" / "work"
+        self.d = self.root / "goals" / "work"
         self.assertEqual(run("init", "--dir", str(self.d), "--name", "業務")[0], 0)
         self.set_policy(routines={"skills_dirs": [str(self.skills)], "sources": [str(self.source)],
                                   "write_skills": ["mailer"]})
@@ -124,7 +124,7 @@ class RoutineTest(unittest.TestCase):
     def reply(self, text: str) -> str:
         change = json.dumps({"kind": "appeared", "key": "1", "record": {
             "id": 1, "body": f"【業務】{text}", "system": False, "author": {"username": "me"}}}, ensure_ascii=False)
-        code, out = run("event", "--root", str(self.root / "dots"), "--change", change)
+        code, out = run("event", "--root", str(self.root / "goals"), "--change", change)
         self.assertEqual(code, 0)
         return out
 
@@ -254,7 +254,7 @@ class RoutineTest(unittest.TestCase):
         self.at += 60
         self.assertEqual(self.review(), findings)
         _, status = run("status", "--dir", str(self.d))
-        self.assertIn(f"見直し: {dot.iso(self.at)}・要見直し 2 件", status)
+        self.assertIn(f"見直し: {goalie.iso(self.at)}・要見直し 2 件", status)
 
     def test_review_stale_draft(self):
         rid = self.create_and_trial()
@@ -299,7 +299,7 @@ class RoutineTest(unittest.TestCase):
         self.assertEqual(self.review(), [])
         _, status = run("status", "--dir", str(self.d))
         self.assertIn("10/11 回成功・安定", status)
-        self.assertIn(f"見直し: {dot.iso(self.at)}・要見直しなし", status)
+        self.assertIn(f"見直し: {goalie.iso(self.at)}・要見直しなし", status)
 
     def test_review_steady_cleared_by_failure(self):
         self.finish(self.run_existing(), ok=False, final="send")
@@ -326,7 +326,7 @@ class RoutineTest(unittest.TestCase):
                          [("stale_draft", "needs_review", [])])
 
     def test_review_stale_draft_outside_goal_ignored(self):
-        self.publish_monthly_to_dot()
+        self.publish_monthly_to_goal()
         outside = Path(self.tmp.name) / "outside"
         (outside).mkdir()
         (outside / "workflow.yaml").write_text("name: x\n", encoding="utf-8")
@@ -337,7 +337,7 @@ class RoutineTest(unittest.TestCase):
         self.assertEqual(self.review(), [])
 
     def test_review_repeat_failure_skipped_while_publish_pending(self):
-        self.publish_monthly_to_dot()
+        self.publish_monthly_to_goal()
         reg = self.registry()
         rec = reg["monthly-report"]
         rec["recent"] = [{"id": "r1", "ok": False}, {"id": "r2", "ok": False}, {"id": "r3", "ok": True}]
@@ -377,7 +377,7 @@ class RoutineTest(unittest.TestCase):
         self.set_policy(routines={})
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            self.assertEqual(dot.main(["review", "--dir", str(self.d)]), 2)
+            self.assertEqual(goalie.main(["review", "--dir", str(self.d)]), 2)
         self.assertEqual(out.getvalue(), "")
         self.assertIn("業務の見直し", err.getvalue())
         self.assertIn("skills_dirs", err.getvalue())
@@ -540,13 +540,13 @@ class RoutineTest(unittest.TestCase):
 
     # -- 直す・戻す
 
-    def publish_monthly_to_dot(self) -> None:
+    def publish_monthly_to_goal(self) -> None:
         """登録済みの monthly-report（目標のフォルダの .statemachine/）を用意する。"""
         rid = self.run_existing()
         self.finish(rid)
 
     def test_fix_request_improves_with_failed_inputs_and_versions(self):
-        self.publish_monthly_to_dot()
+        self.publish_monthly_to_goal()
         self.propose({"kind": "routine", "action": "run", "machine": "monthly-report", "inputs": {"month": "2026-12"}})
         self.act()
         rid = self.job()["id"]
@@ -585,7 +585,7 @@ class RoutineTest(unittest.TestCase):
         self.assertEqual(self.reply("戻す monthly-report"), "受けました: no-history")
 
     def test_repeated_failures_improve_without_asking(self):
-        self.publish_monthly_to_dot()
+        self.publish_monthly_to_goal()
         for i in range(2):
             self.propose({"kind": "routine", "action": "run", "machine": "monthly-report", "inputs": {"month": f"m{i}"}})
             self.act()

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import goalie as dot  # noqa: E402
+import goalie  # noqa: E402
 
 T0 = 1_800_000_000.0
 
@@ -21,7 +21,7 @@ T0 = 1_800_000_000.0
 def run(*argv: str) -> "tuple[int, str]":
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        code = dot.main(list(argv))
+        code = goalie.main(list(argv))
     return code, out.getvalue().strip()
 
 
@@ -191,7 +191,7 @@ class D1Test(unittest.TestCase):
         state["approvals"][0].update(status="running", started_ts=T0)   # 前の act が実行中に落ちた
         (self.d / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         self.assertEqual(self.act(T0 + 60), "")                         # まだ止まったとはみなさない
-        self.assertIn("途中で止まったようです", self.act(T0 + dot.RUNNING_STALE_SEC + 1))
+        self.assertIn("途中で止まったようです", self.act(T0 + goalie.RUNNING_STALE_SEC + 1))
         self.assertEqual(self.approval("a1")["status"], "failed")
         self.assertFalse((self.d / "published.txt").exists())
 
@@ -220,21 +220,21 @@ class D1Test(unittest.TestCase):
         self.assertEqual(self.state()["held"], [])
 
     def test_in_quiet(self):
-        self.assertTrue(dot.in_quiet("22:00-07:00", at_clock(23)))
-        self.assertTrue(dot.in_quiet("22:00-07:00", at_clock(6, 59)))
-        self.assertFalse(dot.in_quiet("22:00-07:00", at_clock(7)))
-        self.assertTrue(dot.in_quiet("12:00-13:00", at_clock(12, 30)))
-        self.assertFalse(dot.in_quiet("", at_clock(23)))
-        self.assertFalse(dot.in_quiet("夜", at_clock(23)))
+        self.assertTrue(goalie.in_quiet("22:00-07:00", at_clock(23)))
+        self.assertTrue(goalie.in_quiet("22:00-07:00", at_clock(6, 59)))
+        self.assertFalse(goalie.in_quiet("22:00-07:00", at_clock(7)))
+        self.assertTrue(goalie.in_quiet("12:00-13:00", at_clock(12, 30)))
+        self.assertFalse(goalie.in_quiet("", at_clock(23)))
+        self.assertFalse(goalie.in_quiet("夜", at_clock(23)))
 
     # -- ロック
 
     def test_busy_lock_returns_3(self):
         lock = self.d / ".goalie" / "lock"
         lock.write_text("", encoding="utf-8")
-        with unittest.mock.patch.object(dot, "LOCK_WAIT_SEC", 0.3):
+        with unittest.mock.patch.object(goalie, "LOCK_WAIT_SEC", 0.3):
             code, _ = run("event", "--dir", str(self.d), "--text", "x")
-        self.assertEqual(code, dot.EXIT_BUSY)
+        self.assertEqual(code, goalie.EXIT_BUSY)
         self.assertEqual(self.inbox(), [])
 
     def test_stale_lock_is_taken(self):
@@ -257,11 +257,11 @@ if __name__ == "__main__":
 
 class DecodeTest(unittest.TestCase):
     def test_decode_output_falls_back_to_cp932(self):
-        self.assertEqual(dot.decode_output("置きました".encode("utf-8")), "置きました")
-        self.assertEqual(dot.decode_output("置きました".encode("cp932")), "置きました")
+        self.assertEqual(goalie.decode_output("置きました".encode("utf-8")), "置きました")
+        self.assertEqual(goalie.decode_output("置きました".encode("cp932")), "置きました")
 
     def test_command_writes_japanese_in_utf8(self):
         with tempfile.TemporaryDirectory() as tmp:
             # 子の Python は PYTHONIOENCODING を見る。Windows の既定（cp1252 など）でも日本語を書ける
-            code, out = dot.run_command(Path(tmp), [sys.executable, "-c", "print('置きました')"])
+            code, out = goalie.run_command(Path(tmp), [sys.executable, "-c", "print('置きました')"])
         self.assertEqual((code, out), (0, "置きました"))

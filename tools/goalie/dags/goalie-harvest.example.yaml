@@ -4,7 +4,7 @@ schedule: "0 8 * * *"
 type: graph
 hist_retention_days: 14
 env:
-  - DOT: "C:/work/dots/estimate"
+  - GOAL: "C:/work/goals/estimate"
 steps:
   - name: harvest
     action: exec
@@ -14,7 +14,7 @@ steps:
         - "C:/tools/goalie/goalie.py"
         - "harvest"
         - "--dir"
-        - "${DOT}"
+        - "${GOAL}"
     timeout_sec: 600
     retry_policy:              # 目標ロックの競合（終了コード 3）だけ再試行する
       limit: 5
