@@ -233,7 +233,7 @@ class GitLabClient:
         notes = self._get_all(f"{self._project_path(repo)}/merge_requests/{mr}/notes")
         for note in notes:
             body = note.get("body") or ""
-            if "<!-- factory:review " in body and f"sha={sha}" in body:
+            if "<!-- factory:review " in body and f"sha={sha} -->" in body:
                 return body
         return None
 
@@ -485,8 +485,9 @@ class Journal:
         return None
 
     def fix_rounds(self, repo, issue):
-        return sum(entry["event"] == "run_started" and entry["transition"] == "fix"
+        return sum(entry["event"] == "job_finished" and entry["transition"] == "fix"
                    and entry["repository"] == repo and entry.get("issue") == issue
+                   and entry.get("exit_code") in (0, 1)
                    for entry in self.events)
 
     def held(self, fingerprint):
@@ -613,7 +614,7 @@ class Controller:
             if found is None:
                 reason = "interrupted_before_submit"
                 self._fail(repo, issue, "ファクトリーの依頼投入が中断されました。受け箱を確認してください。", run)
-                self._run_event("job_finished", run, exit_code=1, reason=reason)
+                self._run_event("job_finished", run, exit_code=None if fix else 1, reason=reason)
                 return True
             job_id, submitted_at = found
             run.update(job_id=job_id, submitted_at=submitted_at)
@@ -893,6 +894,11 @@ class Controller:
             comment = self.gitlab.find_review_comment(repo, mr, revision)
             if comment is None:
                 if not self.journal.last_for_key(key, {"fix_blocked"}):
+                    self.gitlab.comment_issue(
+                        repo, number,
+                        f"対象 SHA `{revision}` のレビュー結果を MR !{mr} から取得できなかったため、"
+                        "自動修正を開始できません。MR のレビューコメントを確認してください。",
+                    )
                     self.journal.record("fix_blocked", repository=repo, target_type="mr", target=mr,
                                         issue=number, transition=transition, input_revision=revision,
                                         mr=mr, idempotency_key=key, reason="review_comment_not_found")

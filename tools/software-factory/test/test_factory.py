@@ -58,7 +58,7 @@ class FakeGitLab:
 
     def find_review_comment(self, repo, mr, sha):
         return next((body for number, body in self.mr_comments
-                     if number == mr and "<!-- factory:review " in body and f"sha={sha}" in body), None)
+                     if number == mr and "<!-- factory:review " in body and f"sha={sha} -->" in body), None)
 
     def find_mr_by_head(self, repo, branch):
         mr = self.mrs.get(branch)
@@ -478,19 +478,73 @@ class ControllerTests(unittest.TestCase):
         self.assertIn(self.gitlab.mr_comments[-2][1], comment)
         self.assertEqual(sum(event["event"] == "fix_escalated" for event in journal.events), 1)
 
+    def test_fix_does_not_escalate_while_running_at_round_limit(self):
+        self.start_fix(max_rounds=1)
+        self.goalie.path("job-3", "pending").unlink()
+        self.goalie.write("job-3", "running", "request")
+        for _ in range(3):
+            journal = self.poll()
+            self.assert_progress("factory:failed")
+            self.assertEqual(len(self.goalie.calls), 3)
+            self.assertEqual(len(self.gitlab.mr_comments), 1)
+            self.assertEqual(journal.fix_rounds(self.values["repositories"][0], 1), 0)
+
+    def test_fix_escalates_once_after_fourth_major_review_with_default_limit(self):
+        self.values["fix"] = {"enabled": True}
+        mr = self.post_major_review()
+        repo = self.values["repositories"][0]
+        for round_number, sha in enumerate(("sha-two", "sha-three", "sha-four"), start=1):
+            journal = self.poll()
+            run, = journal.unresolved()
+            self.assertEqual(run["transition"], "fix")
+            self.assertEqual(journal.fix_rounds(repo, 1), round_number - 1)
+            self.git.head = sha
+            self.goalie.finish(run["job_id"], "BRANCH: factory/issue-1")
+            journal = self.poll()
+            self.assertEqual(journal.fix_rounds(repo, 1), round_number)
+            self.assert_progress("factory:mr-open")
+            mr["headRefOid"] = sha
+            journal = self.poll()
+            run, = journal.unresolved()
+            self.assertEqual((run["transition"], run["input_revision"]), ("review", sha))
+            self.goalie.finish(run["job_id"], "FACTORY-VERDICT: major\n- [重大] 指摘が残っています")
+            self.poll()
+            self.assert_progress("factory:failed")
+            self.assertEqual(len(self.gitlab.mr_comments), round_number + 1)
+
+        for _ in range(3):
+            journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertFalse(journal.unresolved())
+        self.assertEqual([name for _, _, name in self.goalie.calls],
+                         ["factory-impl-1", "factory-review-42"]
+                         + ["factory-fix-42", "factory-review-42"] * 3)
+        self.assertEqual(len(self.gitlab.mr_comments), 5)
+        number, comment = self.gitlab.mr_comments[-1]
+        self.assertEqual(number, mr["number"])
+        self.assertTrue(comment.startswith("<!-- factory:fix-escalated sha=sha-four -->"))
+        self.assertIn("上限（3 回）", comment)
+        self.assertEqual(sum(event["event"] == "fix_escalated" for event in journal.events), 1)
+
     def test_fix_not_picked_is_withdrawn_and_retried_on_next_cycle(self):
         self.start_fix(max_rounds=2)
+        repo = self.values["repositories"][0]
         self.now += 61
         journal = self.poll()
         withdrawn = self.goalie.path("job-3", "tmp").with_name("job-3.withdrawn.md")
         self.assertTrue(withdrawn.is_file())
         self.assertEqual(journal.events[-2]["exit_code"], 3)
+        self.assertEqual(journal.fix_rounds(repo, 1), 0)
         self.assertEqual(len(self.goalie.calls), 3)
         self.assert_progress("factory:failed")
         journal = self.poll()
         self.assertEqual(len(self.goalie.calls), 4)
         self.assertEqual(self.goalie.calls[-1][2], "factory-fix-42")
-        self.assertEqual(journal.fix_rounds(self.values["repositories"][0], 1), 2)
+        self.assertEqual(journal.fix_rounds(repo, 1), 0)
+        self.goalie.finish("job-4", "BRANCH: factory/issue-1")
+        journal = self.poll()
+        self.assertEqual(journal.fix_rounds(repo, 1), 1)
+        self.assert_progress("factory:mr-open")
 
     def test_fix_running_timeout_is_not_retried_even_after_inbox_cleanup(self):
         self.start_fix()
@@ -499,6 +553,7 @@ class ControllerTests(unittest.TestCase):
         self.now += 61
         journal = self.poll()
         self.assertEqual(journal.events[-2]["exit_code"], 4)
+        self.assertEqual(journal.fix_rounds(self.values["repositories"][0], 1), 0)
         self.assert_progress("factory:failed")
         self.poll()
         self.goalie.path("job-3", "running").unlink()
@@ -518,6 +573,12 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([event["reason"] for event in blocked], ["review_comment_not_found"])
         self.assertEqual(blocked[0]["idempotency_key"],
                          [self.values["repositories"][0], 42, "fix", "sha-one"])
+        self.assertEqual(len(self.gitlab.issue_comments), 1)
+        number, comment = self.gitlab.issue_comments[0]
+        self.assertEqual(number, 1)
+        self.assertIn("sha-one", comment)
+        self.assertIn("自動修正を開始できません", comment)
+        self.assertIn("MR のレビューコメントを確認してください", comment)
 
     def test_fix_rejects_invalid_artifacts(self):
         self.start_fix()
@@ -574,6 +635,7 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue((work_dir / ".copilot-jobs" / "results" / f"{previous_job_id}.md").is_file())
         journal = self.poll()
         self.assertEqual(journal.events[-2]["reason"], "interrupted_before_submit")
+        self.assertEqual(journal.fix_rounds(self.values["repositories"][0], 1), 1)
         self.assert_progress("factory:failed")
         self.assertEqual(len(self.git.pushes), 2)
 
@@ -789,9 +851,10 @@ class FakeTransport:
 class ClientTests(unittest.TestCase):
     def test_find_review_comment_matches_marker_and_sha_across_pages(self):
         matching = "<!-- factory:review run=abc sha=target -->\nレビュー結果"
-        earlier = [{"body": "<!-- factory:review run=old sha=old -->"},
-                   {"body": "sha=target"}, {"body": None}]
-        transport = FakeTransport(earlier + [{}] * 97, [{"body": matching}], earlier)
+        earlier = [{"body": "<!-- factory:review run=old sha=target-extra -->"},
+                   {"body": "<!-- factory:review-other run=old sha=target -->"},
+                   {"body": "sha=target -->"}, {"body": None}]
+        transport = FakeTransport(earlier + [{}] * (100 - len(earlier)), [{"body": matching}], earlier)
         client = factory.GitLabClient(transport)
         self.assertEqual(client.find_review_comment("group/project", 42, "target"), matching)
         self.assertIsNone(client.find_review_comment("group/project", 42, "missing"))
