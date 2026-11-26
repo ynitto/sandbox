@@ -26,15 +26,17 @@ class FakeGh:
         self.create_calls = []
         self.mutate_diff = False
 
-    def add_issue(self, number, progress=None):
+    def add_issue(self, number, progress=None, repository=None):
         self.issues[number] = {
+            "repository": repository,
             "number": number, "title": "タイトル", "body": "要件 {{BRANCH}}",
             "labels": [{"name": label} for label in ("factory", progress) if label],
             "updatedAt": "2026-11-26T00:00:00Z",
         }
 
     def list_factory_issues(self, repo, label):
-        return list(self.issues.values())
+        return [issue for issue in self.issues.values()
+                if issue["repository"] in (None, repo)]
 
     def set_progress_label(self, repo, number, progress):
         labels = factory.label_names(self.issues[number]).difference(factory.PROGRESS)
@@ -116,6 +118,8 @@ class FakeGoalie(factory.GoalieClient):
 class FakeGit:
     def __init__(self):
         self.pushes = []
+        self.has_branch = True
+        self.ahead = 1
         self.dirty = False
         self.verification_calls = []
 
@@ -124,11 +128,11 @@ class FakeGit:
 
     def branch_exists(self, work_dir, branch):
         self.verification_calls.append(("branch_exists", work_dir, branch))
-        return True
+        return self.has_branch
 
     def commits_ahead(self, work_dir, base, branch):
         self.verification_calls.append(("commits_ahead", work_dir, base, branch))
-        return 1
+        return self.ahead
 
     def tracked_dirty(self, work_dir):
         return self.dirty
@@ -199,14 +203,48 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(journal.unresolved())
         self.assertEqual(journal.last_sha(self.values["repositories"][0], 1), "sha-one")
         self.assertNotIn("指摘はありません", journal.path.read_text(encoding="utf-8"))
+        comments = self.gh.pr_comments.copy()
+        self.poll()
+        self.assert_progress("factory:reviewed")
+        self.assertEqual([name for _, _, name in self.goalie.calls],
+                         ["factory-impl-1", "factory-review-42"])
+        self.assertEqual(self.gh.pr_comments, comments)
+
+    def test_in_review_does_not_submit_another_review(self):
+        self.open_pr()
+        self.gh.checks = "success"
+        self.poll()
+        for _ in range(2):
+            self.assert_progress("factory:in-review")
+            journal = self.poll()
+            self.assertEqual([name for _, _, name in self.goalie.calls],
+                             ["factory-impl-1", "factory-review-42"])
+            self.assertEqual([run["job_id"] for run in journal.unresolved()], ["job-2"])
+        self.assert_progress("factory:in-review")
 
     def test_pending_is_idempotent_and_work_dir_has_one_slot(self):
+        self.values["max_concurrent"] = 5
         self.gh.add_issue(2)
         self.poll()
         journal = self.poll()
         self.assertEqual(len(self.goalie.calls), 1)
         self.assertEqual(journal.unresolved()[0]["job_id"], "job-1")
         self.assert_progress(None, 2)
+
+    def test_two_repositories_submit_implementations_in_one_poll(self):
+        first_repo, second_repo = "owner/first", "owner/second"
+        self.values.update(repositories=[first_repo, second_repo], max_concurrent=2)
+        self.gh.add_issue(1, repository=first_repo)
+        self.gh.add_issue(2, repository=second_repo)
+        journal = self.poll()
+        self.assertCountEqual([(work_dir, name) for work_dir, _, name in self.goalie.calls], [
+            (self.root / "first", "factory-impl-1"),
+            (self.root / "second", "factory-impl-2"),
+        ])
+        self.assertCountEqual([(run["repository"], run["issue"]) for run in journal.unresolved()],
+                              [(first_repo, 1), (second_repo, 2)])
+        self.assert_progress("factory:implementing", 1)
+        self.assert_progress("factory:implementing", 2)
 
     def test_withdraw_and_retry_on_next_cycle(self):
         self.poll()
@@ -240,6 +278,31 @@ class ControllerTests(unittest.TestCase):
         self.goalie.path("job-2", "dispatched").unlink()
         self.poll()
         self.assert_progress("factory:pr-open")
+        self.assertEqual(len(self.goalie.calls), 2)
+        journal = self.poll()
+        self.assert_progress("factory:in-review")
+        self.assertEqual([name for _, _, name in self.goalie.calls],
+                         ["factory-impl-1", "factory-review-42", "factory-review-42"])
+        self.assertEqual([(run["job_id"], run["input_revision"]) for run in journal.unresolved()],
+                         [("job-3", "sha-two")])
+
+    def test_running_implementation_times_out_without_retry(self):
+        self.poll()
+        self.goalie.path("job-1", "pending").unlink()
+        self.goalie.write("job-1", "running", "request")
+        self.now += self.values["job_timeout_sec"] - 1
+        self.poll()
+        self.assert_progress("factory:implementing")
+        self.now += 2
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertTrue(self.goalie.path("job-1", "running").is_file())
+        self.assertEqual([event["exit_code"] for event in journal.events
+                          if event["event"] == "job_finished"], [4])
+        self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual([name for _, _, name in self.goalie.calls], ["factory-impl-1"])
+        self.assertFalse(self.gh.create_calls)
 
     def test_ci_pending_failure_deduplication_and_new_head(self):
         pr = self.open_pr()
@@ -305,16 +368,21 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(journal.unresolved())
 
     def test_existing_pr_is_adopted_without_implementation(self):
+        self.assert_existing_pr_adopted(None)
+
+    def test_existing_pr_is_adopted_while_implementing(self):
+        self.assert_existing_pr_adopted("factory:implementing")
+
+    def assert_existing_pr_adopted(self, progress):
         pr = self.gh.add_pr("factory/issue-1")
-        for progress in (None, "factory:implementing"):
-            with self.subTest(progress=progress):
-                self.gh.set_progress_label("", 1, progress)
-                journal = self.poll()
-                self.assert_progress("factory:pr-open")
-                self.assertFalse(self.goalie.calls)
-                created = [event for event in journal.events if event["event"] == "pr_created"]
-                self.assertEqual([(event["pr"], event["input_revision"]) for event in created],
-                                 [(pr["number"], pr["headRefOid"])])
+        self.gh.set_progress_label("", 1, progress)
+        journal = self.poll()
+        self.assert_progress("factory:pr-open")
+        self.assertFalse(self.goalie.calls)
+        self.assertFalse(self.gh.create_calls)
+        created = [event for event in journal.events if event["event"] == "pr_created"]
+        self.assertEqual([(event["pr"], event["input_revision"]) for event in created],
+                         [(pr["number"], pr["headRefOid"])])
 
     def test_null_issue_title_and_body_are_submitted_as_empty(self):
         self.gh.issues[1].update(title=None, body=None)
@@ -333,6 +401,32 @@ class ControllerTests(unittest.TestCase):
             ("branch_exists", work_dir, "factory/issue-1"),
             ("commits_ahead", work_dir, "origin/main", "factory/issue-1"),
         ])
+
+    def test_implementation_fails_when_branch_is_missing(self):
+        self.git.has_branch = False
+        self.assert_implementation_verification_failed("が見つかりません")
+
+    def test_implementation_fails_when_branch_has_no_commits_ahead(self):
+        self.git.ahead = 0
+        self.assert_implementation_verification_failed("既定ブランチより先のコミットがありません")
+
+    def test_implementation_fails_when_tracked_files_are_dirty(self):
+        self.git.dirty = True
+        self.assert_implementation_verification_failed("追跡対象のファイルに未コミットの変更があります")
+
+    def assert_implementation_verification_failed(self, message):
+        self.poll()
+        self.assert_progress("factory:implementing")
+        self.goalie.finish("job-1", "BRANCH: factory/issue-1")
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertFalse(self.gh.create_calls)
+        self.assertFalse(self.git.pushes)
+        self.assertFalse(journal.unresolved())
+        self.assertEqual(len(self.gh.issue_comments), 1)
+        number, comment = self.gh.issue_comments[0]
+        self.assertEqual(number, 1)
+        self.assertIn(message, comment)
 
     def test_hold_until_config_changes(self):
         self.gh.add_issue(2)
@@ -504,6 +598,21 @@ class ClientTests(unittest.TestCase):
 
 
 class CliAndFormattingTests(unittest.TestCase):
+    def test_config_rejects_invalid_limits_and_empty_repositories(self):
+        values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
+        for key, value in (
+            ("job_timeout_sec", 0),
+            ("job_timeout_sec", -1),
+            ("poll_interval_sec", 0),
+            ("poll_interval_sec", -1),
+            ("max_concurrent", 0),
+            ("max_concurrent", 1.5),
+            ("repositories", []),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaisesRegex(factory.ConfigError, key):
+                    factory.Config({**values, key: value})
+
     def test_config_rejects_duplicate_resolved_work_dirs(self):
         values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as directory:
