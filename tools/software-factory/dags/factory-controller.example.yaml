@@ -1,5 +1,6 @@
 # command と args のパスを実行環境に合わせる。
 # poll_interval_sec とスケジュールを合わせること。
+# 前のサイクルが終わる前に次の起動が重なっても、コントローラー側のロック（work_root の factory.lock）が二重実行を防ぐ。
 # Dagu の自動再試行は使わず、controller の照合に任せること。
 description: "ソフトウェアファクトリーの Issue と goalie の受け箱を照合する"
 schedule: "*/5 * * * *"

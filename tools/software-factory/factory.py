@@ -343,8 +343,10 @@ def issue_branch(number):
 
 
 def parse_verdict(body):
-    return "major" if any(line.strip() == "FACTORY-VERDICT: major"
-                          for line in body.splitlines()) else "clear"
+    for line in body.splitlines():
+        if line.strip() == "FACTORY-VERDICT: major" or line.lstrip().startswith("- [重大]"):
+            return "major"
+    return "clear"
 
 
 def format_review_comment(run_id, sha, body):

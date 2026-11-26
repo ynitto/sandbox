@@ -534,6 +534,14 @@ class CliAndFormattingTests(unittest.TestCase):
             "対象リビジョン: `abc`\n判定: 重大な指摘あり\n\n- [重大] 例\n",
         )
 
+    def test_parse_verdict_major_finding_overrides_clear(self):
+        body = "FACTORY-VERDICT: clear\n  - [重大] 例\n"
+        self.assertEqual(factory.parse_verdict(body), "major")
+
+    def test_parse_verdict_non_major_findings_remain_clear(self):
+        body = "FACTORY-VERDICT: clear\n- [指摘] 例\n- [提案] 例\n"
+        self.assertEqual(factory.parse_verdict(body), "clear")
+
     def test_init_and_configuration_errors(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(io.StringIO()):
             path = Path(directory) / "factory.json"
