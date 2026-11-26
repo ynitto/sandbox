@@ -112,6 +112,9 @@ jobs:
           # goalie の目標管理と受け箱を検証する。アプリ・GitLab・Dagu は呼ばない。
           - package: goalie
             suites: tools/goalie/test
+          # software-factory のコントローラーを検証する。gh・goalie・Dagu はフェイクに差し替える。
+          - package: software-factory
+            suites: tools/software-factory/test
           - package: webui-test
             suites: tools/webui-test/tests
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
@@ -192,6 +195,9 @@ jobs:
           # goalie の目標管理と受け箱を Windows でも検証する。
           - package: goalie
             suites: tools/goalie/test
+          # software-factory のコントローラーを Windows でも検証する。
+          - package: software-factory
+            suites: tools/software-factory/test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
