@@ -79,6 +79,9 @@ class Config:
             section = values.get(key)
             if not isinstance(section, dict) or type(section.get("enabled")) is not bool:
                 raise ConfigError(f"{key}.enabled は真偽値が必要です")
+        fix_max_rounds = values["fix"].get("max_rounds", 3)
+        if type(fix_max_rounds) is not int or fix_max_rounds < 1:
+            raise ConfigError("fix.max_rounds は 1 以上の整数が必要です")
         work_dirs = values.get("work_dirs", {})
         if not isinstance(work_dirs, dict) or any(
             key not in repos or not isinstance(path, str) or not path.strip()
@@ -107,6 +110,8 @@ class Config:
         self.job_timeout_sec = values["job_timeout_sec"]
         self.max_concurrent = values["max_concurrent"]
         self.review_enabled = values["review"]["enabled"]
+        self.fix_enabled = values["fix"]["enabled"]
+        self.fix_max_rounds = fix_max_rounds
         self.work_dirs = work_dirs
         resolved_dirs = [os.path.normcase(self.work_dir(repo)) for repo in repos]
         if len(resolved_dirs) != len(set(resolved_dirs)):
@@ -224,6 +229,14 @@ class GitLabClient:
         notes = self._get_all(f"{self._project_path(repo)}/merge_requests/{number}/notes")
         return any(marker in (note.get("body") or "") for note in notes)
 
+    def find_review_comment(self, repo, mr, sha):
+        notes = self._get_all(f"{self._project_path(repo)}/merge_requests/{mr}/notes")
+        for note in notes:
+            body = note.get("body") or ""
+            if "<!-- factory:review " in body and f"sha={sha}" in body:
+                return body
+        return None
+
     def find_mr_by_head(self, repo, branch):
         mrs = self._get_all(self._project_path(repo) + "/merge_requests",
                             params={"source_branch": branch, "state": "opened"})
@@ -303,11 +316,12 @@ class GoalieClient:
         return any((box / state / f"{job_id}.md").is_file()
                    for state in ("pending", "running", "dispatched"))
 
-    def find_job_by_name(self, work_dir, job_name):
+    def find_job_by_name(self, work_dir, job_name, excluded_job_ids=()):
         box = work_dir / ".copilot-jobs"
         for state in ("pending", "running", "dispatched", "results", "done"):
             for path in (box / state).glob("*"):
-                if path.stem.endswith(f"-{job_name}") and path.is_file():
+                if (path.stem.endswith(f"-{job_name}") and path.stem not in excluded_job_ids
+                        and path.is_file()):
                     try:
                         return path.stem, path.stat().st_mtime
                     except FileNotFoundError:
@@ -373,6 +387,9 @@ class GitClient:
 
     def commits_ahead(self, work_dir, base, branch):
         return int(self._run(work_dir, "rev-list", "--count", f"{base}..{branch}")[1])
+
+    def branch_head(self, work_dir, branch):
+        return self._run(work_dir, "rev-parse", branch)[1].strip()
 
     def tracked_dirty(self, work_dir):
         return bool(self._run(work_dir, "status", "--porcelain", "--untracked-files=no")[1].strip())
@@ -460,12 +477,17 @@ class Journal:
         for entry in reversed(self.events):
             if entry["repository"] != repo or entry.get("issue", entry["target"]) != issue:
                 continue
-            if entry["event"] in ("mr_created", "review_posted", "ci_failed", "ci_passed"):
+            if entry["event"] in ("mr_created", "review_posted", "ci_failed", "ci_passed", "fix_applied"):
                 return entry["input_revision"]
             if (entry["event"] == "job_finished" and entry["transition"] == "review"
                     and entry["reason"] not in ("stale_revision", "not_picked", "goalie_usage")):
                 return entry["input_revision"]
         return None
+
+    def fix_rounds(self, repo, issue):
+        return sum(entry["event"] == "run_started" and entry["transition"] == "fix"
+                   and entry["repository"] == repo and entry.get("issue") == issue
+                   for entry in self.events)
 
     def held(self, fingerprint):
         latest = next((entry for entry in reversed(self.events)
@@ -574,10 +596,20 @@ class Controller:
     def _recover(self, run):
         repo, issue = run["repository"], run["issue"]
         review = run["transition"] == "review"
+        fix = run["transition"] == "fix"
         mr = run["mr"]
         work_dir = Path(run["work_dir"])
         if "job_id" not in run:
-            found = self.goalie.find_job_by_name(work_dir, run["job_name"])
+            if fix:
+                # 同じ MR の過去の修正ジョブも同名で受け箱に残り得る。
+                excluded_job_ids = {
+                    entry["job_id"] for entry in self.journal.events
+                    if entry["event"] == "job_submitted" and entry["run_id"] != run["run_id"]
+                    and entry["job_name"] == run["job_name"] and entry["work_dir"] == run["work_dir"]
+                }
+                found = self.goalie.find_job_by_name(work_dir, run["job_name"], excluded_job_ids)
+            else:
+                found = self.goalie.find_job_by_name(work_dir, run["job_name"])
             if found is None:
                 reason = "interrupted_before_submit"
                 self._fail(repo, issue, "ファクトリーの依頼投入が中断されました。受け箱を確認してください。", run)
@@ -624,14 +656,17 @@ class Controller:
                     verdict = parse_verdict(outcome.body)
                     self._run_event("review_posted", run, verdict=verdict)
                 self._label(repo, issue, "factory:failed" if verdict == "major" else "factory:reviewed", run)
+            elif fix:
+                reason = self._apply_fix(run)
             else:
                 reason = self._apply_implementation(run)
         elif kind == "not_picked":
-            self._label(repo, issue, "factory:mr-open" if review else None, run)
+            progress = {"review": "factory:mr-open", "fix": "factory:failed"}.get(run["transition"])
+            self._label(repo, issue, progress, run)
         elif kind == "failed":
             summary = outcome.body.strip()[:1000]
-            message = "ファクトリーのレビューに失敗しました。" if review else "ファクトリーの実装に失敗しました。"
-            self._fail(repo, issue, f"{message}\n\n{summary}".rstrip(), run)
+            task = {"review": "レビュー", "fix": "修正", "implement": "実装"}[run["transition"]]
+            self._fail(repo, issue, f"ファクトリーの{task}に失敗しました。\n\n{summary}".rstrip(), run)
         else:
             self._fail(repo, issue,
                        "依頼が残っている可能性があるため再投入しません。受け箱を確認してください。", run)
@@ -680,6 +715,60 @@ class Controller:
                                 issue=issue, transition="ci", input_revision=sha, mr=mr,
                                 idempotency_key=key)
         self._label(repo, issue, "factory:failed")
+
+    def _apply_fix(self, run):
+        repo, issue = run["repository"], run["issue"]
+        if not self._milestone(run, "fix_applied"):
+            work_dir = Path(run["work_dir"])
+            branch = issue_branch(issue)
+            self.git.fetch(work_dir)
+            failure = None
+            if not self.git.branch_exists(work_dir, branch):
+                failure = f"ブランチ `{branch}` が見つかりません。"
+            elif self.git.tracked_dirty(work_dir):
+                failure = "追跡対象のファイルに未コミットの変更があります。"
+            else:
+                sha = self.git.branch_head(work_dir, branch)
+                if sha == run["input_revision"]:
+                    failure = f"ブランチ `{branch}` に新しいコミットがありません。"
+            if failure:
+                self._fail(repo, issue, f"修正成果の検証に失敗しました。{failure}", run)
+                return "invalid_fix"
+            self.git.push(work_dir, branch)
+            self._run_event("fix_applied", run, input_revision=sha)
+        self._label(repo, issue, "factory:mr-open", run)
+        return "ok"
+
+    def _advance_fix(self, repo, issue, mr, sha, work_dir, can_submit):
+        number = issue["number"]
+        key = [repo, mr, "fix", sha]
+        if self.journal.last_for_key(key, {"fix_applied"}):
+            self._start(repo, issue, "fix", sha, work_dir, mr)
+        elif self.journal.fix_rounds(repo, number) >= self.config.fix_max_rounds:
+            self._escalate_fix(repo, number, mr, sha)
+        elif can_submit:
+            finished = self.journal.last_for_key(key, {"job_finished"})
+            if not finished or finished["reason"] in ("not_picked", "goalie_usage"):
+                self._start(repo, issue, "fix", sha, work_dir, mr)
+
+    def _escalate_fix(self, repo, issue, mr, sha):
+        key = [repo, mr, "fix-escalation", sha]
+        if self.journal.last_for_key(key, {"fix_escalated"}):
+            return
+        marker = f"<!-- factory:fix-escalated sha={sha} -->"
+        if not self.gitlab.mr_comment_exists(repo, mr, marker):
+            review = self.gitlab.find_review_comment(repo, mr, sha)
+            if review is None:
+                review = "レビュー結果を取得できませんでした。MR のレビューコメントを確認してください。"
+            self.gitlab.comment_mr(
+                repo, mr, f"{marker}\n## ファクトリーの修正を停止しました\n\n"
+                f"往復回数が上限（{self.config.fix_max_rounds} 回）に達しました。"
+                "自動修正を停止したため、人による対応をお願いします。\n\n"
+                f"対象リビジョン: `{sha}`\n\n{review}",
+            )
+        self.journal.record("fix_escalated", repository=repo, target_type="mr", target=mr,
+                            issue=issue, transition="fix", input_revision=sha, mr=mr,
+                            idempotency_key=key)
 
     def _remaining_jobs(self, repo=None, issue=None, work_dir=None):
         for entry in self.journal.events:
@@ -753,6 +842,10 @@ class Controller:
                                         target=mr_number, issue=number, transition="ci",
                                         input_revision=sha, mr=mr_number)
                     self._label(repo, number, "factory:mr-open")
+                elif self.config.fix_enabled and latest and latest["event"] != "ci_failed":
+                    review = self.journal.last_for_key([repo, mr_number, "review", sha], {"review_posted"})
+                    if review and review["verdict"] == "major" and review["run_id"] == latest["run_id"]:
+                        self._advance_fix(repo, issue, mr_number, sha, work_dir, can_submit)
             return
 
         sha = self.gitlab.mr_head_sha(repo, mr_number)
@@ -771,9 +864,11 @@ class Controller:
     def _start(self, repo, issue, transition, revision, work_dir, mr=None):
         number = issue["number"]
         review = transition == "review"
-        target = mr if review else number
+        fix = transition == "fix"
+        target = mr if review or fix else number
         key = [repo, target, transition, revision]
-        success = self.journal.last_for_key(key, {"review_posted" if review else "mr_created"})
+        success_event = {"review": "review_posted", "fix": "fix_applied", "implement": "mr_created"}
+        success = self.journal.last_for_key(key, {success_event[transition]})
         if success:
             progress = "factory:mr-open"
             if review:
@@ -794,6 +889,21 @@ class Controller:
                              DIFF_FILE=diff.relative_to(work_dir).as_posix())
             name = f"factory-review-{mr}"
             progress = "factory:in-review"
+        elif fix:
+            comment = self.gitlab.find_review_comment(repo, mr, revision)
+            if comment is None:
+                if not self.journal.last_for_key(key, {"fix_blocked"}):
+                    self.journal.record("fix_blocked", repository=repo, target_type="mr", target=mr,
+                                        issue=number, transition=transition, input_revision=revision,
+                                        mr=mr, idempotency_key=key, reason="review_comment_not_found")
+                return
+            if self.gitlab.mr_head_sha(repo, mr) != revision:
+                return
+            review_file = requests / f"{run_id}-review.md"
+            review_file.write_text(comment, encoding="utf-8")
+            variables.update(ISSUE_NUMBER=str(number), MR_NUMBER=str(mr), HEAD_SHA=revision,
+                             BRANCH=issue_branch(number), REVIEW_FILE=review_file.relative_to(work_dir).as_posix())
+            name = f"factory-fix-{mr}"
         else:
             variables.update(ISSUE_NUMBER=str(number), ISSUE_TITLE=issue.get("title") or "",
                              ISSUE_BODY=issue.get("body") or "", BRANCH=issue_branch(number))
@@ -803,10 +913,11 @@ class Controller:
         prompt = requests / f"{run_id}.md"
         prompt.write_text(re.sub(r"\{\{([A-Z_]+)\}\}", lambda match: variables[match[1]], template),
                           encoding="utf-8")
-        run = dict(repository=repo, target_type="mr" if review else "issue", target=target,
+        run = dict(repository=repo, target_type="mr" if review or fix else "issue", target=target,
                    issue=number, transition=transition, input_revision=revision, run_id=run_id,
                    job_name=name, mr=mr, idempotency_key=key, work_dir=str(work_dir))
-        self._label(repo, number, progress, run)
+        if not fix:
+            self._label(repo, number, progress, run)
         self._run_event("run_started", run)
         submitted_at = self.clock()
         try:

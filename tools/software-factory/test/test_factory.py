@@ -56,6 +56,10 @@ class FakeGitLab:
     def mr_comment_exists(self, repo, number, marker):
         return any(mr == number and marker in body for mr, body in self.mr_comments)
 
+    def find_review_comment(self, repo, mr, sha):
+        return next((body for number, body in self.mr_comments
+                     if number == mr and "<!-- factory:review " in body and f"sha={sha}" in body), None)
+
     def find_mr_by_head(self, repo, branch):
         mr = self.mrs.get(branch)
         return mr if mr and mr["state"] == "OPEN" else None
@@ -125,6 +129,7 @@ class FakeGit:
         self.has_branch = True
         self.ahead = 1
         self.dirty = False
+        self.head = "sha-two"
         self.verification_calls = []
 
     def fetch(self, work_dir):
@@ -140,6 +145,10 @@ class FakeGit:
 
     def tracked_dirty(self, work_dir):
         return self.dirty
+
+    def branch_head(self, work_dir, branch):
+        self.verification_calls.append(("branch_head", work_dir, branch))
+        return self.head
 
     def push(self, work_dir, branch):
         self.pushes.append(branch)
@@ -371,6 +380,203 @@ class ControllerTests(unittest.TestCase):
                          [(run["run_id"], "clear")])
         self.assertFalse(journal.unresolved())
 
+    def post_major_review(self):
+        mr = self.open_mr()
+        self.gitlab.checks = "success"
+        self.poll()
+        self.goalie.finish("job-2", "FACTORY-VERDICT: major\n- [重大] 修正してください")
+        self.poll()
+        self.assert_progress("factory:failed")
+        return mr
+
+    def start_fix(self, max_rounds=3):
+        self.values["fix"] = {"enabled": True, "max_rounds": max_rounds}
+        mr = self.post_major_review()
+        self.poll()
+        self.assertEqual(self.goalie.calls[-1][2], "factory-fix-42")
+        return mr
+
+    def finish_fix(self, mr):
+        self.goalie.finish("job-3", "BRANCH: factory/issue-1")
+        journal = self.poll()
+        self.assert_progress("factory:mr-open")
+        self.assertEqual(self.git.pushes, ["factory/issue-1", "factory/issue-1"])
+        repo = self.values["repositories"][0]
+        applied = journal.last_for_key([repo, mr["number"], "fix", "sha-one"], {"fix_applied"})
+        self.assertEqual((applied["input_revision"], applied["mr"]), ("sha-two", mr["number"]))
+        self.assertEqual(journal.last_sha(repo, 1), "sha-two")
+        mr["headRefOid"] = self.git.head
+
+    def test_fix_is_disabled_by_default(self):
+        self.post_major_review()
+        self.poll()
+        self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.goalie.calls), 2)
+
+    def test_fix_enabled_does_not_treat_ci_failure_as_a_major_review(self):
+        self.values["fix"]["enabled"] = True
+        self.open_mr()
+        self.gitlab.checks = "failure"
+        self.poll()
+        self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.goalie.calls), 1)
+        self.gitlab.checks = "success"
+        self.poll()
+        self.assert_progress("factory:mr-open")
+        self.poll()
+        self.assertEqual(self.goalie.calls[-1][2], "factory-review-42")
+
+    def test_fix_submits_review_file_and_keeps_failed_label_while_pending(self):
+        self.start_fix()
+        work_dir, prompt, name = self.goalie.calls[-1]
+        self.assertEqual(name, "factory-fix-42")
+        review_file = prompt.with_name(prompt.stem + "-review.md")
+        self.assertEqual(review_file.read_text(encoding="utf-8"), self.gitlab.mr_comments[0][1])
+        request = prompt.read_text(encoding="utf-8")
+        for value in ("factory/issue-1", "sha-one", review_file.relative_to(work_dir).as_posix()):
+            self.assertIn(value, request)
+        self.assert_progress("factory:failed")
+        self.poll()
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.goalie.calls), 3)
+        self.assertEqual([(run["job_id"], run["transition"]) for run in journal.unresolved()],
+                         [("job-3", "fix")])
+
+    def test_fix_pushes_and_returns_to_ci_then_review(self):
+        mr = self.start_fix()
+        self.gitlab.checks = "pending"
+        self.finish_fix(mr)
+        self.poll()
+        self.assertEqual(len(self.goalie.calls), 3)
+        self.gitlab.checks = "success"
+        journal = self.poll()
+        self.assert_progress("factory:in-review")
+        self.assertEqual(self.goalie.calls[-1][2], "factory-review-42")
+        self.assertEqual(journal.unresolved()[0]["input_revision"], "sha-two")
+        self.goalie.finish("job-4", "FACTORY-VERDICT: clear")
+        self.poll()
+        self.assert_progress("factory:reviewed")
+
+    def test_fix_escalates_once_after_second_major_review(self):
+        mr = self.start_fix(max_rounds=1)
+        self.finish_fix(mr)
+        self.poll()
+        self.goalie.finish("job-4", "FACTORY-VERDICT: major\n- [重大] 指摘が残っています")
+        self.poll()
+        self.poll()
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.goalie.calls), 4)
+        self.assertEqual(len(self.gitlab.mr_comments), 3)
+        number, comment = self.gitlab.mr_comments[-1]
+        self.assertEqual(number, mr["number"])
+        self.assertTrue(comment.startswith("<!-- factory:fix-escalated sha=sha-two -->"))
+        self.assertIn("上限（1 回）", comment)
+        self.assertIn(self.gitlab.mr_comments[-2][1], comment)
+        self.assertEqual(sum(event["event"] == "fix_escalated" for event in journal.events), 1)
+
+    def test_fix_not_picked_is_withdrawn_and_retried_on_next_cycle(self):
+        self.start_fix(max_rounds=2)
+        self.now += 61
+        journal = self.poll()
+        withdrawn = self.goalie.path("job-3", "tmp").with_name("job-3.withdrawn.md")
+        self.assertTrue(withdrawn.is_file())
+        self.assertEqual(journal.events[-2]["exit_code"], 3)
+        self.assertEqual(len(self.goalie.calls), 3)
+        self.assert_progress("factory:failed")
+        journal = self.poll()
+        self.assertEqual(len(self.goalie.calls), 4)
+        self.assertEqual(self.goalie.calls[-1][2], "factory-fix-42")
+        self.assertEqual(journal.fix_rounds(self.values["repositories"][0], 1), 2)
+
+    def test_fix_running_timeout_is_not_retried_even_after_inbox_cleanup(self):
+        self.start_fix()
+        self.goalie.path("job-3", "pending").unlink()
+        self.goalie.write("job-3", "running", "request")
+        self.now += 61
+        journal = self.poll()
+        self.assertEqual(journal.events[-2]["exit_code"], 4)
+        self.assert_progress("factory:failed")
+        self.poll()
+        self.goalie.path("job-3", "running").unlink()
+        self.poll()
+        self.assertEqual(len(self.goalie.calls), 3)
+        self.assertEqual(len(self.gitlab.issue_comments), 1)
+
+    def test_fix_missing_review_comment_is_recorded_only_once(self):
+        self.values["fix"]["enabled"] = True
+        self.post_major_review()
+        self.gitlab.mr_comments.clear()
+        self.poll()
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.goalie.calls), 2)
+        blocked = [event for event in journal.events if event["event"] == "fix_blocked"]
+        self.assertEqual([event["reason"] for event in blocked], ["review_comment_not_found"])
+        self.assertEqual(blocked[0]["idempotency_key"],
+                         [self.values["repositories"][0], 42, "fix", "sha-one"])
+
+    def test_fix_rejects_invalid_artifacts(self):
+        self.start_fix()
+        for attributes, message in (
+            ({"has_branch": False}, "見つかりません"),
+            ({"has_branch": True, "dirty": True}, "未コミット"),
+            ({"dirty": False, "head": "sha-one"}, "新しいコミットがありません"),
+        ):
+            with self.subTest(attributes=attributes):
+                for name, value in attributes.items():
+                    setattr(self.git, name, value)
+                controller = self.controller()
+                controller.journal.load()
+                run = controller.journal.unresolved()[0]
+                self.assertEqual(controller._apply_fix(run), "invalid_fix")
+                self.assertIn(message, self.gitlab.issue_comments[-1][1])
+                self.assert_progress("factory:failed")
+        self.assertEqual(self.git.pushes, ["factory/issue-1"])
+
+    def test_fix_recovery_does_not_push_again_after_milestone(self):
+        mr = self.start_fix()
+        self.goalie.finish("job-3", "BRANCH: factory/issue-1")
+        with patch.object(self.gitlab, "set_progress_label", side_effect=factory.GitLabError("label")):
+            with self.assertRaises(factory.GitLabError):
+                self.poll()
+        journal = self.poll()
+        self.assert_progress("factory:mr-open")
+        self.assertFalse(journal.unresolved())
+        self.assertEqual(self.git.pushes, ["factory/issue-1", "factory/issue-1"])
+        applied = [event for event in journal.events if event["event"] == "fix_applied"]
+        self.assertEqual([event["mr"] for event in applied], [mr["number"]])
+
+    def test_interrupted_fix_does_not_adopt_an_earlier_fix_job_with_the_same_name(self):
+        mr = self.start_fix()
+        work_dir = self.goalie.calls[-1][0]
+        result = self.goalie.path("job-3", "results")
+        previous_job_id = "job-3-factory-fix-42"
+        self.finish_fix(mr)
+        result.rename(result.with_name(f"{previous_job_id}.md"))
+        self.poll()
+        self.goalie.finish("job-4", "FACTORY-VERDICT: major")
+        self.poll()
+        journal = self.poll()
+        self.assertEqual(self.goalie.calls[-1][2], "factory-fix-42")
+        for event in journal.events:
+            if event.get("job_id") == "job-3":
+                event["job_id"] = previous_job_id
+        journal.path.write_text(
+            "".join(json.dumps(event) + "\n" for event in journal.events
+                    if event["event"] != "job_submitted" or event["job_id"] != "job-5"),
+            encoding="utf-8",
+        )
+        self.goalie.path("job-5", "pending").unlink()
+        self.assertTrue((work_dir / ".copilot-jobs" / "results" / f"{previous_job_id}.md").is_file())
+        journal = self.poll()
+        self.assertEqual(journal.events[-2]["reason"], "interrupted_before_submit")
+        self.assert_progress("factory:failed")
+        self.assertEqual(len(self.git.pushes), 2)
+
     def test_existing_mr_is_adopted_without_implementation(self):
         self.assert_existing_mr_adopted(None)
 
@@ -581,6 +787,15 @@ class FakeTransport:
 
 
 class ClientTests(unittest.TestCase):
+    def test_find_review_comment_matches_marker_and_sha_across_pages(self):
+        matching = "<!-- factory:review run=abc sha=target -->\nレビュー結果"
+        earlier = [{"body": "<!-- factory:review run=old sha=old -->"},
+                   {"body": "sha=target"}, {"body": None}]
+        transport = FakeTransport(earlier + [{}] * 97, [{"body": matching}], earlier)
+        client = factory.GitLabClient(transport)
+        self.assertEqual(client.find_review_comment("group/project", 42, "target"), matching)
+        self.assertIsNone(client.find_review_comment("group/project", 42, "missing"))
+
     def test_urllib_transport_builds_authenticated_json_request(self):
         transport = factory.UrllibTransport("https://gitlab.example.test/", "dummy-token")
         with patch.object(transport.opener, "open", return_value=io.BytesIO(b'{"iid": 42}')) as open_request:
@@ -771,6 +986,16 @@ class ClientTests(unittest.TestCase):
 
 
 class CliAndFormattingTests(unittest.TestCase):
+    def test_fix_max_rounds_defaults_and_rejects_invalid_values(self):
+        values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
+        values["fix"] = {"enabled": False}
+        config = factory.Config(values)
+        self.assertFalse(config.fix_enabled)
+        self.assertEqual(config.fix_max_rounds, 3)
+        for value in (0, -1, True, False, "3", 1.5, None):
+            with self.subTest(value=value), self.assertRaisesRegex(factory.ConfigError, "fix.max_rounds"):
+                factory.Config({**values, "fix": {"enabled": True, "max_rounds": value}})
+
     def test_config_rejects_invalid_limits_and_empty_repositories(self):
         values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
         for key, value in (

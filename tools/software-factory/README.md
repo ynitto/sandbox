@@ -1,6 +1,6 @@
-# ソフトウェアファクトリー Phase 1
+# ソフトウェアファクトリー Phase 2
 
-Dagu から定期実行するコントローラーが、社内セルフホスト GitLab の `factory` ラベル付き Issue を処理します。実装とレビューは goalie の受け箱を通じてローカルの Copilot アプリに依頼します。コントローラーは Python 3.9 以上の標準ライブラリで動作し、`urllib` で GitLab REST API v4 を呼び出します。タイトルに `Draft:` 接頭辞を付けてドラフト MR を作成し、GitLab CI の結果を確認してレビュー結果を MR のノートに投稿します。マージは人が判断して行います。
+Dagu から定期実行するコントローラーが、社内セルフホスト GitLab の `factory` ラベル付き Issue を処理します。実装・レビュー・修正は goalie の受け箱を通じてローカルの Copilot アプリに依頼します。コントローラーは Python 3.9 以上の標準ライブラリで動作し、`urllib` で GitLab REST API v4 を呼び出します。タイトルに `Draft:` 接頭辞を付けてドラフト MR を作成し、GitLab CI の結果を確認してレビュー結果を MR のノートに投稿します。マージは人が判断して行います。
 
 このツール自体の開発・単体テスト CI は sandbox（GitHub）で行います。
 
@@ -10,7 +10,7 @@ Dagu から定期実行するコントローラーが、社内セルフホスト
 | --- | --- |
 | `factory.py` | CLI、クライアント、状態遷移、ジャーナル |
 | `factory.example.json` | `init` が書き出す設定の雛形 |
-| `tasks/implement.md`、`tasks/review.md` | Copilot アプリへの依頼文の雛形 |
+| `tasks/implement.md`、`tasks/review.md`、`tasks/fix.md` | Copilot アプリへの依頼文の雛形 |
 | `dags/factory-controller.example.yaml` | 5 分ごとにポーリングする Dagu の設定例 |
 | `test/test_factory.py` | 外部コマンドやネットワークを使わない単体テスト |
 
@@ -36,7 +36,8 @@ Dagu から定期実行するコントローラーが、社内セルフホスト
 | `goalie_py` | `goalie.py` のパス |
 | `job_timeout_sec` | goalie に投入してからタイムアウトとするまでの秒数 |
 | `review.enabled` | CI 成功後にレビューを依頼するか |
-| `fix.enabled` | Phase 2 用。Phase 1 では設定を読み取り、状態遷移には使わない |
+| `fix.enabled` | レビューの重大な指摘に対する修正を自動で依頼するか。雛形では `false` |
+| `fix.max_rounds` | Issue ごとの修正ジョブ投入上限。1 以上の整数で、既定値は 3 |
 | `journal` | 追記型の JSONL ジャーナルのパス |
 
 ## 使い方
@@ -60,23 +61,30 @@ python tools/software-factory/factory.py status --config path/to/factory.json
 | `factory:implementing` | 実装ジョブの完了を待つ間はこの状態を維持する。完了を確認したサイクルで成果のブランチ、コミット、追跡対象ファイルの状態を確認し、ドラフト MR を作成または再利用して `factory:mr-open` にする |
 | `factory:mr-open` | CI が未完了なら待機する。失敗なら MR にノートを投稿して `factory:failed`、成功なら `factory:in-review` に進む。レビュー無効時は直接 `factory:reviewed` にする |
 | `factory:in-review` | レビュージョブの完了を待つ間はこの状態を維持する。完了を確認したサイクルで、同じ head で CI が成功していればレビューを投稿し、重大な指摘があれば `factory:failed`、無ければ `factory:reviewed` にする。head が変わった場合は `factory:mr-open` に戻す |
+| `factory:failed`（レビューの重大な指摘） | 修正が無効なら人の対応を待つ。有効なら枠が空いた時点で修正を投入する。上限に達していれば MR にコメントして人に引き継ぐ。修正成果を検証して push できたら `factory:mr-open` に戻す |
 | `factory:reviewed` / `factory:failed` | head が変わり、未解決の実行や受け箱に残る依頼がなければ `factory:mr-open` に戻す |
 
 CI ゲート（ブレーキ1）は GitLab CI の設定が前提です。`skipped` は成功扱いとし、パイプラインが無い場合は `pending` のまま待機します。
 
-進捗ラベルは Issue ごとに常に最大 1 個です。付け替える際は旧ラベルを外します。対象ラベル（`label`）は人が外すまで残ります。Phase 1 のレビュー報告は、対象 SHA と判定を表示でき、承認や変更要求の権限を前提としない MR のノートを採用しています。
+進捗ラベルは Issue ごとに常に最大 1 個です。付け替える際は旧ラベルを外します。対象ラベル（`label`）は人が外すまで残ります。レビュー報告は、対象 SHA と判定を表示でき、承認や変更要求の権限を前提としない MR のノートを採用しています。
+
+### Phase 2 の自動修正
+
+`factory.json` に `"fix": {"enabled": true, "max_rounds": 3}` を設定します。レビューに重大な指摘があると、コントローラーは修正を依頼し、成果を検証して既存 MR のブランチに push します。Issue を `factory:mr-open` に戻し、新しいリビジョンで CI が成功したら再レビューします。CI 失敗は自動修正の対象外です。
+
+往復回数は Issue ごとに修正ジョブの投入回数を数えます。終了コード 3 相当で取り下げた依頼も、再投入した依頼もそれぞれ 1 回と数えます。上限に達して重大な指摘が残っている場合は、レビュー結果を添えたコメントを MR に投稿し、`factory:failed` のまま人に引き継ぎます。修正ジョブの実行中もラベルは `factory:failed` のままで、ジャーナルと `status` の未解決の実行で進捗を確認できます。
 
 ### goalie の結果
 
 | 結果 | 処理 |
 | --- | --- |
-| 0 相当 | 実装またはレビューの結果を適用する |
+| 0 相当 | 実装・レビュー・修正の結果を適用する |
 | 1 相当 | Issue に失敗の要旨をコメントし、`factory:failed` にする |
 | 投入時の 2 | Issue にコメントし、設定ファイルが変わるまで新規投入を保留する。結果回収と CI 照合は続ける |
-| 3 相当 | 未着手の依頼を取り下げ、次のサイクル以降に実装またはレビューを再投入できる状態に戻す |
+| 3 相当 | 未着手の依頼を取り下げ、次のサイクル以降に再投入できる状態に戻す。修正の再投入は残り回数がある場合に行う |
 | 4 相当 | `factory:failed` にし、Issue に受け箱の確認を依頼する。依頼ファイルが残る作業フォルダへの新規投入は待つ |
 | `missing` | 結果不明として `factory:failed` にし、Issue に受け箱の確認を依頼する |
 
 ## 検証状況と今後
 
-`python -m unittest discover -s tools/software-factory/test` で単体テストを実行できます。実 GitLab、実 Copilot アプリ、実 Dagu での連携は未検証です。Phase 2 以降の修正依頼に向けて `fix.enabled` を用意しています。
+`python -m unittest discover -s tools/software-factory/test` で単体テストを実行できます。Phase 2 の修正ジョブ、再レビュー、上限到達時の引き継ぎを実装しました。実 GitLab、実 Copilot アプリ、実 Dagu での連携は引き続き未検証です。
