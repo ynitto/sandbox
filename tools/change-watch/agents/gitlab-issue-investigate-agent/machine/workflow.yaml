@@ -1,0 +1,67 @@
+name: "GitLab Issue 原因調査"
+initial_state: read_issue
+
+inputs:
+  issue_title:
+    label: Issue のタイトル
+    type: text
+  issue_url:
+    label: Issue の URL
+    type: url
+  issue_body:
+    label: Issue の本文
+    type: multiline
+  labels:
+    label: ラベル
+    type: text
+    required: false
+
+config:
+  max_steps: 12
+
+states:
+  read_issue:
+    description: "イシューを読み、調査観点を整理する"
+    action_file: actions/read_issue.md
+    output_validator: "startswith:OK,FAILED"
+    output_key: viewpoints
+  investigate:
+    description: "コードと履歴を調査し、原因の見立てを作る"
+    action_file: actions/investigate.md
+    output_validator: "startswith:FOUND,NOT_FOUND"
+    output_key: findings
+  draft_comment:
+    description: "調査結果のコメント原案を作る"
+    action_file: actions/draft_comment.md
+    terminal: true
+    output_key: comment_draft
+  draft_inconclusive:
+    description: "特定できなかった旨のコメント原案を作る"
+    action_file: actions/draft_inconclusive.md
+    terminal: true
+    output_key: comment_draft
+  failed:
+    description: "進められない旨を返す"
+    action_file: actions/failed.md
+    terminal: true
+    output_key: comment_draft
+
+transitions:
+  - from: read_issue
+    to: investigate
+    condition_rule: "startswith:last_output:OK"
+    priority: 1
+  - from: read_issue
+    to: failed
+    condition_rule: "startswith:last_output:FAILED"
+    priority: 2
+  - from: investigate
+    to: draft_comment
+    condition_rule: "startswith:last_output:FOUND"
+    priority: 1
+    outcome: "原因の見立てが立った"
+  - from: investigate
+    to: draft_inconclusive
+    condition_rule: "startswith:last_output:NOT_FOUND"
+    priority: 2
+    outcome: "原因を特定できなかった"

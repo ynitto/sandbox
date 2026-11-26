@@ -1,0 +1,121 @@
+# 毎分起動し、get → investigate → commit → commit-removed の順で 1 件を処理する。
+# 新規の開いている Issue を調査し、本文を投稿した後の姿を commit --refresh で記録する。
+# タイトル一致文字列は env の ISSUE_INVESTIGATE_TITLE_CONTAINS で変える。
+# goalie が依頼を拾わなかったときだけ再試行する。失敗やスキップでも commit へ進む。
+description: "新規の GitLab Issue を Copilot アプリで調査し、結果をコメントする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/change-watch/gitlab-issue-investigate-agent/gitlab-issue-investigate-agent.env"
+steps:
+  - name: get
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-investigate-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "get"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-investigate"          # commit と同じ名前。ワークフローごとに別の名前にすると、それぞれが全部の変化を受け取る
+        - "--watch"              # これらのどれかが変わったときだけ変化にする（updated_at だけの更新では起こさない）
+        - "title"
+        - "--watch"
+        - "state"
+        - "--watch"
+        - "labels"
+        - "--watch"
+        - "assignees"
+        - "--watch"
+        - "milestone"
+        - "--watch"
+        - "due_date"
+        - "--watch"
+        - "description"
+        - "--watch"
+        - "user_notes_count"
+        - "--one"                # 1 件を JSON（key・kind・record・before・changes）で出す。無ければ何も出さない
+    timeout_sec: 1440            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+    output: CHANGE
+  - name: investigate
+    depends: [get]
+    preconditions:
+      - condition: "${CHANGE.kind}"
+        expected: "appeared"
+      - condition: "${CHANGE.record.state}"
+        expected: "opened"
+    continue_on:
+      skipped: true
+      failure: true
+    retry_policy:
+      limit: 3
+      interval_sec: 300
+      exit_code: [3]
+    timeout_sec: 3900
+    action: exec
+    with:
+      command: "python3"
+      args:
+        - "/home/you/.local/share/change-watch/agents/gitlab-issue-investigate-agent/issue_investigate.py"
+        - "run"
+      stdin: "${CHANGE}"
+  - name: commit
+    depends: [investigate]
+    preconditions:              # 一覧にある issue だけ取り直す（removed は commit-removed で記録する）
+      - condition: "${CHANGE.kind}"
+        expected: "re:^(appeared|changed)$"
+    continue_on:
+      skipped: true
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-investigate-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-investigate"
+        - "--refresh"            # issue を取り直した姿で記録する（エージェント自身のコメントで次に起きない）
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]
+  - name: commit-removed
+    depends: [commit]
+    preconditions:              # 消えた issue を取り直すと、閉じた issue が取得結果に復活してしまう
+      - condition: "${CHANGE.kind}"
+        expected: "removed"
+    action: exec
+    with:
+      command: "/home/you/.local/bin/change-watch"
+      args:
+        - "--config"
+        - "/home/you/.config/change-watch/gitlab-issue-investigate-agent/change-watch.yaml"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "commit"
+        - "--source"
+        - "gitlab-issues"
+        - "--consumer"
+        - "issue-investigate"
+        - "${CHANGE.key}"
+    timeout_sec: 600
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      exit_code: [3]

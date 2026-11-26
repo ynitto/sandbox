@@ -224,6 +224,11 @@ def install_agent(agent: str, *, windows: bool, home: Path, bin_dir: Path, pytho
     for f in programs:
         shutil.copy2(f, prog_dir / f.name)
         print(f"置きました: {prog_dir / f.name}")
+    machine = AGENTS / agent / "machine"
+    if (machine / "workflow.yaml").is_file():
+        # 定義と action_file の相対位置を保ち、プログラムの隣に置く。
+        shutil.copytree(machine, prog_dir / machine.name, dirs_exist_ok=True)
+        print(f"置きました: {prog_dir / machine.name}")
     todo: list[str] = []
     targets = [(f, home / ".config" / NAME / agent, False) for f in templates]
     if dagu_dir is not None:

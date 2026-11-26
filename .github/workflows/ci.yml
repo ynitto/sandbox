@@ -85,6 +85,9 @@ jobs:
           # get → 条件 → commit の順に回したときの「変わった issue を 1 回だけ流す」と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/change-watch/agents/gitlab-issue-agent/test
+          # gitlab-issue-investigate-agent。GitLab と goalie を差し替え、調査結果の投稿とステートマシン定義を検証する。
+          - package: gitlab-issue-investigate-agent
+            suites: tools/change-watch/agents/gitlab-issue-investigate-agent/test
           # gitlab-issue-hub-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_hub.py の note・reply と、設定とワークフローの例を
           # 本物の change-watch で get → request → reply → commit の順に回したときの「【依頼】にだけ 1 回返信する」「通知を書く」を見る。
           - package: gitlab-issue-hub-agent
