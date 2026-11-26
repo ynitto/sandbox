@@ -1,0 +1,12 @@
+{
+  "repositories": ["internal-org/internal-repo"],
+  "label": "factory",
+  "poll_interval_sec": 300,
+  "max_concurrent": 1,
+  "work_root": "C:/work/factory",
+  "goalie_py": "C:/tools/goalie/goalie.py",
+  "job_timeout_sec": 7200,
+  "review": {"enabled": true},
+  "fix": {"enabled": false},
+  "journal": "C:/work/factory/journal.jsonl"
+}

@@ -1,0 +1,17 @@
+# command と args のパスを実行環境に合わせる。
+# poll_interval_sec とスケジュールを合わせること。
+# Dagu の自動再試行は使わず、controller の照合に任せること。
+description: "ソフトウェアファクトリーの Issue と goalie の受け箱を照合する"
+schedule: "*/5 * * * *"
+type: graph
+hist_retention_days: 30
+steps:
+  - name: poll
+    action: exec
+    with:
+      command: python
+      args:
+        - "C:/tools/software-factory/factory.py"
+        - "poll"
+        - "--config"
+        - "C:/work/factory/factory.json"
