@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,10 +17,18 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 HERE = Path(__file__).resolve().parent
 MARKER = "<!-- gitlab-issue-investigate-agent -->"
 DEFAULT_STATE_DIR = "~/.local/state/change-watch/gitlab-issue-investigate-agent"
+GITLAB_TOKEN_NAMES = {"GITLAB_TOKEN", "GL_TOKEN"}
+SECRET_NAME_PARTS = (
+    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "PRIVATE_KEY", "CREDENTIAL",
+)
 
 
 class ConfigError(ValueError):
     """必須項目がないか、値が使えない。"""
+
+
+class TransientError(Exception):
+    """再試行できる GitLab 通信エラー。"""
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -41,11 +50,21 @@ class GitLab:
         self.headers = {"PRIVATE-TOKEN": token, "Content-Type": "application/json"}
         self.transport = transport
 
+    def _request(self, method, url, data=None):
+        try:
+            return self.transport.request(method, url, self.headers, data)
+        except HTTPError as exc:
+            if exc.code == 429 or 500 <= exc.code < 600:
+                raise TransientError(f"GitLab API が HTTP {exc.code} を返しました") from exc
+            raise
+        except OSError as exc:
+            raise TransientError("GitLab API との通信に失敗しました") from exc
+
     def has_result(self, iid):
         page = 1
         while True:
             query = urlencode({"per_page": 100, "page": page})
-            notes = self.transport.request("GET", f"{self.issues}/{iid}/notes?{query}", self.headers)
+            notes = self._request("GET", f"{self.issues}/{iid}/notes?{query}")
             if not isinstance(notes, list):
                 raise ValueError("ノート一覧の形式が不正です")
             if any(MARKER in (note.get("body") or "") for note in notes):
@@ -56,7 +75,12 @@ class GitLab:
 
     def post_result(self, iid, body):
         data = json.dumps({"body": body}, ensure_ascii=False).encode("utf-8")
-        self.transport.request("POST", f"{self.issues}/{iid}/notes", self.headers, data)
+        self._request("POST", f"{self.issues}/{iid}/notes", data)
+
+
+def is_secret_name(name):
+    name = name.upper()
+    return name != "PWD" and any(part in name for part in SECRET_NAME_PARTS)
 
 
 def required(env, name):
@@ -125,11 +149,15 @@ def run(change, env, *, dry_run=False, transport=None, goalie_run=subprocess.run
     state_dir = Path(env.get("ISSUE_INVESTIGATE_STATE_DIR", DEFAULT_STATE_DIR)).expanduser().resolve()
     dry_run = dry_run or env.get("ISSUE_INVESTIGATE_DRY_RUN", "").strip().lower() in {"1", "true", "yes", "on"}
 
+    secret_names = {name for name in env if is_secret_name(name)}
+    secrets = {
+        env[name] for name in secret_names
+        if env[name] and (name.upper() in GITLAB_TOKEN_NAMES or len(env[name]) >= 8)
+    }
+    secret_pattern = re.compile("|".join(map(re.escape, sorted(secrets, key=len, reverse=True))))
+
     def redact(value):
-        for secret in (token, env.get("GL_TOKEN")):
-            if secret:
-                value = value.replace(secret, "[非表示]")
-        return value
+        return secret_pattern.sub("[非表示]", value) if secrets else value
 
     gitlab = GitLab(url, project, token, transport if transport is not None else UrllibTransport())
     # 結果を投稿する前に控える。投稿に失敗した場合も goalie は再投入しない。
@@ -156,7 +184,7 @@ def run(change, env, *, dry_run=False, transport=None, goalie_run=subprocess.run
         if not goalie.is_file():
             raise ConfigError("goalie.py が見つかりません。ISSUE_INVESTIGATE_GOALIE_PY を設定してください")
         path = write_request(state_dir / "requests", iid, content)
-        child_env = {key: value for key, value in env.items() if key not in {"GITLAB_TOKEN", "GL_TOKEN"}}
+        child_env = {key: value for key, value in env.items() if key not in secret_names}
         result = goalie_run(
             [sys.executable, str(goalie), "job", "run", "--dir", str(work_dir),
              "--prompt-file", str(path), "--name", f"issue-investigate-{iid}", "--timeout", str(timeout)],
@@ -179,6 +207,7 @@ def run(change, env, *, dry_run=False, transport=None, goalie_run=subprocess.run
         pending.parent.mkdir(parents=True, exist_ok=True)
         # 書きかけのコメントを次の実行で拾わないよう、同じフォルダ内で置き換える。
         write_request(pending.parent, iid, body).replace(pending)
+        path.unlink(missing_ok=True)
 
     gitlab.post_result(iid, body)
     pending.unlink(missing_ok=True)
@@ -194,6 +223,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         return run(json.load(sys.stdin), os.environ, dry_run=args.dry_run)
+    except TransientError as exc:
+        print(exc, file=sys.stderr)
+        return 3
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2

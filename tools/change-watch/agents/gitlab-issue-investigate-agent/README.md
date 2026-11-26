@@ -19,7 +19,9 @@
 
 仕様は [.github/skills/statemachine-use/SKILL.md](../../../../.github/skills/statemachine-use/SKILL.md) と [references/schema.md](../../../../.github/skills/statemachine-use/references/schema.md) を参照してください。
 
-実際に GitLab へ投稿するのは `issue_investigate.py` です。GitLab トークンを Copilot アプリ側に渡さないよう、goalie の子プロセス環境から `GITLAB_TOKEN` と `GL_TOKEN` を外します。アプリからはステートマシンの最終出力（コメント原案）を受け取ります。
+実際に GitLab へ投稿するのは `issue_investigate.py` です。goalie の子プロセス環境から、名前に `TOKEN`、`SECRET`、`PASSWORD`、`PASSWD`、`API_KEY`、`APIKEY`、`PRIVATE_KEY`、`CREDENTIAL` を含む変数（大文字小文字を区別しない）を外します。依頼内容とコメント原案に含まれるこれらの値は 8 文字以上で伏せ字にし、`GITLAB_TOKEN` と `GL_TOKEN` の値は長さを問わず伏せ字にします。
+
+調査結果はコメントに掲載されるため、作業フォルダ側では秘密情報を出力しないでください。
 
 ## 入れ方
 
@@ -54,7 +56,9 @@ python3 tools/change-watch/install.py install --agent gitlab-issue-investigate-a
 | 3 | 依頼は拾われず取り下げ済み。Dagu が 300 秒間隔で最大 3 回再試行する |
 | 4 | 着手済みの依頼が残る。再投入せず、タイムアウトと手動確認の案内を投稿する |
 
-投稿対象の終了コードは結果をローカルに控えてから投稿します。投稿に失敗して同じ Issue を再処理したときは、控えた結果を使います。
+投稿対象の終了コードは結果をローカルに控え、その回の依頼ファイルを削除してから投稿します。試運転では確認用に依頼ファイルを残します。
+
+GitLab のコメント確認・投稿で HTTP 429、5xx、ネットワークエラーが発生すると、エージェントは終了コード 3 を返し、Dagu が 300 秒間隔で最大 3 回再試行します。再試行時に投稿待ちの結果があれば、goalie に再依頼せずにその結果を使います。その他の HTTP エラー、設定エラー、ローカルファイル操作のエラーは終了コード 2 になります。
 
 ## 設定項目
 

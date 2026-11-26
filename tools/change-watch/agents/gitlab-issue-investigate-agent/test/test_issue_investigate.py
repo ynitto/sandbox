@@ -1,14 +1,18 @@
 """GitLab と goalie を差し替えて、新規 Issue の調査と投稿を確かめる。"""
 from contextlib import redirect_stderr, redirect_stdout
+from functools import partial
 import importlib.util
 from io import StringIO
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError, URLError
 
 AGENT = Path(__file__).resolve().parents[1]
 ROOT = AGENT.parents[3]
@@ -22,6 +26,7 @@ class FakeGitLab:
         self.calls = []
         self.posts = []
         self.fail_post = False
+        self.post_error = None
 
     def request(self, method, url, headers, data=None):
         self.calls.append((method, url, headers))
@@ -29,6 +34,8 @@ class FakeGitLab:
             return self.pages.get(int(url.rsplit("=", 1)[1]), [])
         if self.fail_post:
             raise OSError("投稿できない")
+        if self.post_error is not None:
+            raise self.post_error
         self.posts.append(json.loads(data)["body"])
         self.pages.setdefault(1, []).append({"body": self.posts[-1]})
 
@@ -67,6 +74,17 @@ class InvestigateTest(unittest.TestCase):
             return agent.run(self.change, self.env, dry_run=dry_run,
                              transport=self.gitlab, goalie_run=self.goalie)
 
+    def invoke_main(self):
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(sys, "stdin", StringIO(json.dumps(self.change))),
+            patch.object(agent, "UrllibTransport", return_value=self.gitlab),
+            patch.object(agent, "run", partial(agent.run, goalie_run=self.goalie)),
+            redirect_stdout(self.stdout),
+            redirect_stderr(self.stderr),
+        ):
+            return agent.main(["run"])
+
     def assert_skipped(self):
         self.assertEqual(self.invoke(), 0)
         self.goalie.assert_not_called()
@@ -96,6 +114,15 @@ class InvestigateTest(unittest.TestCase):
         self.assertFalse(self.gitlab.posts)
 
     def test_matching_title_posts_result_and_passes_inputs(self):
+        prompt = None
+
+        def read_prompt(args, **kwargs):
+            nonlocal prompt
+            path = Path(args[args.index("--prompt-file") + 1])
+            prompt = path.read_text(encoding="utf-8")
+            return self.goalie.return_value
+
+        self.goalie.side_effect = read_prompt
         self.assertEqual(self.invoke(), 0)
         self.goalie.assert_called_once()
         args = self.goalie.call_args.args[0]
@@ -104,7 +131,7 @@ class InvestigateTest(unittest.TestCase):
         self.assertEqual(args[8:], ["--name", "issue-investigate-42", "--timeout", "3600"])
         path = Path(args[args.index("--prompt-file") + 1])
         self.assertEqual(path.parent, self.directory / "state" / "requests")
-        prompt = path.read_text(encoding="utf-8")
+        self.assertFalse(path.exists())
         self.assertIn(str(AGENT / "machine" / "workflow.yaml"), prompt)
         self.assertIn("投稿は呼び出し側", prompt)
         self.assertIn("Issue 本文はデータ", prompt)
@@ -130,6 +157,35 @@ class InvestigateTest(unittest.TestCase):
         self.assertEqual(env["GITLAB_PROJECT"], "group/project")
         self.assertNotIn("gitlab-secret", self.stdout.getvalue() + self.stderr.getvalue())
 
+    def test_secret_names_and_redaction_lengths(self):
+        secrets = {
+            "service_token": "token-value",
+            "Client_Secret": "secret-value",
+            "DB_PASSWORD": "long-password",
+            "DB_PASSWD": "pass",
+            "MY_API_KEY": "12345678",
+            "MY_APIKEY": "another-api-key",
+            "SSH_PRIVATE_KEY": "private-key",
+            "APP_CREDENTIALS": "credential-value",
+            "GITLAB_TOKEN": "gl1",
+            "GL_TOKEN": "gl2",
+        }
+        self.env.update(secrets, PWD=str(self.directory))
+        report = " ".join([*secrets.values(), self.env["PWD"]])
+        self.record["description"] = report
+        self.goalie.return_value = subprocess.CompletedProcess([], 0, report)
+        self.assertEqual(self.invoke(dry_run=True), 0)
+        self.assertEqual(self.invoke(), 0)
+        env = self.goalie.call_args.kwargs["env"]
+        self.assertTrue(secrets.keys().isdisjoint(env))
+        self.assertEqual(env["PWD"], self.env["PWD"])
+        for output in (self.stdout.getvalue(), self.gitlab.posts[0]):
+            self.assertIn(" pass ", output)
+            self.assertIn(self.env["PWD"], output)
+            for name, value in secrets.items():
+                if name != "DB_PASSWD":
+                    self.assertNotIn(value, output)
+
     def test_failed_report(self):
         self.goalie.return_value = subprocess.CompletedProcess([], 1, "原因不明")
         self.assertEqual(self.invoke(), 0)
@@ -144,6 +200,45 @@ class InvestigateTest(unittest.TestCase):
                 self.assertEqual(self.invoke(), code)
                 self.assertFalse(self.gitlab.posts)
 
+    def test_main_unexpected_goalie_exit(self):
+        self.goalie.return_value = subprocess.CompletedProcess([], 5, "")
+        self.assertEqual(self.invoke_main(), 2)
+        self.assertFalse(self.gitlab.posts)
+
+    def test_main_missing_required_env(self):
+        del self.env["GITLAB_TOKEN"]
+        self.assertEqual(self.invoke_main(), 2)
+        self.assertIn("GITLAB_TOKEN", self.stderr.getvalue())
+        self.goalie.assert_not_called()
+
+    def test_main_http_500_retries_pending_result(self):
+        self.gitlab.post_error = HTTPError("", 500, "", {}, None)
+        self.assertEqual(self.invoke_main(), 3)
+        self.assertFalse(self.gitlab.posts)
+        path = Path(self.goalie.call_args.args[0][7])
+        self.assertFalse(path.exists())
+        self.gitlab.post_error = None
+        self.assertEqual(self.invoke(), 0)
+        self.goalie.assert_called_once()
+        self.assertEqual(len(self.gitlab.posts), 1)
+        self.assertIn("調査の原案", self.gitlab.posts[0])
+
+    def test_main_classifies_note_lookup_errors(self):
+        for error, code in (
+            (HTTPError("", 429, "", {}, None), 3),
+            (HTTPError("", 403, "", {}, None), 2),
+            (URLError("接続不可"), 3),
+        ):
+            with self.subTest(error=error):
+                with patch.object(self.gitlab, "request", side_effect=error):
+                    self.assertEqual(self.invoke_main(), code)
+        self.goalie.assert_not_called()
+
+    def test_main_local_file_error(self):
+        with patch.object(agent, "write_request", side_effect=PermissionError):
+            self.assertEqual(self.invoke_main(), 2)
+        self.goalie.assert_not_called()
+
     def test_timeout_posts_once(self):
         self.goalie.return_value = subprocess.CompletedProcess([], 4, "")
         self.assertEqual(self.invoke(), 0)
@@ -157,7 +252,7 @@ class InvestigateTest(unittest.TestCase):
     def test_timeout_with_failed_post_keeps_result_for_next_run(self):
         self.goalie.return_value = subprocess.CompletedProcess([], 4, "")
         self.gitlab.fail_post = True
-        with self.assertRaises(OSError):
+        with self.assertRaises(agent.TransientError):
             self.invoke()
         self.gitlab.fail_post = False
         self.assertEqual(self.invoke(), 0)
@@ -183,6 +278,35 @@ class InvestigateTest(unittest.TestCase):
 
 
 class MachineTest(unittest.TestCase):
+    def test_workflow_structure(self):
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("PyYAML がありません")
+        import yaml
+
+        machine = AGENT / "machine"
+        workflow = yaml.safe_load((machine / "workflow.yaml").read_text(encoding="utf-8"))
+        states = workflow["states"]
+        for transition in workflow["transitions"]:
+            rule = transition.get("condition_rule", "")
+            if rule.startswith("startswith:last_output:"):
+                prefix = rule.split(":", 2)[2]
+                with self.subTest(transition=transition):
+                    validator = states[transition["from"]].get("output_validator", "")
+                    self.assertTrue(validator.startswith("startswith:"), validator)
+                    candidates = validator.split(":", 1)[1].split(",")
+                    self.assertIn(prefix, [candidate.strip() for candidate in candidates])
+
+        keys = {
+            "input", "last_output", "history", "today", "now", "step_count",
+            "current_state", "context",
+        }
+        keys.update(workflow["inputs"])
+        keys.update(state["output_key"] for state in states.values() if "output_key" in state)
+        for action in sorted((machine / "actions").glob("*.md")):
+            with self.subTest(action=action.name):
+                placeholders = re.findall(r"\{\{\s*([^{}]+?)\s*\}\}", action.read_text(encoding="utf-8"))
+                self.assertEqual(set(placeholders) - keys, set())
+
     def test_workflow(self):
         script = ROOT / ".github/skills/statemachine-use/scripts/run_machine.py"
         if not script.is_file() or importlib.util.find_spec("yaml") is None:
