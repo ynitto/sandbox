@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import discovery
-import dot
+import goalie
 
 
 NOW = dt.datetime(2026, 11, 24, 12, tzinfo=dt.timezone.utc)
@@ -53,7 +53,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def harvest(self, now=NOW):
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            code = dot.main(["harvest", "--dir", str(self.goal), "--now", str(now.timestamp())])
+            code = goalie.main(["harvest", "--dir", str(self.goal), "--now", str(now.timestamp())])
         return code, err.getvalue()
 
     def policy(self, collectors=None):
@@ -91,11 +91,11 @@ class DiscoveryTests(unittest.TestCase):
             "plans": {"paths": [str(root)]},
         }}}, self.goal)
         ident = discovery.signal_id(str(source), "plan")
-        signals = self.jsonl("goal/.dot/discovery/signals.jsonl", [{
+        signals = self.jsonl("goal/.goalie/discovery/signals.jsonl", [{
             "id": ident, "kind": "plan", "source_path": str(source), "summary": "legacy plan",
             "locations": [], "first_seen": NOW.isoformat(),
         }])
-        self.json("goal/.dot/discovery/coverage.json", {
+        self.json("goal/.goalie/discovery/coverage.json", {
             "signals_sha256": hashlib.sha256(signals.read_bytes()).hexdigest(),
             "roots": {"plans": {discovery.path_key(root): {"active": True, "signal_ids": [ident]}}},
         })
@@ -162,10 +162,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(config["auto_execute"], [])
         self.assertEqual(config["require_approval"], ["medium以上", "external"])
         self.assertEqual({name for name, source in config["collectors"].items() if source["enabled"]},
-                         {"agent_dots", "plans", "skill_feedback"})
-        self.assertEqual(config["collectors"]["agent_dots"]["paths"], [self.goal])
+                         {"goalie", "plans", "skill_feedback"})
+        self.assertEqual(config["collectors"]["goalie"]["paths"], [self.goal])
         self.assertEqual(self.harvest()[0], 0)
-        self.assertFalse((self.goal / ".dot").exists())
+        self.assertFalse((self.goal / ".goalie").exists())
         for change in (None, {"enabled": 1}, {"proposals_per_day": True}, {"proposals_per_day": -1},
                        {"auto_execute": ["unknown"]}, {"require_approval": [False]},
                        {"collectors": {"unknown": {}}}, {"collectors": {"plans": {"paths": "./"}}},
@@ -182,38 +182,38 @@ class DiscoveryTests(unittest.TestCase):
         for i, code in enumerate((1, 0, 0), 1):
             runs.append({"kind": "run", "action": "run", "proposal": {"name": "daily"}, "code": code, "at": i,
                          "output": "confidential-text"})
-            self.json(f"goal/.dot/runs/daily/r{i}.json", {"mode": "run", "ok": code == 0, "finished": i})
-        self.json("goal/.dot/runs/daily/r4.json", {"mode": "trial", "ok": False, "finished": 4})
+            self.json(f"goal/.goalie/runs/daily/r{i}.json", {"mode": "run", "ok": code == 0, "finished": i})
+        self.json("goal/.goalie/runs/daily/r4.json", {"mode": "trial", "ok": False, "finished": 4})
         self.jsonl("goal/journal.jsonl", runs)
-        self.json("goal/.dot/routines-review.json", {"findings": [{"action": "queued", "kind": "ignored"}]})
-        self.assertEqual(self.kinds(discovery.agent_dots, self.goal), {"open_note"})
+        self.json("goal/.goalie/routines-review.json", {"findings": [{"action": "queued", "kind": "ignored"}]})
+        self.assertEqual(self.kinds(discovery.goalie, self.goal), {"open_note"})
         runs.extend([{"kind": "run", "action": "run", "target": "other", "code": 1},
                      {"kind": "run", "action": "run", "proposal": {"name": "daily"}, "code": 1, "at": 4},
                      {"kind": "run", "action": "run", "proposal": {"name": "daily"}, "code": 1, "at": 5}])
         self.jsonl("goal/journal.jsonl", runs)
         for i in (5, 6):
-            self.json(f"goal/.dot/runs/daily/r{i}.json", {"mode": "run", "ok": False, "finished": i})
-        self.json("goal/.dot/routines-review.json", {"findings": [
+            self.json(f"goal/.goalie/runs/daily/r{i}.json", {"mode": "run", "ok": False, "finished": i})
+        self.json("goal/.goalie/routines-review.json", {"findings": [
             {"action": "needs_review", "kind": "contradiction", "machine": "daily", "runs": ["r5", "r6"],
              "detail": "confidential-text"},
         ]})
-        rows = discovery.agent_dots([self.goal], NOW)
+        rows = discovery.goalie([self.goal], NOW)
         self.assertEqual({r["kind"] for r in rows}, {"open_note", "repeated_action_failure", "routine_failure", "routine_review"})
         self.assertEqual([Path(r["source_path"]).stem for r in rows if r["kind"] == "routine_failure"], ["r5", "r6"])
         self.assertIn("contradiction / daily / r5 / r6", [r["locations"][0] for r in rows])
         self.assertNotIn("confidential-text", str(rows))
         note.write_text("- [x] completed", encoding="utf-8")
-        self.assertNotIn("open_note", self.kinds(discovery.agent_dots, self.goal))
+        self.assertNotIn("open_note", self.kinds(discovery.goalie, self.goal))
 
     def test_broken_review_preserves_other_collected_signals(self):
         self.write("goal/notes/today.md", "- [ ] open\n")
         for report in ("{", "[]", '{"findings": null}'):
-            self.write("goal/.dot/routines-review.json", report)
-            self.assertEqual(self.kinds(discovery.agent_dots, self.goal), {"open_note"})
-        self.json("goal/.dot/routines-review.json", {"findings": [
+            self.write("goal/.goalie/routines-review.json", report)
+            self.assertEqual(self.kinds(discovery.goalie, self.goal), {"open_note"})
+        self.json("goal/.goalie/routines-review.json", {"findings": [
             None, {"action": "needs_review", "kind": "contradiction", "runs": None},
         ]})
-        rows = discovery.agent_dots([self.goal], NOW)
+        rows = discovery.goalie([self.goal], NOW)
         self.assertEqual({row["kind"] for row in rows}, {"open_note", "routine_review"})
 
     def test_plans_require_an_explicit_current_state(self):
@@ -453,7 +453,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_partial_failure_within_one_collector_keeps_other_root_active(self):
         self.write("good/one.md", "状態: 未着手")
         self.write("bad/two.md", "状態: 未着手")
-        self.policy({"agent_dots": {"enabled": False}, "skill_feedback": {"enabled": False},
+        self.policy({"goalie": {"enabled": False}, "skill_feedback": {"enabled": False},
                      "plans": {"paths": ["../good", "../bad"]}})
         self.assertEqual(self.harvest()[0], 0)
         prior = {Path(row["source_path"]).name: row for row in discovery.active_signals(self.goal)}
@@ -473,12 +473,33 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in active], [prior["one.md"]["id"]])
         self.assertEqual(active[0]["count"], 2)
 
+    def test_harvest_skips_legacy_work_directory_and_keeps_other_goals(self):
+        self.write("legacy/.dot/routines-review.json", "{}")
+        note = self.write("goal/notes/today.md", "- [ ] open")
+        self.policy({"goalie": {"paths": ["../legacy", "."]},
+                     "skill_feedback": {"enabled": False}})
+
+        code, err = self.harvest()
+
+        self.assertEqual(code, 1)
+        self.assertIn(".dot フォルダが残っています。.goalie に名前変更してください", err)
+        self.assertFalse((self.root / "legacy" / ".goalie").exists())
+        self.assertEqual([row["source_path"] for row in discovery.active_signals(self.goal)],
+                         [discovery.path_key(note)])
+
+        index = self.goal / ".goalie/discovery"
+        coverage = json.loads((index / "coverage.json").read_bytes())
+        roots = coverage["roots"]["goalie"]
+        self.assertEqual(roots[discovery.path_key(self.root / "legacy")],
+                         {"active": False, "signal_ids": []})
+        self.assertIs(roots[discovery.path_key(self.goal)]["active"], True)
+
     def test_index_merge_dedup_resolves_and_preserves_failed_coverage(self):
         note = self.write("goal/notes/today.md", "- [ ] one\n- [ ] two\n")
         plan = self.write("plans/one.md", "状態: 未着手\n")
-        self.policy({"agent_dots": {"paths": [".", "."]}, "plans": {"paths": ["../plans"]},
+        self.policy({"goalie": {"paths": [".", "."]}, "plans": {"paths": ["../plans"]},
                      "skill_feedback": {"enabled": False}})
-        index = self.goal / ".dot/discovery"
+        index = self.goal / ".goalie/discovery"
         self.assertEqual(self.harvest()[0], 0)
         first = {row["kind"]: row for row in discovery.active_signals(self.goal)}
         expected = discovery.path_key(note) + "\0open_note"
@@ -502,7 +523,7 @@ class DiscoveryTests(unittest.TestCase):
         coverage = json.loads((index / "coverage.json").read_bytes())
         raw = (index / "signals.jsonl").read_bytes()
         self.assertEqual(coverage["signals_sha256"], hashlib.sha256(raw).hexdigest())
-        self.assertEqual(coverage["roots"]["plans"][plan.parent.as_posix()],
+        self.assertEqual(coverage["roots"]["plans"][discovery.path_key(plan.parent)],
                          {"active": False, "signal_ids": [first["unstarted_plan"]["id"]]})
         journal = (self.goal / "journal.jsonl").read_text(encoding="utf-8")
         self.assertEqual(json.loads(journal)["result"], "failed")
@@ -521,14 +542,14 @@ class DiscoveryTests(unittest.TestCase):
         self.write("goal/notes/credentials.md", "- [ ] credential")
         self.write("goal/notes/.private.md", "- [ ] hidden")
         self.write("goal/notes/image.md", "").write_bytes(b"- [ ] binary\0")
-        self.write("goal/.dot/discovery/private.md", "- [ ] output")
+        self.write("goal/.goalie/discovery/private.md", "- [ ] output")
         try:
             (note.parent / "external.md").symlink_to(outside)
             (note.parent / "alias.md").symlink_to(note)
-            (note.parent / "discovery").symlink_to(self.goal / ".dot/discovery", target_is_directory=True)
+            (note.parent / "discovery").symlink_to(self.goal / ".goalie/discovery", target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest("シンボリックリンクを作成できない")
-        rows = discovery.agent_dots([self.goal], NOW)
+        rows = discovery.goalie([self.goal], NOW)
         self.assertEqual([r["source_path"] for r in rows], [discovery.path_key(note)])
         self.assertEqual(discovery.signal_id(note, "open_note"),
                          discovery.signal_id(note.parent / "alias.md", "open_note"))
@@ -545,9 +566,9 @@ class DiscoveryTests(unittest.TestCase):
 
         with patch.object(discovery, "harvest_sources", side_effect=changed):
             self.assertEqual(self.harvest()[0], 1)
-        self.assertFalse((self.goal / ".dot/discovery/signals.jsonl").exists())
+        self.assertFalse((self.goal / ".goalie/discovery/signals.jsonl").exists())
         self.policy({"skill_feedback": {"enabled": False}})
-        with patch.object(dot, "locked", side_effect=dot.Busy):
+        with patch.object(goalie, "locked", side_effect=goalie.Busy):
             self.assertEqual(self.harvest()[0], 3)
         with patch.object(discovery, "_atomic_pair", side_effect=OSError("disk")):
             self.assertEqual(self.harvest()[0], 1)
@@ -565,7 +586,7 @@ class DiscoveryActTests(unittest.TestCase):
         self.goals = self.root / "goals"
         self.goals.mkdir()
         self.ts = NOW.timestamp()
-        dot.init_goal(self.goal, "goal", self.ts)
+        goalie.init_goal(self.goal, "goal", self.ts)
         self.folder = discovery.index_dir(self.goal)
         self.policy = {"proactive_per_day": 3, "proactive_idle_min": 0, "discovery": {
             "enabled": True, "goal_root": str(self.goals),
@@ -575,12 +596,12 @@ class DiscoveryActTests(unittest.TestCase):
         self.idle()
 
     def save_policy(self):
-        dot.write_json(self.goal / "policy.json", self.policy)
+        goalie.write_json(self.goal / "policy.json", self.policy)
 
     def idle(self):
-        state = dot.load_state(self.goal)
-        state.update(last_wake=dot.iso(self.ts - 60), last_wake_ts=self.ts - 60, inflight=None)
-        dot.save_state(self.goal, state)
+        state = goalie.load_state(self.goal)
+        state.update(last_wake=goalie.iso(self.ts - 60), last_wake_ts=self.ts - 60, inflight=None)
+        goalie.save_state(self.goal, state)
 
     def call(self, command, ts=None, goal=None, *args):
         out = io.StringIO()
@@ -588,7 +609,7 @@ class DiscoveryActTests(unittest.TestCase):
             argv = [command, "--dir", str(goal or self.goal)]
             if command in ("tick", "act", "harvest"):
                 argv += ["--now", str(self.ts if ts is None else ts)]
-            self.assertEqual(dot.main([*argv, *args]), 0)
+            self.assertEqual(goalie.main([*argv, *args]), 0)
         return out.getvalue()
 
     def harvest(self, *names):
@@ -598,11 +619,11 @@ class DiscoveryActTests(unittest.TestCase):
 
     def evaluate(self):
         self.assertEqual(self.call("tick"), "wake: proactive\n")
-        return dot.read_json(self.folder / "evaluation.json", {})
+        return goalie.read_json(self.folder / "evaluation.json", {})
 
     def finish_evaluation(self, status="ok"):
-        box = self.goal / dot.JOB_BOX
-        name = dt.datetime.fromtimestamp(self.ts + 1).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-dot.md"
+        box = self.goal / goalie.JOB_BOX
+        name = dt.datetime.fromtimestamp(self.ts + 1).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-goalie.md"
         done = box / "done" / name
         done.parent.mkdir(parents=True, exist_ok=True)
         done.touch()
@@ -617,19 +638,19 @@ class DiscoveryActTests(unittest.TestCase):
                 "why": f"{label} の設計が未実装", "sources": [label], "size": "small",
                 "risk": "readonly", "suggested_route": "goal", **change}
         path = (goal or self.goal) / "outbox" / filename
-        dot.write_json(path, prop)
+        goalie.write_json(path, prop)
         return path, prop
 
     def decision(self, proposal, status):
-        proposal.update(status=status, decision={"at": dot.iso(self.ts), "by": "tester", "reason": "確認済み"})
-        dot.write_json(self.folder / "proposals" / f'{proposal["id"]}.json', proposal)
+        proposal.update(status=status, decision={"at": goalie.iso(self.ts), "by": "tester", "reason": "確認済み"})
+        goalie.write_json(self.folder / "proposals" / f'{proposal["id"]}.json', proposal)
 
     def history(self):
-        return list(dot.json_lines(self.folder / "history.jsonl"))
+        return list(goalie.json_lines(self.folder / "history.jsonl"))
 
     def proposals(self, operation, *args):
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
-            code = dot.main(["proposals", operation, "--dir", str(self.goal), *args])
+            code = goalie.main(["proposals", operation, "--dir", str(self.goal), *args])
         return code, out.getvalue(), err.getvalue()
 
     def test_proposals_list_filters_and_order(self):
@@ -641,7 +662,7 @@ class DiscoveryActTests(unittest.TestCase):
             ("p3", "approved", "2026-11-24T13:00:00+00:00"),
             ("p4", "rejected", "2026-11-24T10:00:00+00:00"),
         ):
-            dot.write_json(self.folder / "proposals" / f"{ident}.json", {
+            goalie.write_json(self.folder / "proposals" / f"{ident}.json", {
                 "id": ident, "status": status, "received_at": received, "title": "集計する",
                 "size": "small", "risk": "readonly", "suggested_route": "goal",
             })
@@ -681,29 +702,29 @@ class DiscoveryActTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 path = self.folder / "proposals" / f"{ident}.json"
                 pending = {"id": ident, "status": "pending", "decision": None}
-                dot.write_json(path, pending)
+                goalie.write_json(path, pending)
                 self.assertEqual(self.proposals(operation, ident, "--reason", " \t　")[0], 2)
-                with dot.locked(self.goal), patch.object(dot, "LOCK_WAIT_SEC", 0):
+                with goalie.locked(self.goal), patch.object(goalie, "LOCK_WAIT_SEC", 0):
                     self.assertEqual(self.proposals(operation, ident, "--reason", "確認済み")[0], 3)
-                with patch.object(dot.os, "replace", side_effect=OSError("保存失敗")):
+                with patch.object(goalie.os, "replace", side_effect=OSError("保存失敗")):
                     code, _, err = self.proposals(operation, ident, "--reason", "確認済み")
                     self.assertEqual(code, 1)
                     self.assertIn("保存失敗", err)
-                self.assertEqual(dot.read_json(path, None), pending)
-                with patch.object(dot, "now_ts", return_value=self.ts), patch.object(
-                        dot.getpass, "getuser", return_value="tester"):
+                self.assertEqual(goalie.read_json(path, None), pending)
+                with patch.object(goalie, "now_ts", return_value=self.ts), patch.object(
+                        goalie.getpass, "getuser", return_value="tester"):
                     self.assertEqual(self.proposals(operation, ident, "--reason", " 確認済み ")[0], 0)
                 record = {**pending, "status": status, "decision": {
-                    "at": dot.iso(self.ts), "by": "tester", "reason": "確認済み",
+                    "at": goalie.iso(self.ts), "by": "tester", "reason": "確認済み",
                 }}
-                self.assertEqual(dot.read_json(path, None), record)
-                with patch.object(dot, "now_ts", return_value=self.ts + 60):
+                self.assertEqual(goalie.read_json(path, None), record)
+                with patch.object(goalie, "now_ts", return_value=self.ts + 60):
                     code, out, err = self.proposals(operation, ident, "--reason", "別の理由")
                 self.assertEqual((code, err), (0, ""))
                 for value in record["decision"].values():
                     self.assertIn(value, out)
                 self.assertEqual(self.proposals(opposite, ident, "--reason", "別の判断")[0], 1)
-                self.assertEqual(dot.read_json(path, None), record)
+                self.assertEqual(goalie.read_json(path, None), record)
 
     def test_proposals_show_evidence_and_registration_wait(self):
         self.policy["discovery"].pop("goal_root")
@@ -713,11 +734,11 @@ class DiscoveryActTests(unittest.TestCase):
         self.finish_evaluation()
         self.outbox(evaluation, sources=["plan.md", "other.md"], why="plan.md と other.md の候補")
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         ident = proposal["id"]
         self.assertEqual(self.proposals("approve", ident, "--reason", "内容を確認した")[0], 0)
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         self.assertIn("goal_root", proposal["registration_reason"])
         code, out, err = self.proposals("show", ident)
         self.assertEqual((code, err), (0, ""))
@@ -735,20 +756,20 @@ class DiscoveryActTests(unittest.TestCase):
 
     def test_regular_wake_and_evaluation_prompt(self):
         self.harvest("plan.md")
-        dot.write_json(self.goal / "inbox" / "event.json", {"text": "通常の出来事"})
+        goalie.write_json(self.goal / "inbox" / "event.json", {"text": "通常の出来事"})
         self.assertEqual(self.call("tick"), "wake: events\n")
         self.assertFalse((self.folder / "evaluation.json").exists())
-        dot.write_json(self.goal / "outbox" / "note.json", {"kind": "note", "body": "通常回"})
+        goalie.write_json(self.goal / "outbox" / "note.json", {"kind": "note", "body": "通常回"})
         self.call("act")
         evaluation = self.evaluate()
-        prompt = (self.goal / ".dot/prompt.md").read_text(encoding="utf-8")
+        prompt = (self.goal / ".goalie/prompt.md").read_text(encoding="utf-8")
         self.assertIn("unstarted_plan / plan.md", prompt)
         self.assertIn("5 件まで", prompt)
         self.assertNotIn("evaluation_id", prompt)
         self.assertNotIn("SECRET ORIGINAL", prompt)
         self.assertNotIn(str(self.sources), prompt)
-        self.assertEqual(dot.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
-        self.assertEqual(dot.load_state(self.goal)["proactive"], {dot.today(self.ts): 1})
+        self.assertEqual(goalie.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
+        self.assertEqual(goalie.load_state(self.goal)["proactive"], {goalie.today(self.ts): 1})
 
     def test_evaluation_gates(self):
         self.harvest("plan.md")
@@ -756,9 +777,9 @@ class DiscoveryActTests(unittest.TestCase):
         for key, value in (("proactive_per_day", 0), ("quiet_hours", f"{hour}:00-{(hour + 1) % 24}:00"),
                            ("wake_per_day", 1)):
             with self.subTest(key=key):
-                state = dot.load_state(self.goal)
-                state["wakes"] = {dot.today(self.ts): 1}
-                dot.save_state(self.goal, state)
+                state = goalie.load_state(self.goal)
+                state["wakes"] = {goalie.today(self.ts): 1}
+                goalie.save_state(self.goal, state)
                 self.policy[key] = value
                 self.save_policy()
                 self.assertEqual(self.call("tick"), "")
@@ -780,7 +801,12 @@ class DiscoveryActTests(unittest.TestCase):
         evaluation = self.evaluate()
         self.finish_evaluation()
         (self.sources / "gone.md").unlink()
-        (self.sources / "unreadable.md").chmod(0)
+        unreadable = self.sources / "unreadable.md"
+        if os.name == "nt":
+            unreadable.unlink()
+            unreadable.mkdir()
+        else:
+            unreadable.chmod(0)
         (self.sources / "changed.md").write_text("replacement", encoding="utf-8")
         for i, source in enumerate(("gone.md", "unreadable.md", "changed.md", "missing.md", "https://invalid.test")):
             self.outbox(evaluation, f"{i:02}.json", sources=[source], why=f"{source} の候補")
@@ -791,23 +817,23 @@ class DiscoveryActTests(unittest.TestCase):
         _, prop = self.outbox(evaluation, "09.json", sources=["valid.md"], why="valid.md の候補")
         self.assertNotIn("evaluation_id", prop)
         self.call("act")
-        rows = list(dot.json_lines(self.goal / "journal.jsonl"))
+        rows = list(goalie.json_lines(self.goal / "journal.jsonl"))
         self.assertEqual([row["result"] for row in rows if row["kind"] == "proposal"],
                          ["denied"] * 9 + ["accepted"])
-        self.assertEqual(len(list((self.goal / ".dot/outbox-done").glob("*.json"))), 10)
-        proposal, = dot.proposal_queue(self.goal)
+        self.assertEqual(len(list((self.goal / ".goalie/outbox-done").glob("*.json"))), 10)
+        proposal, = goalie.proposal_queue(self.goal)
         self.assertEqual(proposal["status"], "pending")
         self.assertIsNone(proposal["decision"])
         self.outbox(evaluation, "99.json")
         self.call("act")
-        self.assertEqual(list(dot.json_lines(self.goal / "journal.jsonl"))[-1]["result"], "denied")
+        self.assertEqual(list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]["result"], "denied")
 
     def test_midnight_and_outbox_retry(self):
         self.policy["discovery"]["proposals_per_day"] = 2
         self.save_policy()
         self.harvest("first.md", "second.md", "third.md")
-        dot.write_json(self.folder / "proposals" / "prior.json",
-                       {"id": "prior", "received_at": dot.iso(self.ts), "status": "rejected", "signal_ids": []})
+        goalie.write_json(self.folder / "proposals" / "prior.json",
+                       {"id": "prior", "received_at": goalie.iso(self.ts), "status": "rejected", "signal_ids": []})
         evaluation = self.evaluate()
         self.finish_evaluation()
         self.assertEqual(evaluation["remaining"], 1)
@@ -821,26 +847,26 @@ class DiscoveryActTests(unittest.TestCase):
                 raise OSError("stopped before archive")
             return replace(src, dst)
 
-        with patch.object(dot.os, "replace", side_effect=crash), self.assertRaises(OSError):
+        with patch.object(goalie.os, "replace", side_effect=crash), self.assertRaises(OSError):
             self.call("act", tomorrow)
         self.call("act", tomorrow)
-        first, = [row for row in dot.proposal_queue(self.goal) if row["id"] != "prior"]
-        self.assertEqual(first["received_at"], dot.iso(tomorrow))
-        self.assertEqual(len(dot.proposal_queue(self.goal)), 2)
+        first, = [row for row in goalie.proposal_queue(self.goal) if row["id"] != "prior"]
+        self.assertEqual(first["received_at"], goalie.iso(tomorrow))
+        self.assertEqual(len(goalie.proposal_queue(self.goal)), 2)
 
     def test_mailbox_outcomes_and_late_result(self):
         self.harvest("plan.md")
         self.evaluate()
-        box = self.goal / dot.JOB_BOX
+        box = self.goal / goalie.JOB_BOX
 
         def job_name(ts):
-            return dt.datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-dot"
+            return dt.datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S%f") + "-abcdef-goalie"
 
         withdrawn = box / "tmp" / (job_name(self.ts + 1) + ".withdrawn.md")
         withdrawn.parent.mkdir(parents=True)
         withdrawn.touch()
         self.call("act", self.ts + 2)
-        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        row = list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]
         self.assertEqual((row["result"], row["code"]), ("evaluation-failed", 3))
 
         self.ts += 60
@@ -850,9 +876,9 @@ class DiscoveryActTests(unittest.TestCase):
         running.parent.mkdir()
         running.touch()
         self.call("act", self.ts + 5401)
-        self.assertEqual(dot.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
+        self.assertEqual(goalie.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
         self.call("tick", self.ts + 5402)
-        self.assertEqual(dot.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
+        self.assertEqual(goalie.load_state(self.goal)["inflight"]["evaluation_id"], evaluation["id"])
 
         done = box / "done" / name
         done.parent.mkdir()
@@ -861,8 +887,8 @@ class DiscoveryActTests(unittest.TestCase):
         result.write_text("status: ok\n", encoding="utf-8")
         running.rename(done)
         self.call("act", self.ts + 5403)
-        self.assertIsNone(dot.load_state(self.goal)["inflight"])
-        self.assertEqual(list(dot.json_lines(self.goal / "journal.jsonl"))[-1]["result"], "empty")
+        self.assertIsNone(goalie.load_state(self.goal)["inflight"])
+        self.assertEqual(list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]["result"], "empty")
 
     def test_evaluation_without_result_cannot_submit_proposal(self):
         self.harvest("plan.md")
@@ -870,36 +896,36 @@ class DiscoveryActTests(unittest.TestCase):
         self.finish_evaluation(status=None)
         path, _ = self.outbox(evaluation)
         self.call("act")
-        self.assertEqual(dot.proposal_queue(self.goal), [])
+        self.assertEqual(goalie.proposal_queue(self.goal), [])
         self.assertFalse(path.exists())
-        self.assertIsNone(dot.load_state(self.goal)["inflight"])
-        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertIsNone(goalie.load_state(self.goal)["inflight"])
+        row = list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]
         self.assertEqual((row["result"], row["why"]), ("denied", "評価の終了コードが確認できない"))
 
     def test_empty_outbox_with_unknown_evaluation_result(self):
         self.harvest("plan.md")
         evaluation = self.evaluate()
         self.call("act")
-        self.assertIsNone(dot.load_state(self.goal)["inflight"])
-        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertIsNone(goalie.load_state(self.goal)["inflight"])
+        row = list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]
         self.assertEqual((row["evaluation_id"], row["result"], row["code"]),
                          (evaluation["id"], "evaluation-unknown", None))
 
     def test_corrupt_queue_files_do_not_block_tick_or_act(self):
         self.harvest("plan.md")
         folder = self.folder / "proposals"
-        partial = {"id": "partial", "status": "approved", "received_at": dot.iso(self.ts)}
-        dot.write_json(folder / "partial.json", partial)
-        dot.write_json(folder / "incomplete.json", {"id": "incomplete", "status": "pending"})
-        dot.write_json(folder / "bad-date.json", {**partial, "id": "bad-date", "received_at": "invalid"})
-        dot.write_json(folder / "scalar.json", [])
+        partial = {"id": "partial", "status": "approved", "received_at": goalie.iso(self.ts)}
+        goalie.write_json(folder / "partial.json", partial)
+        goalie.write_json(folder / "incomplete.json", {"id": "incomplete", "status": "pending"})
+        goalie.write_json(folder / "bad-date.json", {**partial, "id": "bad-date", "received_at": "invalid"})
+        goalie.write_json(folder / "scalar.json", [])
         (folder / "broken.json").write_text("{", encoding="utf-8")
-        self.assertEqual(dot.proposal_queue(self.goal), [partial])
+        self.assertEqual(goalie.proposal_queue(self.goal), [partial])
         evaluation = self.evaluate()
         self.finish_evaluation()
         self.outbox(evaluation)
         self.call("act")
-        self.assertEqual(sorted(row["status"] for row in dot.proposal_queue(self.goal)), ["approved", "pending"])
+        self.assertEqual(sorted(row["status"] for row in goalie.proposal_queue(self.goal)), ["approved", "pending"])
 
     def test_tick_journal_classifies_discovery_error_without_exception_text(self):
         with patch.object(discovery, "evaluation_material", side_effect=PermissionError("PRIVATE PATH")):
@@ -912,24 +938,48 @@ class DiscoveryActTests(unittest.TestCase):
     def test_evaluation_hook(self):
         self.harvest("plan.md")
         self.evaluate()
-        state = dot.load_state(self.goal)
+        state = goalie.load_state(self.goal)
         policy = {"tools": {"allow": ["view", "web_fetch"], "web_allow": ["*"], "shell": "allow"}}
 
         def decide(name, **args):
-            return dot.decide(self.goal, self.goal, {"toolName": name, "toolArgs": args}, state, policy)
+            return goalie.decide(self.goal, self.goal, {"toolName": name, "toolArgs": args}, state, policy)
 
         for name, args in (("view", {"path": str(self.sources / "plan.md")}), ("view", {"path": "goal.md"}),
-                           ("view", {"path": ".dot/discovery/evaluation.json"}), ("view", {"path": "."}),
+                           ("view", {"path": ".goalie/discovery/evaluation.json"}), ("view", {"path": "."}),
                            ("web_fetch", {"url": "https://example.test"}), ("write", {"path": "notes/log.md"}),
                            ("shell", {"command": "python -c pass"})):
             with self.subTest(name=name, args=args):
                 self.assertIsNotNone(decide(name, **args))
         self.assertIsNone(decide("write", path="outbox/01.json"))
-        self.assertIsNone(decide("view", path=".dot/prompt.md"))
-        script = Path(dot.__file__).resolve().parent.parent / "copilot-app-jobs" / "copilot_app_job.py"
+        self.assertIsNone(decide("view", path=".goalie/prompt.md"))
+        script = Path(goalie.__file__).resolve().parent / "runner.py"
         command = f'python "{script}" next --dir "{self.goal}"'
         self.assertIsNone(decide("shell", command=command))
         self.assertIsNotNone(decide("shell", command=command + ' --box "/outside"'))
+        running = self.goal / goalie.JOB_BOX / "running"
+        running.mkdir(parents=True)
+        for job_id, allowed in (("20261124-eval-dot", False), ("20261124-eval-goalie", True)):
+            with self.subTest(job_id=job_id):
+                (running / f"{job_id}.md").touch()
+                command = f'python "{script}" done --dir "{self.goal}" --id {job_id} --status ok'
+                self.assertEqual(decide("shell", command=command) is None, allowed)
+
+    def test_evaluation_job_command_entry_points(self):
+        goalie_script = Path(goalie.__file__).resolve()
+        runner = goalie_script.with_name("runner.py")
+        job_id = "20261124-eval-goalie"
+        running = self.goal / goalie.JOB_BOX / "running"
+        running.mkdir(parents=True)
+        (running / f"{job_id}.md").touch()
+        args = f'--dir "{self.goal}"'
+        for command, allowed in (
+            (f'python "{goalie_script}" job next {args}', True),
+            (f'python "{goalie_script}" job done {args} --id {job_id} --status ok', True),
+            (f'python "{goalie_script}" next {args}', False),
+            (f'python "{runner}" job next {args}', False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(goalie.evaluation_job_command(self.goal, self.goal, command, {}), allowed)
 
     def test_decision_goal_retry_and_results(self):
         self.harvest("yes.md", "no.md")
@@ -938,20 +988,20 @@ class DiscoveryActTests(unittest.TestCase):
         self.outbox(evaluation, "yes.json", sources=["yes.md"], why="yes.md の候補")
         self.outbox(evaluation, "no.json", sources=["no.md"], why="no.md の候補")
         self.call("act")
-        for proposal in dot.proposal_queue(self.goal):
+        for proposal in goalie.proposal_queue(self.goal):
             if proposal["sources"] == ["yes.md"]:
                 approved = proposal
                 self.assertEqual(self.proposals("approve", proposal["id"], "--reason", "確認済み")[0], 0)
             else:
                 rejected = proposal
                 self.assertEqual(self.proposals("reject", proposal["id"], "--reason", "確認済み")[0], 0)
-        register = dot.register_discovery
+        register = goalie.register_discovery
 
         def crash(*args):
             register(*args)
             raise KeyboardInterrupt
 
-        with patch.object(dot, "register_discovery", side_effect=crash), self.assertRaises(KeyboardInterrupt):
+        with patch.object(goalie, "register_discovery", side_effect=crash), self.assertRaises(KeyboardInterrupt):
             self.call("act")
         self.call("act")
         self.call("act")
@@ -960,15 +1010,15 @@ class DiscoveryActTests(unittest.TestCase):
         self.assertEqual([row["event"] for row in self.history() if row["proposal_id"] == approved["id"]],
                          ["decision", "registered"])
         self.assertEqual([row["event"] for row in self.history() if row["proposal_id"] == rejected["id"]], ["decision"])
-        state = dot.load_state(target)
+        state = goalie.load_state(target)
         self.assertEqual(state["status"], "active")
         self.assertEqual(self.call("tick", self.ts, target), "wake: start\n")
         for outcome in ("progress", "pending", "success"):
-            policy = dot.load_policy(target)
+            policy = goalie.load_policy(target)
             policy["done_check"] = [] if outcome == "pending" else ["check"]
-            dot.write_json(target / "policy.json", policy)
-            dot.write_json(target / "outbox" / "done.json", {"kind": "done"})
-            with patch.object(dot, "run_command", return_value=(1 if outcome == "progress" else 0, "")):
+            goalie.write_json(target / "policy.json", policy)
+            goalie.write_json(target / "outbox" / "done.json", {"kind": "done"})
+            with patch.object(goalie, "run_command", return_value=(1 if outcome == "progress" else 0, "")):
                 self.call("act", self.ts, target)
             self.call("act")
             self.assertEqual(self.history()[-1]["status"], outcome)
@@ -978,11 +1028,11 @@ class DiscoveryActTests(unittest.TestCase):
 
     def test_routine_uses_existing_creation_and_records_linked_runs(self):
         worker = self.root / "worker"
-        dot.init_goal(worker, "worker", self.ts)
+        goalie.init_goal(worker, "worker", self.ts)
         sm = self.root / "skills/statemachine-use/scripts/next_state.py"
         sm.parent.mkdir(parents=True)
         sm.touch()
-        dot.write_json(worker / "policy.json", {"routines": {"skills_dirs": [str(self.root / "skills")]}})
+        goalie.write_json(worker / "policy.json", {"routines": {"skills_dirs": [str(self.root / "skills")]}})
         self.policy["discovery"]["routine_dir"] = str(worker)
         self.save_policy()
         self.harvest("plan.md")
@@ -990,35 +1040,35 @@ class DiscoveryActTests(unittest.TestCase):
         self.finish_evaluation()
         self.outbox(evaluation, suggested_route="routine")
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         self.decision(proposal, "approved")
         self.call("act")
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         ref = proposal["execution_ref"]
-        state = dot.load_state(worker)
+        state = goalie.load_state(worker)
         job = state["routine"]
         self.assertEqual((job["mode"], job["id"]), ("create", ref["job_id"]))
         self.assertEqual(len(list((worker / "inbox").glob("*.json"))), 1)
         (Path(job["draft"]) / "workflow.yaml").write_text("states: {}", encoding="utf-8")
-        dot.write_json(worker / "outbox" / "created.json", {"kind": "routine", "action": "created", "id": job["id"]})
-        with patch.object(dot.routines, "dry_run", return_value=(True, "")), patch.object(
-                dot.routines, "describe", return_value={"inputs": {}}):
+        goalie.write_json(worker / "outbox" / "created.json", {"kind": "routine", "action": "created", "id": job["id"]})
+        with patch.object(goalie.routines, "dry_run", return_value=(True, "")), patch.object(
+                goalie.routines, "describe", return_value={"inputs": {}}):
             self.call("act", self.ts, worker)
-        trial = dot.load_state(worker)["routine"]
+        trial = goalie.load_state(worker)["routine"]
         self.assertEqual(trial["mode"], "trial")
-        dot.write_json(worker / "outbox" / "result.json",
+        goalie.write_json(worker / "outbox" / "result.json",
                        {"kind": "routine", "action": "result", "id": trial["id"], "ok": True})
         self.call("act", self.ts, worker)
         self.call("act")
         self.assertEqual(self.history()[-1]["status"], "progress")
         self.assertEqual(self.history()[-1]["execution_ref"]["run_id"], trial["id"])
         for escalate in (True, False):
-            state = dot.load_state(worker)
-            job = dot.routines.new_job(state, "run", self.ts, name=ref["machine"], path=str(worker),
+            state = goalie.load_state(worker)
+            job = goalie.routines.new_job(state, "run", self.ts, name=ref["machine"], path=str(worker),
                                        discovery_id=proposal["id"], discovery_job=ref["job_id"])
-            dot.save_state(worker, state)
-            dot.write_json(worker / "outbox" / "result.json",
+            goalie.save_state(worker, state)
+            goalie.write_json(worker / "outbox" / "result.json",
                            {"kind": "routine", "action": "result", "id": job["id"], "ok": True, "escalate": escalate})
             self.call("act", self.ts, worker)
             self.call("act")
@@ -1032,92 +1082,92 @@ class DiscoveryActTests(unittest.TestCase):
         evaluation = self.evaluate()
         self.finish_evaluation()
         tomorrow = self.ts + 86400
-        dot.write_json(self.folder / "proposals/prior.json", {
-            "id": "prior", "received_at": dot.iso(tomorrow), "status": "rejected", "signal_ids": [],
+        goalie.write_json(self.folder / "proposals/prior.json", {
+            "id": "prior", "received_at": goalie.iso(tomorrow), "status": "rejected", "signal_ids": [],
         })
         for i, label in enumerate(evaluation["sources"]):
             self.outbox(evaluation, f"{i}.json", sources=[label], why=f"{label} の候補")
         self.call("act", tomorrow)
         self.assertEqual(evaluation["remaining"], 2)
-        self.assertEqual(len(dot.proposal_queue(self.goal)), 2)
+        self.assertEqual(len(goalie.proposal_queue(self.goal)), 2)
         self.call("act", tomorrow)
-        self.assertEqual(len(dot.proposal_queue(self.goal)), 2)
+        self.assertEqual(len(goalie.proposal_queue(self.goal)), 2)
 
     def test_goal_overlap_delivers_one_inbox_event(self):
         self.harvest("plan.md")
         target = self.goals / "existing"
-        dot.init_goal(target, "existing", self.ts)
+        goalie.init_goal(target, "existing", self.ts)
         (target / "goal.md").write_text(f'出典 `{self.sources / "plan.md"}`', encoding="utf-8")
         evaluation = self.evaluate()
         self.finish_evaluation()
         self.outbox(evaluation)
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         self.assertEqual(proposal["append_target"]["dir"], str(target))
         self.decision(proposal, "approved")
-        with dot.locked(target):
+        with goalie.locked(target):
             self.call("act")
-        pending, = dot.proposal_queue(self.goal)
+        pending, = goalie.proposal_queue(self.goal)
         self.assertIn("使用中", pending["registration_reason"])
         self.call("act")
         self.call("act")
         event, = (target / "inbox").glob("*.json")
-        self.assertEqual(dot.read_json(event, {})["proposal_id"], proposal["id"])
+        self.assertEqual(goalie.read_json(event, {})["proposal_id"], proposal["id"])
         self.assertEqual(list(self.goals.iterdir()), [target])
         self.assertEqual(self.call("tick", self.ts, target), "wake: start,events\n")
-        dot.write_json(target / "outbox" / "done.json", {"kind": "done"})
+        goalie.write_json(target / "outbox" / "done.json", {"kind": "done"})
         self.call("act", self.ts, target)
         self.call("act")
         self.assertEqual(self.history()[-1]["status"], "pending")
 
     def test_existing_routine_checks_version_approval_and_tracks_real_run(self):
         worker = self.root / "worker"
-        dot.init_goal(worker, "worker", self.ts)
+        goalie.init_goal(worker, "worker", self.ts)
         sm = self.root / "skills/statemachine-use/scripts/next_state.py"
         sm.parent.mkdir(parents=True)
         sm.touch()
-        dot.write_json(worker / "policy.json", {"routines": {"skills_dirs": [str(self.root / "skills")]}})
+        goalie.write_json(worker / "policy.json", {"routines": {"skills_dirs": [str(self.root / "skills")]}})
         self.policy["discovery"]["routine_dir"] = str(worker)
         self.save_policy()
         self.harvest("plan.md")
         machine = worker / ".statemachine" / "daily"
         machine.mkdir(parents=True)
         (machine / "workflow.yaml").write_text("states: {}", encoding="utf-8")
-        dot.routines.save_registry(worker, {"daily": {"source_paths": [str(self.sources / "plan.md")]}})
+        goalie.routines.save_registry(worker, {"daily": {"source_paths": [str(self.sources / "plan.md")]}})
         evaluation = self.evaluate()
         self.finish_evaluation()
         self.outbox(evaluation, suggested_route="routine")
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         self.assertEqual(proposal["append_target"]["machine"], "daily")
         self.decision(proposal, "approved")
-        with patch.object(dot.routines, "read_workflow", return_value={}):
+        with patch.object(goalie.routines, "read_workflow", return_value={}):
             self.call("act")
-            state = dot.load_state(worker)
+            state = goalie.load_state(worker)
             approval, = state["approvals"]
             self.assertEqual(approval["action"], "routine.approve")
             self.assertNotIn("routine", state)
             self.call("act")
-            self.assertEqual(len(dot.load_state(worker)["approvals"]), 1)
+            self.assertEqual(len(goalie.load_state(worker)["approvals"]), 1)
             for status in ("rejected", "expired"):
                 with self.subTest(status=status):
                     approval["status"] = status
-                    dot.save_state(worker, state)
+                    goalie.save_state(worker, state)
                     self.call("act")
                     previous_id = approval["id"]
                     previous_count = len(state["approvals"])
-                    state = dot.load_state(worker)
+                    state = goalie.load_state(worker)
                     self.assertEqual(len(state["approvals"]), previous_count + 1)
                     approval = state["approvals"][-1]
                     self.assertNotEqual(approval["id"], previous_id)
                     self.assertEqual(approval["status"], "pending")
             approval["status"] = "approved"
-            dot.save_state(worker, state)
+            goalie.save_state(worker, state)
             self.call("act", self.ts, worker)
             self.call("act")
-        job = dot.load_state(worker)["routine"]
+        job = goalie.load_state(worker)["routine"]
         self.assertEqual((job["mode"], job["name"]), ("run", "daily"))
-        dot.write_json(worker / "outbox" / "result.json",
+        goalie.write_json(worker / "outbox" / "result.json",
                        {"kind": "routine", "action": "result", "id": job["id"], "ok": True})
         self.call("act", self.ts, worker)
         self.call("act")
@@ -1143,17 +1193,17 @@ class DiscoveryActTests(unittest.TestCase):
         self.assertEqual(len(labels), 3)
         self.assertTrue(all(label.startswith("root-") and label.endswith("/plan.md") for label in labels[1:]))
         self.assertEqual({evaluation["sources"][label][0]["source_path"] for label in labels[1:]},
-                         {str(self.sources / "plan.md"), str(other / "plan.md")})
+                         {discovery.path_key(self.sources / "plan.md"), discovery.path_key(other / "plan.md")})
 
     def test_propose_without_matching_evaluation_is_denied(self):
         self.harvest("plan.md")
         evaluation = self.evaluate()
         self.finish_evaluation()
-        dot.write_json(self.folder / "evaluation.json", {**evaluation, "id": "another"})
+        goalie.write_json(self.folder / "evaluation.json", {**evaluation, "id": "another"})
         self.outbox(evaluation)
         self.call("act")
-        self.assertEqual(dot.proposal_queue(self.goal), [])
-        row = list(dot.json_lines(self.goal / "journal.jsonl"))[-1]
+        self.assertEqual(goalie.proposal_queue(self.goal), [])
+        row = list(goalie.json_lines(self.goal / "journal.jsonl"))[-1]
         self.assertEqual(row["result"], "denied")
         self.assertEqual(row["why"], "対応する評価資料がありません")
 
@@ -1178,11 +1228,11 @@ class DiscoveryPhase2Tests(unittest.TestCase):
         self.finish_evaluation()
         self.outbox(evaluation, size=size, risk=risk)
         self.call("act")
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         return proposal
 
     def receipts(self):
-        return [row for row in dot.json_lines(self.goal / "journal.jsonl") if row["kind"] == "proposal"]
+        return [row for row in goalie.json_lines(self.goal / "journal.jsonl") if row["kind"] == "proposal"]
 
     def assert_pending(self, proposal):
         self.assertEqual(proposal["status"], "pending")
@@ -1193,7 +1243,7 @@ class DiscoveryPhase2Tests(unittest.TestCase):
         proposal = self.receive(auto_execute=["readonly"])
         self.assertEqual(proposal["status"], "approved")
         self.assertEqual(proposal["decision"]["by"], "policy")
-        self.assertEqual(proposal["decision"]["at"], dot.iso(self.ts))
+        self.assertEqual(proposal["decision"]["at"], goalie.iso(self.ts))
         self.assertIn("auto_execute", proposal["decision"]["reason"])
         receipt, = self.receipts()
         self.assertEqual(receipt["auto"], "readonly")
@@ -1211,7 +1261,7 @@ class DiscoveryPhase2Tests(unittest.TestCase):
         self.policy["discovery"]["require_approval"] = ["medium以上"]
         self.save_policy()
         self.call("act")
-        queued, = dot.proposal_queue(self.goal)
+        queued, = goalie.proposal_queue(self.goal)
         self.assertEqual(queued["status"], "pending")
         self.assertFalse((self.goals / proposal["id"]).exists())
         self.assertEqual(self.proposals("approve", proposal["id"], "--reason", "確認済み")[0], 0)
@@ -1256,7 +1306,7 @@ class DiscoveryPhase2Tests(unittest.TestCase):
         self.outbox(evaluation, "02.json", sources=["b.md"], why="b.md の候補")
         self.call("act")
 
-        proposal, = dot.proposal_queue(self.goal)
+        proposal, = goalie.proposal_queue(self.goal)
         self.assertEqual(proposal["status"], "approved")
         first, second = self.receipts()
         self.assertEqual((first["result"], first["auto"]), ("accepted", "readonly"))

@@ -1,4 +1,4 @@
-# GitHub Copilot のデスクトップアプリに、Dagu から依頼を渡して結果を待つ例（Windows）。
+# GitHub Copilot のデスクトップアプリに、Dagu と goalie job で依頼を渡して結果を待つ例（Windows）。
 # アプリ側の用意（作業フォルダをプロジェクトとして開く・自動実行にプロンプトを貼る）は README を参照。
 # command と args のパスを自分の場所に直す。依頼の本文は --prompt-file のファイルに書く（短ければ --prompt に直接書ける）。
 # 終了コード 3（アプリが拾わなかった。依頼は取り下げ済み）だけ再試行する。4（取りかかったが終わらなかった）は再試行しない
@@ -14,7 +14,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"         # アプリでプロジェクトとして開いているフォルダ

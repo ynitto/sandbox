@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-import copilot_app_job as job
+import runner as job
 
 MENU_DIR = Path(__file__).resolve().parent / "menu"
 MENUS = {

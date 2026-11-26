@@ -34,7 +34,7 @@ C:\work\ops      ← 宛先 ops
 
 3. `~/.config/change-watch/teams-sharepoint-bridge-agent/` に置かれた `change-watch.yaml` の `folder.path` と `settle_sec` を使う方式に合わせる。フェッチャ方式ではローカル受信フォルダと `0`、直結方式では同期先と `10` を指定する。どちらも `hash: true` を使う。
 4. ハブの受け箱に `targets.json` を置き、宛先を書く（雛形は [targets.json.example](targets.json.example)）。置き場所は
-   `C:\work\hub\.copilot-jobs\targets.json`。このファイルは copilot-app-jobs の振り先の表を兼ねるので、ここに書いた
+   `C:\work\hub\.copilot-jobs\targets.json`。このファイルは goalie の振り先の表を兼ねるので、ここに書いた
    宛先のフォルダには、ほかに登録しなくても振れる。置いた受け箱のフォルダ（`C:\work\hub`）がハブになる。
 
    ```json
@@ -57,16 +57,16 @@ C:\work\ops      ← 宛先 ops
      [投稿の中身で宛先を振る](#投稿の中身で宛先を振る) を参照。`default` は、どれにも決まらないときの宛先名。
    - Dagu のワークフロー（`change-watch-teams-bridge.yaml`）の `--targets` を、このファイルのパスにする。
    - `gitlab_project` も `mode` も無い宛先（Teams を通さずに振るために `target add` で足したもの）は、Teams の振り分けには使わない。
-5. ハブを用意する（[copilot-app-jobs](../../../copilot-app-jobs/README.md) の「ほかのフォルダのセッションに振る」）。
+5. ハブを用意する（[goalie](../../../goalie/README.md) の「ほかのフォルダのセッションに振る」）。
    1. ハブのフォルダと、各宛先のフォルダを、Copilot アプリでそれぞれ一度プロジェクトとして開く。
    2. ハブのフォルダに、Copilot アプリの自動実行を 1 つ作る。貼るプロンプトは次のコマンドが出す（間隔は 1 時間）。
 
       ```powershell
-      python C:\tools\copilot-app-jobs\copilot_app_job.py prompt --dir C:\work\hub --stay 50
+      python C:\tools\goalie\goalie.py job prompt --dir C:\work\hub --stay 50
       ```
 
    宛先を足すときは、`targets.json` に 1 つ書き足すだけでよい。自動実行は増やさない。
-6. Dagu を起動する環境の `TEAMS_BRIDGE_COPILOT_JOB` に `copilot_app_job.py` の絶対パスを設定する。
+6. Dagu を起動する環境の `TEAMS_BRIDGE_GOALIE_JOB` に `goalie.py` の絶対パスを設定する。
    リポジトリ内の `teams_bridge.py` を直接使うときは、未設定なら同じリポジトリのスクリプトを探す。
 7. Dagu のスケジューラを動かす。インストーラが `~/.config/dagu/dags/` に置く `change-watch-teams-bridge.yaml` は毎分起動し、
    `get` で変化を 1 件受け取る。現れたファイルと、内容が変わったファイルを `check-file` に渡し、結果に応じて `submit` または
@@ -121,7 +121,7 @@ schtasks /Create /TN "teams-bridge-fetcher" /TR "\"C:\Python\python.exe\" \"C:\s
 
 `targets.json` をハブの受け箱に置くと、依頼はハブの受け箱に置き、Copilot アプリの自動実行はハブで 1 つだけ動かす。
 自動実行は宛先のフォルダで新しいセッションを起こして依頼を渡し、終わりを待たずに次へ進む
-（[copilot-app-jobs の「ほかのフォルダのセッションに振る」](../../../copilot-app-jobs/README.md)）。同じ宛先への依頼は、
+（[goalie の「ほかのフォルダのセッションに振る」](../../../goalie/README.md)）。同じ宛先への依頼は、
 前の依頼が終わるまで受け箱で待つ。
 
 - 1〜4 か 6 で決まった依頼は、その宛先に振る。

@@ -7,7 +7,7 @@ Teams に投稿された依頼を、宛先のフォルダで Copilot アプリ�
 
 - 設計: [Teams–SharePoint ブリッジ](../../../../docs/plans/2026-11-23-teams-sharepoint-bridge-design.md)・
   [セッション側フェッチャ](../../../../docs/plans/2026-11-23-teams-bridge-session-fetcher-design.md)
-- 使い方: [このエージェントの README](README.md)・[copilot-app-jobs の README](../../../copilot-app-jobs/README.md)・
+- 使い方: [このエージェントの README](README.md)・[goalie の README](../../../goalie/README.md)・
   [Power Automate のレシピ](power-automate/README.md)
 
 ## 1. 全体図
@@ -27,7 +27,7 @@ flowchart LR
     IN[("ローカル受信フォルダ")] --> DAG["Dagu<br/>change-watch-teams-bridge<br/>毎分"]
     DAG --> CW["change-watch get / commit<br/>change-watch.yaml"]
     DAG --> BR["teams_bridge.py check-file / submit<br/>targets.json・submitted.json"]
-    BR --> JOB["copilot_app_job.py run<br/>--to 宛先 か auto"]
+    BR --> JOB["goalie.py job run<br/>--to 宛先 か auto"]
   end
 
   subgraph APP["④ 作業（PC・Copilot デスクトップアプリ）"]
@@ -61,13 +61,13 @@ flowchart LR
 | 4 | Dagu（サービス、毎分） | ワークフロー `change-watch-teams-bridge` | `~/.config/dagu/dags/change-watch-teams-bridge.yaml` | 下の 4a〜4e を順に動かす。1 回で 1 件 |
 | 4a | 〃 `get` | `change-watch get --source teams-requests --consumer bridge --watch sha256 --one` | `change-watch.yaml`（`folder.path`=受信フォルダ・`hash: true`） | 前回 `commit` してから現れた・変わった依頼ファイルを 1 件返す |
 | 4b | 〃 `check` | `change-watch --plugin teams_bridge check-file` | `targets.json`・台帳 `submitted.json` | 様式を検証し、`submit`（未提出）・`done`（提出済み）・`invalid`・`missing` のどれかを出す |
-| 4c | 〃 `submit` | `change-watch --plugin teams_bridge submit` → `copilot_app_job.py run --dir <hub> --to <宛先の dir か auto> --no-wait` | `targets.json`・台帳・環境変数 `TEAMS_BRIDGE_COPILOT_JOB` | 宛先を決め（[§4](#4-宛先の決め方)）、依頼文を作ってハブの受け箱に置き、台帳に記録する。待たない |
+| 4c | 〃 `submit` | `change-watch --plugin teams_bridge submit` → `goalie.py job run --dir <hub> --to <宛先の dir か auto> --no-wait` | `targets.json`・台帳・環境変数 `TEAMS_BRIDGE_GOALIE_JOB` | 宛先を決め（[§4](#4-宛先の決め方)）、依頼文を作ってハブの受け箱に置き、台帳に記録する。待たない |
 | 4d | 〃 `record-invalid` | `change-watch --plugin teams_bridge record-invalid` | `invalid.jsonl` | 様式違反の理由を記録する（直すのは投稿する側） |
 | 4e | 〃 `commit` | `change-watch commit --source teams-requests --consumer bridge` | change-watch の状態 | この依頼を見終えたと記録する（提出に失敗したときは記録せず、翌分にやり直す） |
-| 5 | Copilot アプリの**ハブの自動実行**（1 時間おき、居座って待つ） | `copilot_app_job.py next`（貼ったプロンプトが呼ぶ） | ハブの受け箱（`pending`・`running`・`dispatched`・`targets.txt`） | 依頼を 1 件取り出し、出力の指示に従う。宛先がふさがっている依頼は取り出さない |
-| 5a | 〃（宛先が `auto` の依頼） | `copilot_app_job.py route --id <ID> --to <名前> --why <理由>` | 依頼に付いた候補（名前・説明・選んだときに足す文） | 候補から宛先を 1 つ選び、「issue かコミットか」の指示と相関マーカーを足して、待ち行列に戻す |
-| 5b | 〃（宛先の決まった依頼） | アプリの機能で宛先のフォルダのセッションを起動 → `copilot_app_job.py dispatched --id <ID>` | `targets.txt`（振ってよいフォルダ） | 宛先のフォルダでセッションを起こして依頼を渡し、終わりを待たずに次の依頼へ進む |
-| 6 | Copilot アプリの**宛先フォルダのセッション** | 依頼に書かれた作業 → GitLab（issue を作る／コミットして push）→ `copilot_app_job.py finish --id <ID> --status ok --note <URL>` | 宛先のフォルダ（`targets.json` の `dir`）と GitLab のプロジェクト | 作業し、結果を GitLab に上げる。説明やコミットメッセージの最後に「宛先: 名前（理由）」と相関マーカーを書く。最後に `finish` で宛先を空ける |
+| 5 | Copilot アプリの**ハブの自動実行**（1 時間おき、居座って待つ） | `runner.py next`（`goalie.py job prompt` が出力したプロンプトから呼ぶ） | ハブの受け箱（`pending`・`running`・`dispatched`・`targets.txt`） | 依頼を 1 件取り出し、出力の指示に従う。宛先がふさがっている依頼は取り出さない |
+| 5a | 〃（宛先が `auto` の依頼） | `goalie.py job route --id <ID> --to <名前> --why <理由>` | 依頼に付いた候補（名前・説明・選んだときに足す文） | 候補から宛先を 1 つ選び、「issue かコミットか」の指示と相関マーカーを足して、待ち行列に戻す |
+| 5b | 〃（宛先の決まった依頼） | アプリの機能で宛先のフォルダのセッションを起動 → `goalie.py job dispatched --id <ID>` | `targets.txt`（振ってよいフォルダ） | 宛先のフォルダでセッションを起こして依頼を渡し、終わりを待たずに次の依頼へ進む |
+| 6 | Copilot アプリの**宛先フォルダのセッション** | 依頼に書かれた作業 → GitLab（issue を作る／コミットして push）→ `goalie.py job finish --id <ID> --status ok --note <URL>` | 宛先のフォルダ（`targets.json` の `dir`）と GitLab のプロジェクト | 作業し、結果を GitLab に上げる。説明やコミットメッセージの最後に「宛先: 名前（理由）」と相関マーカーを書く。最後に `finish` で宛先を空ける |
 | 7 | GitLab | 通知メール | GitLab の通知設定 | issue の作成・コミットを、見ている人にメールで知らせる（本文に相関マーカーが残る） |
 | 8 | Outlook（通知メールの受信） | Power Automate の**復路フロー** | フローの設定（差出人・受信フォルダ・Graph の委任の接続） | 相関マーカーから `request_id` と `message_id` を読み、SharePoint の依頼 JSON から返信先（チーム・チャンネル）を引いて、Graph で元の投稿へ返信する |
 
@@ -129,9 +129,9 @@ sequenceDiagram
 | `session-fetcher-task.xml` | タスクスケジューラに取り込む | タスクスケジューラ | フェッチャを毎分・ログオン時から・多重起動なしで動かす |
 | `change-watch-teams-bridge.yaml` | `~/.config/dagu/dags/` | Dagu | 毎分のワークフロー（get → check → submit / record-invalid → commit）。コマンドとファイルのパス |
 | `change-watch.yaml` | `~/.config/change-watch/teams-sharepoint-bridge-agent/` | change-watch | 受信フォルダ（`folder.path`）・`settle_sec`・`hash`・状態の置き場 |
-| `targets.json` | `<hub>/.copilot-jobs/`（置いた受け箱のフォルダがハブになる） | teams_bridge.py・copilot_app_job.py | `default`・宛先ごとの `dir`・`gitlab_project`・`mode`（`issue`／`commit`）・`description`・`keywords`・`channels`。copilot_app_job.py は各宛先の `dir` を「振ってよいフォルダ」として読む |
-| 自動実行のプロンプト | Copilot アプリの自動実行（ハブのフォルダ） | Copilot アプリ | `copilot_app_job.py prompt --dir <hub> --stay 50` が出す 3 行。間隔は 1 時間 |
-| 環境変数 `TEAMS_BRIDGE_COPILOT_JOB` | Dagu を動かす環境 | teams_bridge.py | `copilot_app_job.py` の絶対パス |
+| `targets.json` | `<hub>/.copilot-jobs/`（置いた受け箱のフォルダがハブになる） | teams_bridge.py・goalie.py | `default`・宛先ごとの `dir`・`gitlab_project`・`mode`（`issue`／`commit`）・`description`・`keywords`・`channels`。goalie.py は各宛先の `dir` を「振ってよいフォルダ」として読む |
+| 自動実行のプロンプト | Copilot アプリの自動実行（ハブのフォルダ） | Copilot アプリ | `goalie.py job prompt --dir <hub> --stay 50` が出す 3 行。間隔は 1 時間 |
+| 環境変数 `TEAMS_BRIDGE_GOALIE_JOB` | Dagu を動かす環境 | teams_bridge.py | `goalie.py` の絶対パス |
 
 ### 状態（プログラムが書く）
 

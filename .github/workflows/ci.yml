@@ -109,14 +109,9 @@ jobs:
           # 保持期間と、dags/ の例を Dagu と同じ順で流したときの動きを見る（Dagu 本体は入れない）。
           - package: change-watch
             suites: tools/change-watch/test
-          # copilot-app-jobs。Copilot のデスクトップアプリ役をテストが演じ、受け箱のやりとり
-          # （置く・拾われる・結果を読む・時間切れ）を見る。アプリ本体は呼ばない。
-          - package: copilot-app-jobs
-            suites: tools/copilot-app-jobs/test
-          # agent-dots。目標のフォルダで、起こす判定・提案の片付け・ハブの issue からの返事の受け取りを見る。
-          # アプリ・GitLab・Dagu は呼ばない。
-          - package: agent-dots
-            suites: tools/agent-dots/test
+          # goalie の目標管理と受け箱を検証する。アプリ・GitLab・Dagu は呼ばない。
+          - package: goalie
+            suites: tools/goalie/test
           - package: webui-test
             suites: tools/webui-test/tests
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
@@ -194,10 +189,9 @@ jobs:
             suites: tools/change-watch/agents/redmine-ticket-agent/test
           - package: gitlab-idd
             suites: .github/skills/gitlab-idd/tests
-          - package: copilot-app-jobs
-            suites: tools/copilot-app-jobs/test
-          - package: agent-dots
-            suites: tools/agent-dots/test
+          # goalie の目標管理と受け箱を Windows でも検証する。
+          - package: goalie
+            suites: tools/goalie/test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

@@ -25,9 +25,9 @@ class VaultCLIError(ValueError):
     """定型文で報告できる Obsidian CLI のエラー。"""
 
 
-DEFAULT_ENABLED = {"agent_dots", "plans", "skill_feedback"}
+DEFAULT_ENABLED = {"goalie", "plans", "skill_feedback"}
 COLLECTOR_NAMES = (
-    "agent_dots", "plans", "skill_feedback", "prompt_assets", "session_logs",
+    "goalie", "plans", "skill_feedback", "prompt_assets", "session_logs",
     "knowledge", "git_todo", "codd_retro", "ltm_use", "moltbook", "vault",
 )
 CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+(\S.*?)\s*$")
@@ -38,6 +38,18 @@ PRIVATE_NAME = re.compile(
     re.I,
 )
 SOURCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError)
+WORK = ".goalie"
+
+
+class WorkDirMigrationError(ValueError):
+    pass
+
+
+def work_path(d: Path) -> Path:
+    work = d / WORK
+    if (d / ".dot").is_dir() and not work.exists():
+        raise WorkDirMigrationError(f"{d}: .dot フォルダが残っています。.goalie に名前変更してください")
+    return work
 
 
 def digest_module():
@@ -108,7 +120,7 @@ def parse_policy(policy: dict, goal: Path) -> dict:
         label = f"discovery.collectors.{name}"
         raw_source = _object(settings.get(name, {}), label)
         on = _field(raw_source, "enabled", name in DEFAULT_ENABLED, bool, label)
-        defaults = [str(goal)] if name == "agent_dots" else []
+        defaults = [str(goal)] if name == "goalie" else []
         if name == "skill_feedback" and enabled and on and "paths" not in raw_source:
             try:
                 registry = Path(digest_module().default_registry_path())
@@ -178,14 +190,14 @@ def _allowed(parts: tuple[str, ...], special: bool, skills: bool) -> bool:
         i = parts.index(".github")
         if parts[i + 1:i + 2] == ("skills",) and parts[-1] == "SKILL.md":
             return True
-    return special and hidden == [".dot"] and (
-        parts == (".dot", "routines-review.json")
-        or len(parts) == 4 and parts[:2] == (".dot", "runs") and parts[-1].endswith(".json")
+    return special and parts[0] == WORK and hidden == [parts[0]] and (
+        parts[1:] == ("routines-review.json",)
+        or len(parts) == 4 and parts[1] == "runs" and parts[-1].endswith(".json")
     )
 
 
 def _is_output(path: Path) -> bool:
-    return any(part.name.lower() == "discovery" and part.parent.name.lower() == ".dot"
+    return any(part.name.lower() == "discovery" and part.parent.name.lower() == WORK
                for part in (path, *path.parents))
 
 
@@ -394,11 +406,12 @@ def _optional(path: Path) -> bool:
     return True
 
 
-def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
+def goalie(paths: list[Path], now: dt.datetime) -> list[dict]:
     found = []
     for root in paths:
         if not stat.S_ISDIR(root.stat().st_mode):
             raise ValueError("目標フォルダが必要です")
+        work = work_path(root)
         notes = root / "notes"
         if _optional(notes) and notes.resolve().is_relative_to(root.resolve()):
             for path in files(notes, (".md", ".markdown", ".txt")):
@@ -411,7 +424,7 @@ def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
         if _optional(journal) and safe_file(root, journal):
             if raw := read_text(journal):
                 found.extend(_action_failures(journal, raw))
-        review = root / ".dot/routines-review.json"
+        review = work / "routines-review.json"
         if _optional(review) and safe_file(root, review, special=True):
             if raw := read_text(review):
                 try:
@@ -430,7 +443,7 @@ def agent_dots(paths: list[Path], now: dt.datetime) -> list[dict]:
                             locations.append(label)
                 if locations:
                     found.append(candidate("routine_review", review, locations, f"要見直し {len(locations)} 件"))
-        runs = root / ".dot/runs"
+        runs = work / "runs"
         grouped = defaultdict(list)
         if _optional(runs) and runs.resolve().is_relative_to(root.resolve()):
             for path in files(runs, (".json",)):
@@ -1171,13 +1184,15 @@ def vault(paths: list[Path], now: dt.datetime, *, mode: str = "auto", vault_name
 
 
 COLLECTORS = dict(zip(COLLECTOR_NAMES, (
-    agent_dots, plans, skill_feedback, prompt_assets, session_logs, knowledge,
+    goalie, plans, skill_feedback, prompt_assets, session_logs, knowledge,
     git_todo, codd_retro, ltm_use, moltbook, vault,
 )))
 
 
 def _error_reason(exc: Exception) -> str:
     # 例外本文に含まれうるログや CLI 出力は記録しない。
+    if isinstance(exc, WorkDirMigrationError):
+        return str(exc)
     if isinstance(exc, subprocess.CalledProcessError):
         return f"コマンド異常終了 (exit {exc.returncode})"
     if isinstance(exc, subprocess.TimeoutExpired):
@@ -1198,7 +1213,7 @@ def _root_key(root: Path) -> str:
 def _inside_source(path: Path, root: Path, name: str) -> bool:
     resolved = root.resolve()
     return path.is_relative_to(resolved) and safe_file(
-        resolved, path, special=name == "agent_dots", skills=name == "prompt_assets"
+        resolved, path, special=name == "goalie", skills=name == "prompt_assets"
     ) is not None
 
 
@@ -1278,8 +1293,9 @@ def harvest_sources(config: dict, now: dt.datetime, *, runner=None) -> tuple[dic
 
 
 def index_dir(goal: Path) -> Path:
-    folder = goal / ".dot/discovery"
-    if folder.resolve() != goal.resolve() / ".dot/discovery":
+    work = work_path(goal)
+    folder = work / "discovery"
+    if folder.resolve() != goal.resolve() / work.name / "discovery":
         raise ValueError("Discovery の索引フォルダは目標の配下に置いてください")
     return folder
 

@@ -1,14 +1,14 @@
 """業務係: 依頼に合うステートマシンを選んで回し、無ければスキルを組み合わせて作り、記録から直して育てる。
 
-dot.py から呼ばれる。判定（一覧・入力の確認・検証・承認・版・記録・フックの範囲）はここで決め、LLM は使わない。
+goalie.py から呼ばれる。判定（一覧・入力の確認・検証・承認・版・記録・フックの範囲）はここで決め、LLM は使わない。
 ステートを回すのも、作る・直すのも Copilot アプリ（statemachine-use の実行モード・作成モード）がする。
 
     目標のフォルダ/
       routines/<名前>/            作っている・直している下書き（作る・直す回だけエージェントが書ける）
       .statemachine/<名前>/       登録したマシン（policy.json の routines.publish_to で変えられる）
-      .dot/routines.json          台帳（状態・承認した指紋・使うスキル・版・実行の集計）
-      .dot/runs/<名前>/<rN>.json  実行の記録
-      .dot/routines-history/<名前>/v<版>/  前の版
+      .goalie/routines.json          台帳（状態・承認した指紋・使うスキル・版・実行の集計）
+      .goalie/runs/<名前>/<rN>.json  実行の記録
+      .goalie/routines-history/<名前>/v<版>/  前の版
 
 標準ライブラリだけで動く。ステートマシンの定義（YAML）を読むときだけ PyYAML を使う（statemachine-use と同じ）。
 """
@@ -26,7 +26,8 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-WORK = ".dot"
+from discovery import WORK, work_path
+
 REGISTRY = "routines.json"
 REVIEW = "routines-review.json"
 DRAFTS = "routines"
@@ -85,7 +86,7 @@ def statemachine_dir(policy: dict) -> "Path | None":
 
 def load_registry(d: Path) -> dict:
     try:
-        data = json.loads((d / WORK / REGISTRY).read_text(encoding="utf-8"))
+        data = json.loads((work_path(d) / REGISTRY).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -589,7 +590,7 @@ def advance(d: Path, state: dict, policy: dict, ts: float, comments: "list[str]"
 
 
 def load_run(d: Path, name: str, rid: str) -> "dict | None":
-    folder = d / WORK / "runs" / name
+    folder = work_path(d) / "runs" / name
     files = [folder / f"{rid}.json"] if rid else sorted(folder.glob("r*.json"), key=lambda p: p.stat().st_mtime)[-1:]
     for p in files:
         try:
@@ -905,7 +906,7 @@ def status_lines(d: Path, state: dict, policy: dict) -> "list[str]":
         steady = "・安定" if (reg.get(e["name"]) or {}).get("steady") else ""
         out.append(f"  {e['name']}（{e['status']}・版 {e['version']}・{rate}{steady}）")
     try:
-        report = json.loads((d / WORK / REVIEW).read_text(encoding="utf-8"))
+        report = json.loads((work_path(d) / REVIEW).read_text(encoding="utf-8"))
         reviewed_at = dt.datetime.fromtimestamp(report["reviewed_at"]).astimezone().isoformat(timespec="seconds")
         findings = report["findings"]
         if not isinstance(findings, list):

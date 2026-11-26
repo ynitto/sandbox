@@ -5,7 +5,7 @@
 Dagu の実行履歴で各メニューのステップの終了コードとログを確認する。手動の `submit` では標準出力に出た依頼 ID を控える。
 
 ```powershell
-python copilot_app_job.py status --dir C:/work/my-folder --last 20
+python goalie.py job status --dir C:/work/my-folder --last 20
 ```
 
 別の受け箱を使っている場合は、依頼時と同じ `--box` を渡す。`status` は各フォルダの件数と最近の ID を表示する。`pending` は未着手、`running` は着手済み、`done` は処理済みの依頼文、`results` は結果報告。Dagu 例では ID 末尾のメニュー名と実行時刻で対象を探し、同じ ID のファイルを照合する。

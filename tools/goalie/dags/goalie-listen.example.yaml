@@ -1,6 +1,6 @@
 # ハブの issue に付いた「【名前】…」のコメントを、その名前の目標の inbox に置く例（Windows）。目標がいくつあっても 1 つでよい。
 #   get     前回 commit してから新しく付いたコメントを 1 件受け取る（gitlab-issue-hub-agent と同じ取得元。受け手の名前は分ける）
-#   event   1 行目が【名前】のコメントなら、DOTS の下から同じ名前の目標を探して受け取る（承認・却下・質問への返事・ふつうの出来事）
+#   event   1 行目が【名前】のコメントなら、GOALS の下から同じ名前の目標を探して受け取る（承認・却下・質問への返事・ふつうの出来事）
 #   commit  見終えたと記録する
 # 目標が自分で書くコメントは「【名前より】」で始まるので、ここには当たらない。
 # パスは自分の場所に直す。change-watch と設定は gitlab-issue-hub-agent のインストーラが置いたもの（README の「用意」）。
@@ -11,7 +11,7 @@ hist_retention_days: 14
 dotenv:
   - "C:/Users/you/.config/change-watch/gitlab-issue-hub-agent/gitlab-issue-hub-agent.env"
 env:
-  - DOTS: "C:/work/dots"              # 目標のフォルダを並べた親フォルダ
+  - GOALS: "C:/work/goals"              # 目標のフォルダを並べた親フォルダ
 steps:
   - name: get
     action: exec
@@ -29,7 +29,7 @@ steps:
         - "--source"
         - "gitlab-hub-notes"
         - "--consumer"
-        - "dots"                 # commit と同じ名前。ハブのほかのワークフロー（hub）とは分ける
+        - "goalie"                 # commit と同じ名前。ハブのほかのワークフロー（hub）とは分ける
         - "--one"
     timeout_sec: 720
     retry_policy:
@@ -39,7 +39,7 @@ steps:
     output: CHANGE
   - name: event
     depends: [get]
-    preconditions:              # 新しく付いた、人が書いた、1 行目が【で始まるコメント（名前の照合は dot.py がする）
+    preconditions:              # 新しく付いた、人が書いた、1 行目が【で始まるコメント（名前の照合は goalie.py がする）
       - condition: "${CHANGE.kind}"
         expected: "appeared"
       - condition: "${CHANGE.record.system}"
@@ -53,10 +53,10 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/agent-dots/dot.py"
+        - "C:/tools/goalie/goalie.py"
         - "event"
         - "--root"
-        - "${DOTS}"
+        - "${GOALS}"
         - "--change"
         - "${CHANGE}"
     timeout_sec: 300
@@ -84,6 +84,6 @@ steps:
         - "--source"
         - "gitlab-hub-notes"
         - "--consumer"
-        - "dots"
+        - "goalie"
         - "${CHANGE.key}"
     timeout_sec: 600

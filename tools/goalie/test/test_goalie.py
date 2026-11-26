@@ -1,4 +1,4 @@
-"""dot.py の起こす判定（tick）・境界のゲート（act）・出来事の受け取り（event）を、アプリ役をテストが演じて確かめる。"""
+"""goalie.py の起こす判定（tick）・境界のゲート（act）・出来事の受け取り（event）を、アプリ役をテストが演じて確かめる。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import dot  # noqa: E402
+import goalie  # noqa: E402
 
 T0 = 1_800_000_000.0
 
@@ -20,11 +20,11 @@ T0 = 1_800_000_000.0
 def run(*argv: str) -> "tuple[int, str]":
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        code = dot.main(list(argv))
+        code = goalie.main(list(argv))
     return code, out.getvalue().strip()
 
 
-class DotTest(unittest.TestCase):
+class GoalieTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -86,7 +86,7 @@ class DotTest(unittest.TestCase):
 
     def test_first_tick_wakes_and_writes_prompt(self):
         self.assertEqual(self.tick(), "wake: start")
-        prompt = (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8")
+        prompt = (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("目標「見積り」", prompt)
         self.assertIn("outbox/", prompt)
         self.assertIn("【見積り】", prompt)
@@ -103,7 +103,7 @@ class DotTest(unittest.TestCase):
     def test_queued_job_blocks_wake(self):
         pending = self.d / ".copilot-jobs" / "pending"
         pending.mkdir(parents=True)
-        (pending / f"20260101-000000-abc123-{dot.JOB_LABEL}.md").write_text("x", encoding="utf-8")
+        (pending / f"20260101-000000-abc123-{goalie.JOB_LABEL}.md").write_text("x", encoding="utf-8")
         self.assertEqual(self.tick(), "")
         self.assertEqual(self.act(), "")          # 終わっていない依頼の結果は待つ
         self.assertIsNone(self.state()["inflight"])
@@ -112,7 +112,7 @@ class DotTest(unittest.TestCase):
         self.assertTrue(self.tick().startswith("wake:"))
         running = self.d / ".copilot-jobs" / "running"
         running.mkdir(parents=True)
-        job = running / f"20260101-000000-abc123-{dot.JOB_LABEL}.md"
+        job = running / f"20260101-000000-abc123-{goalie.JOB_LABEL}.md"
         job.write_text("x", encoding="utf-8")
         self.assertEqual(self.act(), "")          # 取りかかり中は片付けない
         self.assertIsNotNone(self.state()["inflight"])
@@ -133,19 +133,19 @@ class DotTest(unittest.TestCase):
         self.finish_first_wake()
         run("event", "--dir", str(self.d), "--text", "追加")
         self.assertEqual(self.tick(T0 + 60), "wake: events")
-        self.assertEqual(self.tick(T0 + 60 + dot.INFLIGHT_STALE_SEC + 1), "wake: events")
+        self.assertEqual(self.tick(T0 + 60 + goalie.INFLIGHT_STALE_SEC + 1), "wake: events")
         self.assertTrue(any(e.get("result") == "stale" for e in self.journal()))
 
     def test_events_are_in_prompt_and_consumed(self):
         self.finish_first_wake()
         run("event", "--dir", str(self.d), "--text", "前提は B で")
         self.assertEqual(self.tick(T0 + 60), "wake: events")
-        self.assertIn("前提は B で", (self.d / ".dot" / "prompt.md").read_text(encoding="utf-8"))
+        self.assertIn("前提は B で", (self.d / ".goalie" / "prompt.md").read_text(encoding="utf-8"))
         self.assertEqual(list((self.d / "inbox").iterdir()), [])
 
     def test_wait_then_due(self):
         self.tick()
-        until = dot.iso(T0 + 3600)
+        until = goalie.iso(T0 + 3600)
         self.propose({"kind": "wait", "until": until})
         self.act()
         self.assertEqual(self.tick(T0 + 1800), "")
@@ -232,7 +232,7 @@ class DotTest(unittest.TestCase):
     def test_empty_outbox_retries_then_drops(self):
         run("event", "--dir", str(self.d), "--text", "見て")
         at = T0
-        for _ in range(dot.MAX_RETRIES):
+        for _ in range(goalie.MAX_RETRIES):
             self.assertTrue(self.tick(at).startswith("wake:"))
             self.act(at)                          # 提案が無い → 出来事を戻す
             self.assertEqual(len(list((self.d / "inbox").iterdir())), 1)

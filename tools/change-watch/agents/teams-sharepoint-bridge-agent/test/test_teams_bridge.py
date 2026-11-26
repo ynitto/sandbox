@@ -38,7 +38,7 @@ class TeamsBridgeTests(unittest.TestCase):
         self.targets = root / "targets.json"
         self.ledger = root / "state" / "submitted.json"
         self.log = root / "state" / "invalid.jsonl"
-        self.jobs_py = root / "copilot_app_job.py"
+        self.jobs_py = root / "goalie.py"
         self.calls = root / "calls.txt"
         self.request = {
             "request_id": REQUEST_ID,
@@ -70,6 +70,7 @@ class TeamsBridgeTests(unittest.TestCase):
             from pathlib import Path
 
             parser = argparse.ArgumentParser()
+            parser.add_argument("group", choices=["job"])
             parser.add_argument("command", choices=["run"])
             parser.add_argument("--dir", required=True)
             parser.add_argument("--no-wait", action="store_true", required=True)
@@ -322,6 +323,6 @@ class DagsCopiesTests(unittest.TestCase):
         self.assert_same(dags / "change-watch-teams-sharepoint-bridge-agent-maintenance.yaml.example",
                          self.AGENT / "change-watch-teams-sharepoint-bridge-agent-maintenance.yaml.example")
 
-    def test_copilot_app_jobs_dag_matches_original(self):
-        self.assert_same(self.AGENT / "dags" / "copilot-app-job.example.yaml",
-                         self.REPO / "tools" / "copilot-app-jobs" / "dags" / "copilot-app-job.example.yaml")
+    def test_goalie_job_dag_matches_original(self):
+        self.assert_same(self.AGENT / "dags" / "goalie-job.example.yaml",
+                         self.REPO / "tools" / "goalie" / "dags" / "goalie-job.example.yaml")

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""目標を 1 つ預かり、裏で進めて、報告と質問と承認の依頼だけをハブの issue に返す。
+"""goalie は目標管理（上層）と依頼の受け箱 runner（下層）をまとめたツール。
 
-1 つの目標 = 1 つのフォルダ。フォルダを GitHub Copilot のデスクトップアプリのプロジェクトとして開き、
-copilot-app-jobs の受け箱で依頼を渡す。起こすかどうか（tick）と、外へ作用するかどうか（act）は
-このスクリプトが決め、LLM は使わない。エージェントは outbox に提案を書くだけで、外へは書かない。
+1 つの目標 = 1 つのフォルダ。tick と act が目標を管理し、job サブコマンドで runner に依頼を渡す。
+エージェントは outbox に提案を書く。利用者との対話チャネルは外部で設定する。
 
     goal.md          目標と完了の条件（人が書く）
     policy.json      やってよいこと（作用ごとに auto / ask / deny）・登録したコマンド・起きる回数・完了の検査
@@ -12,16 +11,17 @@ copilot-app-jobs の受け箱で依頼を渡す。起こすかどうか（tick�
     outbox/          エージェントの提案（1 件 1 ファイルの JSON）
     notes/           エージェントの自分へのメモ（日ごと）
     journal.jsonl    やったこと・捨てたことの記録（追記のみ）
-    .dot/            作業用（依頼文・送るコメント・取りかかり中の出来事・ロック）
+    .goalie/            作業用（依頼文・送るコメント・取りかかり中の出来事・ロック）
 
 コマンド:
     init    フォルダを作る
     event   出来事を inbox に置く（ハブの issue の変化 JSON、または文）。承認・却下・質問への返事もここで受ける
-    tick    起こすかを決め、起こすなら依頼文を .dot/prompt.md に書いて理由を 1 行出す（起こさないなら何も出さない）
+    tick    起こすかを決め、起こすなら依頼文を .goalie/prompt.md に書いて理由を 1 行出す（起こさないなら何も出さない）
     act     outbox の提案を境界と照らして片付け、承認されたものを実行し、ハブに送るコメントがあればそのファイルのパスを出す
-    harvest 許可されたソースから候補を集めて .dot/discovery/ に保存する
+    harvest 許可されたソースから候補を集めて .goalie/discovery/ に保存する
     proposals Discovery の提案を見て採否を記録する（list / show / approve / reject）
     status  いまの状態を出す
+    job     runner のコマンドを実行する（job --help で一覧を表示）
 
 終了コード: 0 = できた / 1 = 収集・キュー操作の失敗 / 2 = 使い方の誤り /
 3 = ほかの処理が state.json を使っていて待ちきれなかった（やり直してよい）。
@@ -46,14 +46,14 @@ from pathlib import Path
 
 import discovery
 import routines
+from discovery import WORK, work_path
 
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_BUSY = 3
 
-JOB_BOX = ".copilot-jobs"          # copilot-app-jobs の受け箱（作業フォルダ直下）
-JOB_LABEL = "dot"                  # 受け箱に置く依頼の名前（copilot_app_job.py run --name）
-WORK = ".dot"
+JOB_BOX = ".copilot-jobs"          # runner の受け箱（作業フォルダ直下）
+JOB_LABEL = "goalie"               # 受け箱に置く依頼の名前（job run --name）
 INFLIGHT_STALE_SEC = 3 * 3600      # 取りかかり中のまま、これより古ければ捨ててやり直す
 MAX_RETRIES = 2                    # 提案が 1 件も無かった回を、出来事を戻してやり直す回数
 NOTE_LINES = 20                    # 依頼文に載せるメモの行数
@@ -150,6 +150,7 @@ def append_journal(d: Path, entry: dict, ts: float) -> None:
 
 
 def load_state(d: Path) -> dict:
+    work_path(d)
     state = read_json(d / "state.json", None)
     if state is None:
         raise SystemExit(f"目標のフォルダではありません（state.json が無い）: {d}")
@@ -178,28 +179,30 @@ def sorted_files(folder: Path, suffix: str) -> "list[Path]":
 
 @contextlib.contextmanager
 def locked(d: Path, wait: "float | None" = None):
-    """state.json を読み書きする間だけ持つロック。返事の受け取り（毎分）と片付け（15 分おき）が重なっても壊さない。"""
-    path = d / WORK / "lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """state.json を読み書きする間だけ持つロック。返事の受け取りと片付けが重なっても壊さない。"""
     deadline = time.monotonic() + (LOCK_WAIT_SEC if wait is None else wait)
+    folder = work_path(d)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "lock"
     while True:
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
         except FileExistsError:
             try:
                 if time.time() - path.stat().st_mtime > LOCK_STALE_SEC:
-                    path.unlink()                 # 落ちた処理が残したロック
+                    path.unlink()            # 落ちた処理が残したロック
                     continue
             except FileNotFoundError:
                 continue
             if time.monotonic() >= deadline:
                 raise Busy()
             time.sleep(0.2)
+        else:
+            os.close(fd)
+            break
     try:
         yield
     finally:
-        os.close(fd)
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
 
@@ -215,7 +218,7 @@ def put_event(d: Path, state: dict, event: dict, ts: float) -> Path:
 def routine_api(d: Path) -> dict:
     """routines.py が台帳の外（出来事・質問・承認の依頼）を触るときの口。"""
     def event(state: dict, text: str, ts: float, base: "dict | None" = None) -> None:
-        put_event(d, state, {**(base or {"from": "dot"}), "text": text}, ts)
+        put_event(d, state, {**(base or {"from": "goalie"}), "text": text}, ts)
 
     def question(state: dict, text: str, options: list, comments: list, ts: float) -> str:
         return add_question(state, text, options, comments, ts)
@@ -255,6 +258,7 @@ def next_id(state: dict, prefix: str) -> str:
 
 def cmd_init(a) -> int:
     d = Path(a.dir)
+    work_path(d)
     name = a.name or d.name
     if not NAME_RE.match(name):
         print(f"名前に空白と【】は使えません（40 文字まで）: {name}", file=sys.stderr)
@@ -269,8 +273,9 @@ def cmd_init(a) -> int:
 
 
 def init_goal(d: Path, name: str, ts: float, **extra) -> None:
-    for sub in ("inbox", "outbox", "notes", WORK):
-        (d / sub).mkdir(parents=True, exist_ok=True)
+    work = work_path(d)
+    for folder in (d / "inbox", d / "outbox", d / "notes", work):
+        folder.mkdir(parents=True, exist_ok=True)
     if not (d / "goal.md").exists():
         (d / "goal.md").write_text(GOAL_TEMPLATE.format(name=name), encoding="utf-8")
     if not (d / "policy.json").exists():
@@ -294,7 +299,7 @@ def init_goal(d: Path, name: str, ts: float, **extra) -> None:
 # ---------------------------------------------------------------- event
 
 
-def find_dot(root: Path, name: str) -> "Path | None":
+def find_goal(root: Path, name: str) -> "Path | None":
     if not root.is_dir():
         return None
     for child in sorted(root.iterdir()):
@@ -377,7 +382,7 @@ def cmd_event(a) -> int:
         if not hit:
             return EXIT_OK
         name, text = hit
-        d = Path(a.dir) if a.dir else find_dot(Path(a.root), name)
+        d = Path(a.dir) if a.dir else find_goal(Path(a.root), name)
         if d is None:
             return EXIT_OK                       # 知らない名前（ほかの用途のコメント）
         author = (record.get("author") or {}).get("username") or ""
@@ -826,7 +831,7 @@ def expire_approvals(d: Path, state: dict, policy: dict, ts: float) -> None:
     for entry in state["approvals"]:
         if entry.get("status") == "pending" and ts - float(entry.get("created_ts") or ts) > days * 86400:
             entry["status"] = "expired"
-            put_event(d, state, {"from": "dot", "text": f"{entry['id']}（{entry.get('summary', '')}）は返事が無いまま {days:g} 日たったので取り下げました"}, ts)
+            put_event(d, state, {"from": "goalie", "text": f"{entry['id']}（{entry.get('summary', '')}）は返事が無いまま {days:g} 日たったので取り下げました"}, ts)
             append_journal(d, {"kind": "approval", "id": entry["id"], "result": "expired"}, ts)
 
 
@@ -876,7 +881,7 @@ def cmd_act(a) -> int:
         for entry in state["approvals"]:
             if entry.get("status") == "running" and ts - float(entry.get("started_ts") or 0) > RUNNING_STALE_SEC:
                 entry["status"] = "failed"        # 前の act が実行の途中で止まった。二重に動かさないよう、やり直さない
-                put_event(d, state, {"from": "dot", "approval": entry["id"],
+                put_event(d, state, {"from": "goalie", "approval": entry["id"],
                                      "text": f"{entry['id']}（{entry.get('summary', '')}）は実行の途中で止まったようです。結果は分かりません"}, ts)
                 comments.append(f"{entry['id']}（{entry.get('summary', '')}）は実行の途中で止まったようです。結果を確かめてください")
                 append_journal(d, {"kind": "run", "id": entry["id"], "result": "lost"}, ts)
@@ -909,7 +914,7 @@ def cmd_act(a) -> int:
                 continue
             word = "動かしました" if ok else "失敗しました"
             tail = (res.get("output") or "").strip()
-            put_event(d, state, {"from": "dot", "approval": aid,
+            put_event(d, state, {"from": "goalie", "approval": aid,
                                  "text": f"{aid}（{entry.get('summary', '')}）を{word}（終了コード {res['code']}）\n{tail}"}, ts)
             if entry.get("decided_by") != "policy" or not ok:
                 comments.append(f"{aid}（{entry.get('summary', '')}）を{word}（終了コード {res['code']}）"
@@ -1193,7 +1198,7 @@ def discovery_append_target(config: dict, proposal: dict) -> dict | None:
     target = config.get("routine_dir")
     if target and (target / "state.json").is_file():
         for source in proposal["evidence"]:
-            parts = inside(target / WORK / "runs", Path(source["source_path"]))
+            parts = inside(work_path(target) / "runs", Path(source["source_path"]))
             if parts and len(parts) == 2 and parts[1].endswith(".json"):
                 name, run_id = parts[0], Path(parts[1]).stem
                 run = routines.load_run(target, name, run_id)
@@ -1268,18 +1273,20 @@ def register_discovery(plan: dict, proposal: dict, ts: float) -> dict:
                    "source_paths": [source["source_path"] for source in proposal["evidence"]]}
         ref = {"kind": plan["kind"], "dir": str(target), "event_id": plan["event_id"]}
         if creating:
-            marker = target / WORK / "discovery-origin.json"
-            if read_json(marker, None) != pid:
-                if any(p.name != WORK for p in target.iterdir()) or any(
-                    p.name != "lock" for p in (target / WORK).iterdir()
+            work = work_path(target)
+            marked = read_json(work / "discovery-origin.json", None) == pid
+            if not marked:
+                if any(p != work for p in target.iterdir()) or any(
+                    p.name != "lock" for p in work.iterdir()
                 ):
                     raise ValueError("提案 ID の登録先に別の仕事があります")
-                write_json(marker, pid)
+            if not marked:
+                write_json(target / WORK / "discovery-origin.json", pid)
             if not (target / "state.json").exists():
                 condition = ("1 回分の成果物または検証結果を示す" if proposal["suggested_route"] == "one-shot"
                              else "提案の目的を満たした成果物と、その確認結果を示す")
                 (target / "goal.md").write_text(f"# {text}\n\n## 完了の条件\n\n- {condition}\n", encoding="utf-8")
-                write_json(target / ".github" / "hooks" / HOOK_FILE, hooks_json(sys.executable))
+                write_json(hook_path(target), hooks_json(sys.executable))
                 write_json(target / "policy.json", {**DEFAULT_POLICY, "actions": {"hub.comment": "deny", "run": "deny"},
                                                    "tools": {"shell": "allowlist"}})
                 init_goal(target, pid, ts, discovery_links={pid: details}, discovery_active=[pid])
@@ -1375,7 +1382,7 @@ def discovery_results(proposal: dict):
         state = load_state(target)
         if ref["kind"] == "routine":
             name = ref["machine"]
-            for path in sorted_files(target / WORK / "runs" / name, ".json"):
+            for path in sorted_files(work_path(target) / "runs" / name, ".json"):
                 run = routines.load_run(target, name, path.stem)
                 if (not run or run.get("machine") != name or run.get("id") != path.stem
                         or run.get("mode") not in ("trial", "run")):
@@ -1406,7 +1413,7 @@ def discovery_results(proposal: dict):
 
 
 def reconcile_discovery(d: Path, ts: float, auto_approved: set[str]) -> None:
-    if not (d / WORK / "discovery" / "proposals").is_dir():
+    if not (work_path(d) / "discovery" / "proposals").is_dir():
         return
     with locked(d):
         if job_busy(d) or load_state(d).get("inflight"):
@@ -1495,7 +1502,13 @@ def reconcile_discovery(d: Path, ts: float, auto_approved: set[str]) -> None:
 
 # ---------------------------------------------------------------- hook（Copilot の preToolUse）
 
-HOOK_FILE = "agent-dots.json"                 # 目標のフォルダの .github/hooks/ に置く
+HOOK_FILE = "goalie.json"
+
+
+def hook_path(d: Path) -> Path:
+    return d / ".github" / "hooks" / HOOK_FILE
+
+
 PROTECTED = ("policy.json", "state.json", "journal.jsonl", WORK, ".github")
 JOB_TMP = (JOB_BOX, "tmp")                    # 受け箱のうち、エージェントが報告を書く場所
 PROACTIVE_WRITABLE = (("notes",), ("outbox",), JOB_TMP)
@@ -1511,10 +1524,15 @@ PATH_KEYS = ("path", "file_path", "filePath", "filename", "file", "target", "des
 WRITE_KEYS = ("content", "file_text", "new_str", "old_str", "new_string", "old_string", "text", "patch", "edits")
 SHELL_KEYS = ("command", "cmd", "script")
 SHELL_META = re.compile(r"[;|`<>\r\n]|&&|\$\(")
-JOB_COMMAND = re.compile(r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+"?[^"]*copilot_app_job\.py"?\s+(next|done|dispatched|finish)(\s|$)', re.I)
+JOB_COMMAND = re.compile(
+    r'^\s*"?[^"\s]*?(python3?|py)(\.exe)?"?\s+(?P<quote>")?'
+    r'(?:(?(quote)[^"]*|[^"\s]*)[\\/])?'
+    r'(?:runner\.py(?(quote)")\s+|goalie\.py(?(quote)")\s+job\s+)'
+    r'(next|done|dispatched|finish)(\s|$)', re.I,
+)
 
 
-def find_dot_from(start: Path) -> "Path | None":
+def find_goal_from(start: Path) -> "Path | None":
     """start とその親から、目標のフォルダ（state.json と policy.json がある）を探す。"""
     try:
         here = start.resolve()
@@ -1588,7 +1606,7 @@ def kind_of(name: str, args: dict) -> str:
 
 
 def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> bool:
-    # Only the mailbox executable and its local arguments may reach the shell.
+    # 受け箱の実行ファイルと目標内の引数だけを許す。
     body = command.strip().removeprefix("&").strip()
     if re.search(r"[;&|`<>\r\n$%!*?^'()]", body):
         return False
@@ -1596,6 +1614,11 @@ def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> 
     if " ".join(tokens) != re.sub(r'\s+(?=(?:[^"]*"[^"]*")*[^"]*$)', " ", body):
         return False
     tokens = [token.strip('"') for token in tokens]
+    goalie_job = len(tokens) >= 2 and Path(tokens[1]).name == "goalie.py"
+    if goalie_job:
+        if tokens[2:3] != ["job"]:
+            return False
+        del tokens[2]
     if len(tokens) < 5 or len(tokens) % 2 != 1:
         return False
     python, script, action, *options = tokens
@@ -1603,8 +1626,10 @@ def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> 
         not Path(python).is_absolute() or Path(python).resolve() != Path(sys.executable).resolve()
     ):
         return False
-    expected = Path(inflight.get("job_script") or Path(__file__).resolve().parent.parent /
-                    "copilot-app-jobs" / "copilot_app_job.py")
+    default_script = Path(__file__).resolve()
+    if not goalie_job:
+        default_script = default_script.with_name("runner.py")
+    expected = Path(inflight.get("job_script") or default_script)
     if (cwd / script).resolve() != expected.resolve() or action not in ("next", "done", "finish"):
         return False
     args = dict(zip(options[::2], options[1::2]))
@@ -1618,7 +1643,7 @@ def evaluation_job_command(d: Path, cwd: Path, command: str, inflight: dict) -> 
         return False
     if action != "next":
         job = args.pop("--id", "")
-        if not re.fullmatch(r"[a-zA-Z0-9_.-]+-dot", job) or args.pop("--status", "") not in ("ok", "failed"):
+        if not re.fullmatch(r"[a-zA-Z0-9_.-]+-goalie", job) or args.pop("--status", "") not in ("ok", "failed"):
             return False
         if not any((d / JOB_BOX / state / f"{job}.md").is_file() for state in ("running", "dispatched", "done")):
             return False
@@ -1641,7 +1666,7 @@ def check_path(d: Path, cwd: Path, raw: str, write: bool, proactive: bool, polic
     parts = inside(d, target)
     if scope.get("evaluation"):
         allowed = (JOB_TMP, ("outbox",)) if write else (
-            JOB_TMP, ("outbox",), (WORK, "prompt.md"), (JOB_BOX, "pending"), (JOB_BOX, "running"),
+            JOB_TMP, ("outbox",), (work_path(d).name, "prompt.md"), (JOB_BOX, "pending"), (JOB_BOX, "running"),
         )
         if parts is not None and any(parts[:len(prefix)] == prefix for prefix in allowed):
             return None
@@ -1743,7 +1768,7 @@ def cmd_hook(a) -> int:
     except json.JSONDecodeError:
         payload = {}
     cwd = Path(str(payload.get("cwd") or os.getcwd()))
-    d = Path(a.dir) if a.dir else find_dot_from(cwd)
+    d = Path(a.dir) if a.dir else find_goal_from(cwd)
     if d is None:
         return EXIT_OK                            # 目標のフォルダの外のセッションには何もしない
     ts = now_ts()
@@ -1754,7 +1779,7 @@ def cmd_hook(a) -> int:
         why = f"フックの判定に失敗したので止めました: {e}"
     name = str(payload.get("toolName") or payload.get("tool_name") or "")
     try:
-        with (d / WORK / "hook.jsonl").open("a", encoding="utf-8") as f:
+        with (work_path(d) / "hook.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps({"at": iso(ts), "tool": name, "decision": "deny" if why else "allow",
                                 "why": why or ""}, ensure_ascii=False) + "\n")
     except OSError:
@@ -1785,15 +1810,15 @@ def cmd_hooks(a) -> int:
     data = hooks_json(python)
     if a.plugin:
         root = Path(a.plugin)
-        plugin = root / "plugins" / "agent-dots"
+        plugin = root / "plugins" / "goalie"
         write_json(plugin / "hooks.json", data)
-        write_json(plugin / "plugin.json", {"name": "agent-dots", "version": "1.0.0", "hooks": "hooks.json",
+        write_json(plugin / "plugin.json", {"name": "goalie", "version": "1.0.0", "hooks": "hooks.json",
                                             "description": "目標のフォルダの中だけで動くよう、ツールを止めるフック"})
         write_json(root / ".github" / "plugin" / "marketplace.json", {
-            "name": "agent-dots", "owner": {"name": "agent-dots"},
-            "plugins": [{"name": "agent-dots", "source": "./plugins/agent-dots", "strict": False}]})
+            "name": "goalie", "owner": {"name": "goalie"},
+            "plugins": [{"name": "goalie", "source": "./plugins/goalie", "strict": False}]})
         print(f"プラグインを置きました: {root}")
-        print("Copilot アプリの Customize → Plugins → 歯車 → マーケットプレイスの追加で、このフォルダを足し、agent-dots を入れてください。")
+        print("Copilot アプリの Customize → Plugins → 歯車 → マーケットプレイスの追加で、このフォルダを足し、goalie を入れてください。")
         print("プラグインはすべてのプロジェクトで動きますが、目標のフォルダの外では何もしません。")
         return EXIT_OK
     if not a.dir:
@@ -1801,8 +1826,9 @@ def cmd_hooks(a) -> int:
         return EXIT_USAGE
     d = Path(a.dir)
     load_state(d)
-    path = d / ".github" / "hooks" / HOOK_FILE
-    write_json(path, data)
+    with locked(d):
+        path = hook_path(d)
+        write_json(path, data)
     print(f"フックを置きました: {path}")
     return EXIT_OK
 
@@ -1814,6 +1840,7 @@ def cmd_harvest(a) -> int:
     ts = a.now if a.now is not None else now_ts()
     try:
         d = Path(a.dir).resolve()
+        work_path(d)
         now = dt.datetime.fromtimestamp(ts).astimezone()
         if not isinstance(read_json(d / "state.json", None), dict):
             raise discovery.DiscoveryConfigError(f"有効な state.json がありません: {d}")
@@ -1916,6 +1943,7 @@ def show_proposal(row: dict) -> None:
 def cmd_proposals(a) -> int:
     try:
         d = Path(a.dir).resolve()
+        work_path(d)
         if not a.dir.strip() or not isinstance(read_json(d / "state.json", None), dict):
             raise ValueError(f"有効な state.json がありません: {d}")
         desired = {"approve": "approved", "reject": "rejected"}.get(a.operation)
@@ -2014,8 +2042,10 @@ def cmd_status(a) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dot.py", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="goalie.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("job", help="受け箱 runner のコマンドを実行する（job --help）")
 
     p = sub.add_parser("init", help="目標のフォルダを作る")
     p.add_argument("--dir", required=True, help="目標のフォルダ")
@@ -2078,12 +2108,20 @@ def main(argv: "list[str] | None" = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "job":
+        import runner
+
+        return runner.main(argv[1:])
     args = build_parser().parse_args(argv)
     if args.command == "event" and args.change is not None and not (args.dir or args.root):
         print("--change では --dir か --root を指定してください", file=sys.stderr)
         return EXIT_USAGE
     try:
         return args.func(args)
+    except discovery.WorkDirMigrationError as e:
+        print(e, file=sys.stderr)
+        return EXIT_USAGE
     except Busy:
         print("ほかの処理が state.json を使っています。少し待ってやり直してください", file=sys.stderr)
         return EXIT_BUSY

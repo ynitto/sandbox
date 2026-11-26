@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import copilot_app_job as job  # noqa: E402
+import runner as job  # noqa: E402
 
 
 def call(*argv: str) -> "tuple[int, str, str]":

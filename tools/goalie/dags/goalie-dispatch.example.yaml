@@ -1,6 +1,6 @@
 # Copilot のデスクトップアプリに、ほかのローカルフォルダのセッションで作業してもらう例（Windows）。依頼を置いたらすぐ終わる。
 # アプリの自動実行が振り先のフォルダでセッションを起こし、そのセッションが結果を MR・issue に書く（README の「ほかのフォルダのセッションに振る」）。
-# 振り先は先に target add で登録しておく。同じ振り先への依頼は、前の依頼が終わるまで受け箱で待つ。
+# 振り先は先に goalie.py job target add で登録しておく。同じ振り先への依頼は、前の依頼が終わるまで受け箱で待つ。
 # command と args のパスを自分の場所に直す。依頼の本文には、結果をどこに書くか（MR・issue）を書く。
 description: "毎朝、sandbox フォルダのセッションに依存関係の点検を頼む（結果は MR に書いてもらう）"
 schedule: "0 7 * * 1-5"
@@ -12,7 +12,8 @@ steps:
     with:
       command: python
       args:
-        - "C:/tools/copilot-app-jobs/copilot_app_job.py"
+        - "C:/tools/goalie/goalie.py"
+        - "job"
         - "run"
         - "--dir"
         - "C:/work/my-folder"         # 自動実行が動くフォルダ（受け箱がある）
