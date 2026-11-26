@@ -216,6 +216,10 @@ class ChangeWatchClientTests(unittest.TestCase):
         self.assertEqual(self.gitlab.notes[("merge_requests", 42)][0]["body"], body)
         self.assertTrue(self.client.mr_comment_exists("group/project", 42, "factory-review run=r1"))
         self.assertFalse(self.client.mr_comment_exists("group/project", 42, "factory-review run=r2"))
+        review = "<!-- factory:review run=r1 sha=sha-one -->\n判定"
+        self.client.comment_mr("group/project", 42, review)
+        self.assertEqual(self.client.find_review_comment("group/project", 42, "sha-one"), review)
+        self.assertIsNone(self.client.find_review_comment("group/project", 42, "sha-two"))
         self.client.comment_issue("group/project", 1, "失敗しました")
         self.assertEqual(self.gitlab.notes[("issues", 1)], [{"body": "失敗しました"}])
         self.assertEqual(self.client.mr_diff("group/project", 42), "diff --git a/a b/a\n@@ -1 +1 @@\n")
