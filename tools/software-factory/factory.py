@@ -91,6 +91,9 @@ class Config:
         self.max_concurrent = values["max_concurrent"]
         self.review_enabled = values["review"]["enabled"]
         self.work_dirs = work_dirs
+        resolved_dirs = [os.path.normcase(self.work_dir(repo)) for repo in repos]
+        if len(resolved_dirs) != len(set(resolved_dirs)):
+            raise ConfigError("リポジトリの作業フォルダが重複しています")
         self.fingerprint = fingerprint or hashlib.sha256(
             json.dumps(values, sort_keys=True).encode()
         ).hexdigest()
@@ -166,6 +169,10 @@ class GhClient:
     def comment_pr(self, repo, number, body):
         self._with_body(["pr", "comment", str(number), "--repo", repo], body)
 
+    def pr_comment_exists(self, repo, number, marker):
+        comments = self._json("pr", "view", str(number), "--repo", repo, "--json", "comments")
+        return any(marker in comment["body"] for comment in comments["comments"])
+
     def find_pr_by_head(self, repo, branch):
         prs = self._json("pr", "list", "--repo", repo, "--head", branch,
                          "--json", "number,url,headRefOid,state,isDraft")
@@ -240,6 +247,17 @@ class GoalieClient:
         return any((box / state / f"{job_id}.md").is_file()
                    for state in ("pending", "running", "dispatched"))
 
+    def find_job_by_name(self, work_dir, job_name):
+        box = work_dir / ".copilot-jobs"
+        for state in ("pending", "running", "dispatched", "results", "done"):
+            for path in (box / state).glob("*"):
+                if path.stem.endswith(f"-{job_name}") and path.is_file():
+                    try:
+                        return path.stem, path.stat().st_mtime
+                    except FileNotFoundError:
+                        continue
+        return None
+
     def poll_job(self, work_dir, job_id, submitted_at, timeout_sec, now):
         box = work_dir / ".copilot-jobs"
         filename = f"{job_id}.md"
@@ -256,7 +274,7 @@ class GoalieClient:
             header = lines[0].strip() if lines else ""
             if header in ("status: ok", "status: failed"):
                 return JobOutcome(header.split()[1], "\n".join(lines[2:]))
-            return JobOutcome("pending")
+            return JobOutcome("missing" if timed_out else "pending")
 
         outcome = read_result()
         if outcome is not None:
@@ -289,6 +307,9 @@ class GitClient:
         if code not in allowed:
             raise GitError(f"git {args[0]} が終了コード {code} を返しました")
         return code, stdout
+
+    def fetch(self, work_dir):
+        self._run(work_dir, "fetch", "origin")
 
     def branch_exists(self, work_dir, branch):
         return self._run(work_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}",
@@ -496,13 +517,19 @@ class Controller:
         repo, issue = run["repository"], run["issue"]
         review = run["transition"] == "review"
         pr = run["pr"]
+        work_dir = Path(run["work_dir"])
         if "job_id" not in run:
-            reason = "interrupted_before_submit"
-            self._fail(repo, issue, "ファクトリーの依頼投入が中断されました。受け箱を確認してください。", run)
-            self._run_event("job_finished", run, exit_code=1, reason=reason)
-            return True
+            found = self.goalie.find_job_by_name(work_dir, run["job_name"])
+            if found is None:
+                reason = "interrupted_before_submit"
+                self._fail(repo, issue, "ファクトリーの依頼投入が中断されました。受け箱を確認してください。", run)
+                self._run_event("job_finished", run, exit_code=1, reason=reason)
+                return True
+            job_id, submitted_at = found
+            run.update(job_id=job_id, submitted_at=submitted_at)
+            self._run_event("job_submitted", run, submitted_at=submitted_at)
 
-        outcome = self.goalie.poll_job(Path(run["work_dir"]), run["job_id"],
+        outcome = self.goalie.poll_job(work_dir, run["job_id"],
                                        run["submitted_at"], self.config.job_timeout_sec, self.clock())
         kind = outcome.kind
         if kind == "pending":
@@ -532,7 +559,10 @@ class Controller:
                         self._ci_failed(repo, issue, pr, sha)
                         self._run_event("job_finished", run, exit_code=code, reason="ci_failed")
                         return True
-                    self.gh.comment_pr(repo, pr, format_review_comment(run["run_id"], sha, outcome.body))
+                    comment = format_review_comment(run["run_id"], sha, outcome.body)
+                    marker = comment.split("\n", 1)[0]
+                    if not self.gh.pr_comment_exists(repo, pr, marker):
+                        self.gh.comment_pr(repo, pr, comment)
                     verdict = parse_verdict(outcome.body)
                     self._run_event("review_posted", run, verdict=verdict)
                 self._label(repo, issue, "factory:failed" if verdict == "major" else "factory:reviewed", run)
@@ -558,11 +588,12 @@ class Controller:
         repo, issue = run["repository"], run["issue"]
         if not self._milestone(run, "pr_created"):
             work_dir = Path(run["work_dir"])
+            self.git.fetch(work_dir)
             branch = issue_branch(issue)
             failure = None
             if not self.git.branch_exists(work_dir, branch):
                 failure = f"ブランチ `{branch}` が見つかりません。"
-            elif self.git.commits_ahead(work_dir, self.gh.default_branch(repo), branch) <= 0:
+            elif self.git.commits_ahead(work_dir, f"origin/{self.gh.default_branch(repo)}", branch) <= 0:
                 failure = f"ブランチ `{branch}` に既定ブランチより先のコミットがありません。"
             elif self.git.tracked_dirty(work_dir):
                 failure = "追跡対象のファイルに未コミットの変更があります。"
@@ -621,7 +652,16 @@ class Controller:
             and not self._remaining_jobs(work_dir=work_dir)
         )
         if progress in (None, "factory:implementing"):
-            if can_submit:
+            pr = self.gh.find_pr_by_head(repo, issue_branch(number))
+            if pr:
+                if not any(entry["event"] == "pr_created" and entry["repository"] == repo
+                           and entry.get("issue", entry["target"]) == number
+                           for entry in self.journal.events):
+                    self.journal.record("pr_created", repository=repo, target_type="issue",
+                                        target=number, issue=number, transition="implement",
+                                        input_revision=pr["headRefOid"], pr=pr["number"])
+                self._label(repo, number, "factory:pr-open")
+            elif can_submit:
                 self._start(repo, issue, "implement", issue["updatedAt"], work_dir)
             return
         if progress == "factory:in-review":
@@ -637,8 +677,24 @@ class Controller:
         pr_number = pr["number"]
         if progress in ("factory:reviewed", "factory:failed"):
             previous = self.journal.last_sha(repo, number)
-            if pr["headRefOid"] != previous and not self._remaining_jobs(repo, number):
+            sha = pr["headRefOid"]
+            if sha != previous and not self._remaining_jobs(repo, number):
                 self._label(repo, number, "factory:pr-open")
+            elif sha == previous and progress == "factory:failed":
+                latest = next((entry for entry in reversed(self.journal.events)
+                               if entry["repository"] == repo and entry.get("issue") == number
+                               and entry["input_revision"] == sha
+                               and (entry["event"] in ("ci_failed", "review_posted")
+                                    or (entry["event"] == "label_changed"
+                                        and entry["transition"] == "review"
+                                        and entry["label"] == "factory:failed"))), None)
+                if (latest and latest["event"] == "ci_failed"
+                        and self.gh.pr_checks_state(repo, pr_number) == "success"
+                        and self.gh.pr_head_sha(repo, pr_number) == sha):
+                    self.journal.record("ci_passed", repository=repo, target_type="pr",
+                                        target=pr_number, issue=number, transition="ci",
+                                        input_revision=sha, pr=pr_number)
+                    self._label(repo, number, "factory:pr-open")
             return
 
         sha = self.gh.pr_head_sha(repo, pr_number)
@@ -681,8 +737,8 @@ class Controller:
             name = f"factory-review-{pr}"
             progress = "factory:in-review"
         else:
-            variables.update(ISSUE_NUMBER=str(number), ISSUE_TITLE=issue["title"],
-                             ISSUE_BODY=issue["body"], BRANCH=issue_branch(number))
+            variables.update(ISSUE_NUMBER=str(number), ISSUE_TITLE=issue.get("title") or "",
+                             ISSUE_BODY=issue.get("body") or "", BRANCH=issue_branch(number))
             name = f"factory-impl-{number}"
             progress = "factory:implementing"
         template = (HERE / "tasks" / f"{transition}.md").read_text(encoding="utf-8")

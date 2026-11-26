@@ -48,6 +48,9 @@ class FakeGh:
     def comment_pr(self, repo, number, body):
         self.pr_comments.append((number, body))
 
+    def pr_comment_exists(self, repo, number, marker):
+        return any(pr == number and marker in body for pr, body in self.pr_comments)
+
     def find_pr_by_head(self, repo, branch):
         return self.prs.get(branch)
 
@@ -114,11 +117,17 @@ class FakeGit:
     def __init__(self):
         self.pushes = []
         self.dirty = False
+        self.verification_calls = []
+
+    def fetch(self, work_dir):
+        self.verification_calls.append(("fetch", work_dir))
 
     def branch_exists(self, work_dir, branch):
+        self.verification_calls.append(("branch_exists", work_dir, branch))
         return True
 
     def commits_ahead(self, work_dir, base, branch):
+        self.verification_calls.append(("commits_ahead", work_dir, base, branch))
         return 1
 
     def tracked_dirty(self, work_dir):
@@ -250,6 +259,81 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(self.gh.pr_comments), 2)
         self.assert_progress("factory:failed")
 
+    def test_ci_success_on_same_head_reopens_failed_issue(self):
+        pr = self.open_pr()
+        self.gh.checks = "failure"
+        self.poll()
+        self.assert_progress("factory:failed")
+        self.gh.checks = "pending"
+        self.poll()
+        self.assert_progress("factory:failed")
+        self.gh.checks = "success"
+        journal = self.poll()
+        self.assert_progress("factory:pr-open")
+        passed = [event for event in journal.events if event["event"] == "ci_passed"]
+        self.assertEqual([(event["pr"], event["input_revision"]) for event in passed],
+                         [(pr["number"], pr["headRefOid"])])
+        self.assertEqual(len(self.goalie.calls), 1)
+
+    def test_major_review_after_ci_failure_keeps_failed_label(self):
+        self.open_pr()
+        self.gh.checks = "failure"
+        self.poll()
+        self.gh.set_progress_label("", 1, "factory:pr-open")
+        self.gh.checks = "success"
+        self.poll()
+        self.goalie.finish("job-2", "FACTORY-VERDICT: major")
+        self.poll()
+        journal = self.poll()
+        self.assert_progress("factory:failed")
+        self.assertFalse(any(event["event"] == "ci_passed" for event in journal.events))
+
+    def test_existing_review_comment_is_not_reposted(self):
+        pr = self.open_pr()
+        self.gh.checks = "success"
+        run = self.poll().unresolved()[0]
+        body = "FACTORY-VERDICT: clear\n指摘はありません"
+        comment = factory.format_review_comment(run["run_id"], run["input_revision"], body)
+        self.gh.comment_pr(run["repository"], pr["number"], comment)
+        self.goalie.finish("job-2", body)
+        journal = self.poll()
+        self.assert_progress("factory:reviewed")
+        self.assertEqual(self.gh.pr_comments, [(pr["number"], comment)])
+        posted = [event for event in journal.events if event["event"] == "review_posted"]
+        self.assertEqual([(event["run_id"], event["verdict"]) for event in posted],
+                         [(run["run_id"], "clear")])
+        self.assertFalse(journal.unresolved())
+
+    def test_existing_pr_is_adopted_without_implementation(self):
+        pr = self.gh.add_pr("factory/issue-1")
+        for progress in (None, "factory:implementing"):
+            with self.subTest(progress=progress):
+                self.gh.set_progress_label("", 1, progress)
+                journal = self.poll()
+                self.assert_progress("factory:pr-open")
+                self.assertFalse(self.goalie.calls)
+                created = [event for event in journal.events if event["event"] == "pr_created"]
+                self.assertEqual([(event["pr"], event["input_revision"]) for event in created],
+                                 [(pr["number"], pr["headRefOid"])])
+
+    def test_null_issue_title_and_body_are_submitted_as_empty(self):
+        self.gh.issues[1].update(title=None, body=None)
+        self.poll()
+        self.assert_progress("factory:implementing")
+        self.assertEqual(len(self.goalie.calls), 1)
+        prompt = self.goalie.calls[0][1].read_text(encoding="utf-8")
+        self.assertNotIn("None", prompt)
+        self.assertNotIn("{{ISSUE_", prompt)
+
+    def test_implementation_fetches_before_comparing_to_origin_default_branch(self):
+        self.open_pr()
+        work_dir = self.goalie.calls[0][0]
+        self.assertEqual(self.git.verification_calls, [
+            ("fetch", work_dir),
+            ("branch_exists", work_dir, "factory/issue-1"),
+            ("commits_ahead", work_dir, "origin/main", "factory/issue-1"),
+        ])
+
     def test_hold_until_config_changes(self):
         self.gh.add_issue(2)
         self.goalie.usage_error = True
@@ -317,31 +401,85 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(self.goalie.calls), 1)
 
     def test_interrupted_submission_is_not_retried(self):
-        self.poll()
-        journal = self.controller().journal
-        journal.path.write_text(
-            "".join(line + "\n" for line in journal.path.read_text(encoding="utf-8").splitlines()
-                    if json.loads(line)["event"] != "job_submitted"), encoding="utf-8",
-        )
+        journal = self.poll()
+        self.goalie.path("job-1", "pending").unlink()
+        self.remove_submission_record(journal)
         journal = self.poll()
         self.assert_progress("factory:failed")
         self.assertEqual(len(self.gh.issue_comments), 1)
         self.assertIn("interrupted_before_submit", [event["reason"] for event in journal.events])
 
+    def remove_submission_record(self, journal):
+        journal.path.write_text(
+            "".join(json.dumps(event) + "\n" for event in journal.events
+                    if event["event"] != "job_submitted"), encoding="utf-8",
+        )
+
+    def test_interrupted_submission_adopts_orphan_job_by_name(self):
+        journal = self.poll()
+        self.remove_submission_record(journal)
+        self.goalie.finish("job-1", "BRANCH: factory/issue-1")
+        result = self.goalie.path("job-1", "results")
+        job_id = "job-1-factory-impl-1"
+        orphan = result.rename(result.with_name(f"{job_id}.md"))
+        os.utime(orphan, (self.now - 5, self.now - 5))
+        journal = self.poll()
+        self.assert_progress("factory:pr-open")
+        self.assertFalse(journal.unresolved())
+        self.assertEqual(len(self.goalie.calls), 1)
+        submitted = [event for event in journal.events if event["event"] == "job_submitted"]
+        self.assertEqual([(event["job_id"], event["submitted_at"]) for event in submitted],
+                         [(job_id, self.now - 5)])
+
     def test_partial_result_waits_and_missing_job_is_not_retried(self):
         self.poll()
         self.goalie.path("job-1", "pending").unlink()
         self.goalie.write("job-1", "results", "stat")
-        self.now += 61
+        self.now += 59
         self.assertEqual(len(self.poll().unresolved()), 1)
-        self.goalie.path("job-1", "results").unlink()
-        self.assertFalse(self.poll().unresolved())
+        self.now += 1
+        journal = self.poll()
+        self.assertFalse(journal.unresolved())
+        self.assertEqual([event["reason"] for event in journal.events
+                          if event["event"] == "job_finished"], ["missing"])
         self.assert_progress("factory:failed")
         self.poll()
         self.assertEqual(len(self.goalie.calls), 1)
 
 
 class ClientTests(unittest.TestCase):
+    def test_pr_comment_exists_matches_marker_in_body(self):
+        class CommentsRunner:
+            def run(self, argv, cwd):
+                case.assertEqual(argv, ["gh", "pr", "view", "42", "--repo",
+                                        "owner/repo", "--json", "comments"])
+                return 0, json.dumps({"comments": [{"body": "other"},
+                                                   {"body": "prefix " + marker + "\ntext"}]}), ""
+
+        case = self
+        marker = "<!-- factory:review run=run sha=abc -->"
+        gh = factory.GhClient(CommentsRunner())
+        self.assertTrue(gh.pr_comment_exists("owner/repo", 42, marker))
+        self.assertFalse(gh.pr_comment_exists("owner/repo", 42, marker.replace("abc", "def")))
+
+    def test_find_job_by_name_prefers_inbox_state_order(self):
+        goalie = factory.GoalieClient(NoCommands(), Path("unused"))
+        with tempfile.TemporaryDirectory() as directory:
+            work_dir = Path(directory)
+            paths = []
+            for index, state in enumerate(("pending", "running", "dispatched", "results", "done")):
+                path = work_dir / ".copilot-jobs" / state / f"job-{index}-factory-impl-1.md"
+                path.parent.mkdir(parents=True)
+                path.touch()
+                os.utime(path, (1000 + index, 1000 + index))
+                paths.append(path)
+            paths[0].with_name("job-factory-impl-10.md").touch()
+            for index, path in enumerate(paths):
+                self.assertEqual(goalie.find_job_by_name(work_dir, "factory-impl-1"),
+                                 (path.stem, 1000 + index))
+                path.unlink()
+            self.assertIsNone(goalie.find_job_by_name(work_dir, "factory-impl-1"))
+
     def test_check_rollup(self):
         class ChecksRunner:
             def run(self, argv, cwd):
@@ -366,6 +504,24 @@ class ClientTests(unittest.TestCase):
 
 
 class CliAndFormattingTests(unittest.TestCase):
+    def test_config_rejects_duplicate_resolved_work_dirs(self):
+        values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first").mkdir()
+            (root / "alias").symlink_to(root / "first", target_is_directory=True)
+            values.update(repositories=["owner/first", "owner/second"], work_root=str(root))
+            factory.Config(values)
+            for overrides in (
+                {"owner/second": str(root / "alias")},
+                {"owner/first": str(root / "shared"),
+                 "owner/second": str(root / "nested" / ".." / "shared")},
+            ):
+                with self.subTest(overrides=overrides):
+                    values["work_dirs"] = overrides
+                    with self.assertRaisesRegex(factory.ConfigError, "作業フォルダが重複"):
+                        factory.Config(values)
+
     def test_review_format(self):
         body = "FACTORY-VERDICT: major\n\n- [重大] 例\n"
         self.assertEqual(factory.parse_verdict(body), "major")
