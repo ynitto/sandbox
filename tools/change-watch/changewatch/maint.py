@@ -90,7 +90,8 @@ def gc(cfg: Config, store: Store, dry_run: bool = False, vacuum: bool = False) -
     """
     t = now()
     rt = cfg.retention
-    counts = {"fetches": 0, "pages_of_abandoned": 0, "http_cache": 0, "stale_records": 0, "freed_bytes": 0}
+    counts = {"fetches": 0, "pages_of_abandoned": 0, "http_cache": 0, "item_cache": 0, "stale_records": 0,
+              "freed_bytes": 0}
     fetch_cut = t - rt.fetch_days * 86400
     with store.tx() as db:
         for srow in db.execute("SELECT * FROM sources").fetchall():
@@ -129,6 +130,10 @@ def gc(cfg: Config, store: Store, dry_run: bool = False, vacuum: bool = False) -
         counts["http_cache"] = cur
         if not dry_run:
             db.execute("DELETE FROM http_cache WHERE stored_at<?", (fetch_cut,))
+        counts["item_cache"] = db.execute("SELECT COUNT(*) c FROM item_cache WHERE fetched_at<?",
+                                          (fetch_cut,)).fetchone()["c"]
+        if not dry_run:
+            db.execute("DELETE FROM item_cache WHERE fetched_at<?", (fetch_cut,))
         # 増分取得で組み立てた全体の姿のうち、長く取得されていないもの（設定したときだけ）
         if rt.record_days is not None:
             stale_cut = t - rt.record_days * 86400

@@ -2,6 +2,7 @@
 
 > 作成 2026-11-26 ／ 状態：設計案  
 > 2026-11-27: ファクトリーの対象を GitHub から社内のセルフホスト GitLab へ訂正。  
+> 2026-11-27: GitLab への問い合わせを change-watch にまとめる構成（§8.1）を追加。  
 > 本書は sandbox リポジトリ（GitHub）で管理し、本書の変更も GitHub の PR で扱う。  
 > 導入手順は [ソフトウェアファクトリーの導入手順](./2026-11-26-software-factory-introduction.md) を参照。
 
@@ -189,6 +190,27 @@ Start slow の初期対象は 1 リポジトリの文書修正など低リスク
 
 トークンは環境変数 `GITLAB_TOKEN`（`api` スコープ）からのみ読み取り、API には `PRIVATE-TOKEN` ヘッダーで渡す。トークンは `factory.json` には書かない。1 回の controller 実行で使うトークンは 1 つ。プロジェクトアクセストークンで対象を増やす場合は、プロジェクトごとに controller の配置先（`factory.json` を含む）、作業ルート、Dagu の実行環境を分ける。
 
+### 8.1 GitLab への問い合わせを change-watch にまとめる
+
+直接つなぐ構成では、poll（既定 5 分）ごとに Issue 一覧・MR 検索を取り直し、`factory:mr-open` の MR は 1 件につき MR 詳細を 3 回取得する。人のマージを待つ `factory:reviewed` の MR も poll ごとに検索する。量は GitLab の速度制限より一桁小さいが、Issue 数と PC・プロジェクトの数に比例して増え、取得時刻のずらしも失敗後の待ちもない。そこで `factory.json` に `change_watch` を書くと、GitLab の読み書きを change-watch に任せる構成を選べる（`gitlab_url` と直接の接続は残す）。
+
+| controller の用途 | change-watch で受けるもの |
+| --- | --- |
+| `factory` Issue の一覧・現在のラベル | 取得元 `factory-issues`（`labels=factory`、key `iid`）の保存済みの姿を `get --source` で読む。取得するかは取得元の `schedule` などが決める |
+| Issue に対応する MR の検索・head の変化 | 取得元 `factory-mrs`（`labels=factory`、key `iid`）の保存済みの姿 |
+| MR の CI の結果（`head_pipeline`）と head | MR 一覧には CI の結果が無いため、取得元の `item`（MR 1 件）を `item --max-age <ci_max_age_sec>` で読む。同じ MR を同じ時間内に何度聞かれても問い合わせは 1 回。レビュー結果を投稿する直前の照合だけは `--max-age 0` で取り直す |
+| ラベルの付け替え・MR の作成 | `call ... --record`。応答をそのレコードのいまの姿として取得元に入れるため、一覧の取得を待たずに次の poll から自分の書き込みが見える。ラベルは `add_labels` と `remove_labels` で送り、手元の姿が古くても人のラベルを上書きしない |
+| コメント・コメントの重複確認・差分・既定ブランチ | `call`。接続・要求の間隔・失敗の待ちを、同じ `rate_limit.group` のほかの取得元と分け合う。本文はコマンド行の長さの上限を避けて `--json-file` で渡す |
+
+change-watch 側には、このために次の 2 つを足した（汎用の機能として、ほかのエージェントからも使える）。
+
+- `item --source S KEY [--max-age SEC]`: 取得元の `item` で 1 件を取り直し、取り直した姿を取得元の一覧とは別に保存する。`--max-age`（既定は `item.max_age_sec`）の間はその姿で答え、問い合わせが失敗したら前の姿で答える。
+- `call --record`: 書き込みの応答を取得元のいまの姿に入れ、そのレコードの `item` の保存を捨てる。次の全体の取得で、取得条件に合わなくなったレコードは消える。
+
+鮮度の上限は次のとおり。新しい `factory` Issue とマージ待ちの MR への人のコミットは、取得元の予定（例では 15 分）まで遅れて検出されることがある。CI を待つ MR は `ci_max_age_sec`（既定 240 秒）以内に検出する。人が進捗ラベルを手で付け替えた場合は、次の取得まで controller が古いラベルで判断する（進捗ラベルは controller に任せる運用のため許容する）。change-watch が失敗した場合（終了コード 1・2・3）は GitLab の失敗と同じく `poll` をエラーで終え、ジャーナルに記録する。
+
+例のパラメータで 1 リポジトリに CI 待ち 3 件・マージ待ち 2 件がある場合、1 日の要求は直接の構成の約 4,300 件から、CI 待ちの詳細 約 860 件と一覧 約 190 件の計 約 1,050 件になる。
+
 ## 9. Dagu の DAG 例
 
 `tools/software-factory/dags/factory-poll.example.yaml` は `factory.py poll` を `poll_interval_sec` に合わせて起動する雛形。300 秒は 5 分の cron に対応する。パスを環境に合わせ、Dagu の自動再試行は設定せずに controller の照合に任せる。controller は常駐しない。前回の実行が続いている場合は次の実行を重ねない。[Dagu のスケジュール仕様](https://docs.dagu.sh/writing-workflows/scheduling)
@@ -229,6 +251,7 @@ steps:
 tools/software-factory/
 ├── factory.py                     # poll / status
 ├── factory.json                   # factory.py と同じディレクトリから読み込む
+├── change-watch.example.yaml      # change-watch に任せるときの取得元の例
 ├── dags/
 │   └── factory-poll.example.yaml   # Dagu に配置する雛形
 └── tasks/
@@ -247,6 +270,7 @@ GitLab REST API v4 の呼び出しはフェイクに差し替え、goalie 起動
 - コード 3 は次の poll で再投入可能で、コード 4 は依頼を残して再投入しないこと。コード 1 は失敗記録、コード 2 は新規投入保留に進むこと。
 - 最新リビジョンのパイプラインが未作成・未完了・失敗の場合にレビューに進まないこと。旧リビジョンの成功を判定に使わないこと。レビュー中に更新されたリビジョンに旧結果を付けないこと。
 - 対象ラベル除去や `review.enabled` 無効化で新規投入が止まり、進行中の結果を再開時に照合できること。
+- change-watch に任せる構成では、本物の change-watch を偽の GitLab につなぎ、一覧の取得を間隔の内で使い回すこと・自分の書き込みが次の取得の前に見えること・CI の取り直しが `ci_max_age_sec` の内で 1 回になること・投稿前は取り直すこと・長い本文を送れることを確かめる。
 
 ## 14. 未検証事項・未決事項
 

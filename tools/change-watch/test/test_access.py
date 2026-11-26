@@ -180,6 +180,72 @@ class AccessTest(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("key", out)
 
+    # -- item（1 件の取り直しを分け合う）と call --record（自分の書き込みを手元の姿に入れる） --
+
+    def item(self, key: str, *args: str):
+        self.env.ok(self, "item", "--source", "items", key, *args)
+        return json.loads(self.env.stdout)
+
+    def test_item_shares_one_request_within_max_age(self):
+        self.env.api.put(1, status="a")
+        self.assertEqual(self.item("1", "--max-age", "300")["status"], "a")
+        self.env.api.put(1, status="b")
+        self.assertEqual(self.item("1", "--max-age", "300")["status"], "a")      # max-age の内は問い合わせない
+        self.assertEqual(self.env.api.count("/item/1"), 1)
+        self.assertEqual(self.item("1", "--max-age", "0")["status"], "b")        # 0 なら毎回問い合わせる
+        self.assertEqual(self.item("1")["status"], "b")                          # 既定は item.max_age_sec（0）
+        self.assertEqual(self.env.api.count("/item/1"), 3)
+        self.assertIsNone(self.item("9"))                                         # 無ければ null
+
+    def test_item_max_age_from_config(self):
+        self.env.write_config({"items": self.env.source(
+            "/all", key="id", item={"url": "{{ conn.url }}/item/{{ key }}", "max_age_sec": 300})})
+        self.env.api.put(1, status="a")
+        self.item("1")
+        self.item("1")
+        self.assertEqual(self.env.api.count("/item/1"), 1)
+
+    def test_item_answers_from_cache_when_api_fails(self):
+        self.env.api.put(1, status="a")
+        self.item("1")
+        self.env.api.fail("/item/1", 503, count=5)
+        code, out = self.env.run("item", "--source", "items", "1")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(self.env.stdout)["status"], "a")
+        self.assertIn("前に取り直した姿", out)
+        self.env.api.fail("/item/2", 503, count=5)
+        code, _ = self.env.run("item", "--source", "items", "2")              # 前の姿が無ければ一時的な失敗
+        self.assertEqual(code, 3)
+
+    def test_item_needs_item_spec(self):
+        self.env.write_config({"items": self.env.source("/all", key="id")})
+        code, out = self.env.run("item", "--source", "items", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("item", out)
+
+    def test_call_record_updates_records_until_next_fetch(self):
+        self.env.write_config({"items": self.env.source("/all", key="id", min_interval_sec=3600,
+                                                        item={"url": "{{ conn.url }}/item/{{ key }}"})})
+        self.env.api.put(1, status="a")
+        self.assertEqual(self.get()[0]["status"], "a")
+        self.item("1", "--max-age", "300")
+        self.env.ok(self, "call", "POST", "/items/1/archive", "--source", "items", "--record")
+        self.assertEqual(self.get()[0]["status"], "archived")                    # 次の取得の前でも書き込んだ後の姿
+        self.assertEqual(self.env.api.count("/all"), 1)
+        self.assertEqual(self.item("1", "--max-age", "300")["status"], "archived")   # 前の取り直しは使わない
+
+    def test_call_record_needs_key_before_writing(self):
+        self.env.write_config({"items": self.env.source("/all")})
+        code, out = self.env.run("call", "POST", "/items/1/archive", "--source", "items", "--record")
+        self.assertEqual(code, 1)
+        self.assertIn("key", out)
+        self.assertEqual(self.env.api.count("/items/1/archive"), 0)
+
+    def test_call_record_without_key_in_response_warns(self):
+        code, out = self.env.run("call", "POST", "/_put", "--source", "items", "--json", '{"id": 3}', "--record")
+        self.assertEqual(code, 0, out)
+        self.assertIn("応答に key が無い", out)
+
 
 if __name__ == "__main__":
     unittest.main()

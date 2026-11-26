@@ -12,6 +12,7 @@
     source_records  取得元の key ごとの最新のレコード（増分取得の取得元で、全体を組み立てた姿）
     consumers       get --consumer で変化を受け取るワークフローごとの基準（取得元の世代）
     consumer_records consumer × レコードの、commit で処理し終えたと記録した姿
+    item_cache      item で 1 件取り直した姿（max_age_sec のあいだ使い回す。取得元の姿とは別に持つ）
     leases          取得の排他（期限つき。持ち主のプロセスが死んでいれば奪える）
 """
 from __future__ import annotations
@@ -109,6 +110,14 @@ CREATE TABLE IF NOT EXISTS consumer_records (   -- consumer が commit で「処
     data BLOB NOT NULL,
     updated_at REAL NOT NULL,
     PRIMARY KEY (consumer, source, rkey)
+);
+CREATE TABLE IF NOT EXISTS item_cache (   -- item で 1 件取り直した姿（None は 404）
+    source TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    sig TEXT NOT NULL,          -- 取得元の指紋と item の要求。変わったら使わない
+    data BLOB,
+    fetched_at REAL NOT NULL,
+    PRIMARY KEY (source, rkey)
 );
 CREATE TABLE IF NOT EXISTS leases (
     name TEXT PRIMARY KEY,

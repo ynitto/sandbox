@@ -66,10 +66,10 @@ class FakeGitLab:
         self.mrs[branch] = mr
         return mr
 
-    def mr_head_sha(self, repo, number):
+    def mr_head_sha(self, repo, number, fresh=False):
         return next(mr["headRefOid"] for mr in self.mrs.values() if mr["number"] == number)
 
-    def mr_checks_state(self, repo, number):
+    def mr_checks_state(self, repo, number, fresh=False):
         return self.checks
 
     def mr_diff(self, repo, number):

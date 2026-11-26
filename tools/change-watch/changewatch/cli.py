@@ -90,7 +90,7 @@ def cmd_gc(cfg, store, a) -> int:
     c = gc(cfg, store, a.dry_run, a.vacuum)
     log(("消す予定" if a.dry_run else "消しました") +
         f": 取得結果 {c['fetches']} 回分・途中で止まった取得のページ {c['pages_of_abandoned']} 回分・"
-        f"条件付き要求の控え {c['http_cache']} 件・長く取得されていないレコード {c['stale_records']} 件"
+        f"条件付き要求の控え {c['http_cache']} 件・1 件ずつ取り直した姿 {c['item_cache']} 件・長く取得されていないレコード {c['stale_records']} 件"
         + ("" if a.dry_run else f"。ファイルから {c['freed_bytes'] / 1048576:.1f} MB 返しました"))
     return EXIT_OK
 
@@ -150,8 +150,26 @@ def cmd_commit(cfg, store, a) -> int:
     return EXIT_OK
 
 
+def cmd_item(cfg, store, a) -> int:
+    name = _sources(cfg, [a.source])[0]
+    try:
+        rec, where = access.item(Fetcher(cfg, store), cfg.sources[name], a.key, a.max_age)
+    except (Deferred, TransientError) as e:
+        warn(str(e))
+        return EXIT_TRANSIENT
+    except PermanentError as e:
+        warn(str(e))
+        return EXIT_ERROR
+    log(f"[{name}] {a.key}: " + {"fetched": "取り直しました", "cached": "前に取り直した姿で答えます（max-age の内）",
+                                  "stale": "取り直せないので、前に取り直した姿で答えます"}[where])
+    print(json.dumps(rec, ensure_ascii=False))
+    return EXIT_OK
+
+
 def cmd_call(cfg, store, a) -> int:
     name = _sources(cfg, [a.source])[0]
+    if a.record and not cfg.sources[name].key:      # 書き込む前に止める（書いてから入れられないと分かっても戻せない）
+        raise ConfigError(f"sources.{name}.key: --record には、レコードを一意に指す key を取得元に書いてください")
     body = None
     if a.json is not None and a.json_file is not None:
         raise ConfigError("--json と --json-file はどちらか一方にしてください")
@@ -181,6 +199,12 @@ def cmd_call(cfg, store, a) -> int:
         warn(str(e))
         return EXIT_ERROR
     log(f"[{name}] {a.method.upper()} → HTTP {status}")
+    if a.record:
+        k = access.record(store, cfg.sources[name], resp)
+        if k is None:
+            warn(f"[{name}] 応答に key が無いので、取得元の姿には入れていません（書き込みは済んでいます）")
+        else:
+            log(f"[{name}] 応答を {k} のいまの姿として取得元に入れました")
     if resp is not None:
         print(json.dumps(resp, ensure_ascii=False))
     return EXIT_OK
@@ -233,6 +257,13 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--json", help="送る本文（JSON の文字列）")
     sp.add_argument("--json-file", help="送る本文（JSON のファイル）")
     sp.add_argument("--query", action="append", help="名前=値（繰り返し可）")
+    sp.add_argument("--record", action="store_true",
+                    help="応答（書き込んだあとのレコード）を、そのレコードのいまの姿として取得元に入れる（次の取得まで古い姿で答えない）")
+    sp = add("item", cmd_item, "取得元の item でレコードを 1 件取り直して JSON で出す（無ければ null）。"
+                               "--max-age の秒数以内に取り直していれば、問い合わせずにその姿で答える")
+    sp.add_argument("--source", required=True)
+    sp.add_argument("--max-age", type=float, help="この秒数以内に取り直した姿があれば問い合わせない（省略すると取得元の item.max_age_sec）")
+    sp.add_argument("key", help="レコードの key")
     sp = add("status", cmd_status, "取得元と consumer の状況")
     sp.add_argument("--json", action="store_true")
     sp = add("records", cmd_records, "保存済みの取得結果のレコードを出す")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import NamedTuple
 import urllib.error
@@ -44,6 +45,63 @@ class GoalieError(Exception):
 
 class GoalieUsageError(GoalieError):
     pass
+
+
+CHANGE_WATCH_SOURCES = ("issues", "merge_requests")
+
+
+def _gitlab_url(values):
+    gitlab_url = values.get("gitlab_url", os.environ.get("GITLAB_URL"))
+    if not isinstance(gitlab_url, str) or not gitlab_url.strip():
+        raise ConfigError(
+            "gitlab_url が未設定です。factory.json の gitlab_url か環境変数 GITLAB_URL を設定してください"
+        )
+    gitlab_url = gitlab_url.strip()
+    try:
+        parsed_url = urllib.parse.urlparse(gitlab_url)
+        valid_url = parsed_url.scheme in {"http", "https"} and bool(parsed_url.hostname)
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        raise ConfigError("gitlab_url にはホストを含む HTTP または HTTPS の URL を指定してください")
+    return gitlab_url
+
+
+def _change_watch_config(section, repos):
+    """factory.json の change_watch。GitLab の読み取りと書き込みを change-watch に任せるときに書く。"""
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("change_watch はオブジェクトで指定してください")
+    unknown = set(section) - {"command", "config", "connections", "sources", "ci_max_age_sec"}
+    if unknown:
+        raise ConfigError(f"change_watch に不明な項目があります: {', '.join(sorted(unknown))}")
+    command = section.get("command")
+    if isinstance(command, str):
+        command = [command]
+    if not isinstance(command, list) or not command or any(
+        not isinstance(part, str) or not part.strip() for part in command
+    ):
+        raise ConfigError("change_watch.command は change-watch を起動するコマンド（文字列か文字列の配列）が必要です")
+    for key in ("config", "connections"):
+        if not isinstance(section.get(key), str) or not section[key].strip():
+            raise ConfigError(f"change_watch.{key} は空でない文字列が必要です")
+    sources = section.get("sources")
+    if sources is None:
+        if len(repos) != 1:
+            raise ConfigError("リポジトリが複数あるときは change_watch.sources にリポジトリごとの取得元を指定してください")
+        sources = {repos[0]: {"issues": "factory-issues", "merge_requests": "factory-mrs"}}
+    if not isinstance(sources, dict) or set(sources) != set(repos) or any(
+        not isinstance(names, dict) or set(names) != set(CHANGE_WATCH_SOURCES)
+        or any(not isinstance(name, str) or not name.strip() for name in names.values())
+        for names in sources.values()
+    ):
+        raise ConfigError("change_watch.sources は対象リポジトリごとに issues と merge_requests の取得元名が必要です")
+    max_age = section.get("ci_max_age_sec", 240)
+    if type(max_age) not in (int, float) or max_age < 0 or not math.isfinite(max_age):
+        raise ConfigError("change_watch.ci_max_age_sec は 0 以上の数が必要です")
+    return {"command": command, "config": section["config"], "connections": section["connections"],
+            "sources": sources, "ci_max_age_sec": max_age}
 
 
 class Config:
@@ -85,20 +143,9 @@ class Config:
             for key, path in work_dirs.items()
         ):
             raise ConfigError("work_dirs は対象リポジトリから作業フォルダへの対応が必要です")
-        gitlab_url = values.get("gitlab_url", os.environ.get("GITLAB_URL"))
-        if not isinstance(gitlab_url, str) or not gitlab_url.strip():
-            raise ConfigError(
-                "gitlab_url が未設定です。factory.json の gitlab_url か環境変数 GITLAB_URL を設定してください"
-            )
-        gitlab_url = gitlab_url.strip()
-        try:
-            parsed_url = urllib.parse.urlparse(gitlab_url)
-            valid_url = parsed_url.scheme in {"http", "https"} and bool(parsed_url.hostname)
-        except ValueError:
-            valid_url = False
-        if not valid_url:
-            raise ConfigError("gitlab_url にはホストを含む HTTP または HTTPS の URL を指定してください")
-        self.gitlab_url = gitlab_url
+        self.change_watch = _change_watch_config(values.get("change_watch"), repos)
+        # change-watch を使うときは、接続先は change-watch の接続設定が持つ。
+        self.gitlab_url = None if self.change_watch is not None else _gitlab_url(values)
         self.repositories = repos
         self.label = values["label"]
         self.work_root = Path(values["work_root"])
@@ -130,11 +177,13 @@ class Config:
 
 
 class Runner:
-    def run(self, argv: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
+    def run(self, argv: list[str], cwd: Path | None = None, keep_token: bool = False) -> tuple[int, str, str]:
         env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0"}
         # トークンはコントローラー自身の API 呼び出し専用で、Copilot アプリ側には渡さない。
-        env.pop("GITLAB_TOKEN", None)
-        env.pop("GL_TOKEN", None)
+        # change-watch は接続設定の ${GITLAB_TOKEN} から読むことがあるので、keep_token のときだけ残す。
+        if not keep_token:
+            env.pop("GITLAB_TOKEN", None)
+            env.pop("GL_TOKEN", None)
         result = subprocess.run(
             argv, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
             env=env,
@@ -173,6 +222,39 @@ class UrllibTransport:
             raise GitLabError("GitLab API への接続または応答の解析に失敗しました") from None
 
 
+def pipeline_state(mr):
+    status = ((mr or {}).get("head_pipeline") or {}).get("status")
+    # GitLab のマージ条件では skipped パイプラインはマージを妨げない。
+    if status in {"success", "skipped"}:
+        return "success"
+    if status in {"failed", "canceled"}:
+        return "failure"
+    return "pending"
+
+
+def normalize_issue(issue):
+    return {"number": issue["iid"], "title": issue["title"], "body": issue["description"] or "",
+            "labels": [{"name": name} for name in issue["labels"]], "updatedAt": issue["updated_at"]}
+
+
+def normalize_mr(mr):
+    draft = mr.get("draft")
+    if draft is None:
+        draft = mr.get("work_in_progress")
+    return {"number": mr["iid"], "url": mr["web_url"], "headRefOid": mr["sha"],
+            "state": "OPEN", "isDraft": bool(draft)}
+
+
+def render_diff(mr):
+    if mr.get("overflow") or any(change.get("too_large") for change in mr["changes"]):
+        raise GitLabError("差分が大きすぎて取得できません")
+    return "".join(
+        f'diff --git a/{change["old_path"]} b/{change["new_path"]}\n'
+        + (change["diff"].rstrip("\n") + "\n" if change["diff"] else "")
+        for change in mr["changes"]
+    )
+
+
 class GitLabClient:
     def __init__(self, transport):
         self.transport = transport
@@ -195,11 +277,7 @@ class GitLabClient:
     def list_factory_issues(self, repo, label):
         issues = self._get_all(self._project_path(repo) + "/issues",
                                params={"labels": label, "state": "opened"})
-        return [
-            {"number": issue["iid"], "title": issue["title"], "body": issue["description"] or "",
-             "labels": [{"name": name} for name in issue["labels"]], "updatedAt": issue["updated_at"]}
-            for issue in issues
-        ]
+        return [normalize_issue(issue) for issue in issues]
 
     def set_progress_label(self, repo, number, progress):
         if progress is not None and progress not in PROGRESS:
@@ -228,36 +306,18 @@ class GitLabClient:
         mrs = self._get_all(self._project_path(repo) + "/merge_requests",
                             params={"source_branch": branch, "state": "opened"})
         mr = next((mr for mr in mrs if mr["state"] == "opened"), None)
-        if mr is None:
-            return None
-        draft = mr.get("draft")
-        if draft is None:
-            draft = mr.get("work_in_progress")
-        return {"number": mr["iid"], "url": mr["web_url"], "headRefOid": mr["sha"],
-                "state": "OPEN", "isDraft": bool(draft)}
+        return None if mr is None else normalize_mr(mr)
 
-    def mr_head_sha(self, repo, number):
+    def mr_head_sha(self, repo, number, fresh=False):
         return self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}")["sha"]
 
-    def mr_checks_state(self, repo, number):
+    def mr_checks_state(self, repo, number, fresh=False):
         mr = self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}")
-        status = (mr.get("head_pipeline") or {}).get("status")
-        # GitLab のマージ条件では skipped パイプラインはマージを妨げない。
-        if status in {"success", "skipped"}:
-            return "success"
-        if status in {"failed", "canceled"}:
-            return "failure"
-        return "pending"
+        return pipeline_state(mr)
 
     def mr_diff(self, repo, number):
         mr = self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}/changes")
-        if mr.get("overflow") or any(change.get("too_large") for change in mr["changes"]):
-            raise GitLabError("差分が大きすぎて取得できません")
-        return "".join(
-            f'diff --git a/{change["old_path"]} b/{change["new_path"]}\n'
-            + (change["diff"].rstrip("\n") + "\n" if change["diff"] else "")
-            for change in mr["changes"]
-        )
+        return render_diff(mr)
 
     def create_draft_mr(self, repo, head, title, body, label):
         if not title.startswith("Draft:"):
@@ -269,6 +329,141 @@ class GitLabClient:
 
     def default_branch(self, repo):
         return self.transport.request("GET", self._project_path(repo))["default_branch"]
+
+
+class ChangeWatchGitLabClient:
+    """GitLab の読み取りと書き込みを change-watch に任せる。
+
+    Issue と MR の一覧は change-watch の取得元の姿（問い合わせの予定・間隔・失敗の待ちは change-watch の設定が決め、
+    同じ取得元を見るほかのワークフローと問い合わせを分け合う）。MR の CI は取得元の item（MR 1 件）を ci_max_age_sec の
+    あいだ使い回す。書き込みは change-watch call で同じ接続・同じ要求の間隔で送り、応答を取得元の姿に入れる（--record）。"""
+
+    def __init__(self, runner, settings, label):
+        self.runner = runner
+        self.base = [*settings["command"], "--config", settings["config"],
+                     "--connections", settings["connections"]]
+        self.sources = settings["sources"]
+        self.ci_max_age = settings["ci_max_age_sec"]
+        self.label = label
+        self.labels = {}
+        self.default_branches = {}
+
+    def _run(self, *args, parse=True):
+        code, out, err = self.runner.run([*self.base, *args], keep_token=True)
+        if code != 0:
+            lines = [line for line in (err or "").splitlines() if line.strip()]
+            detail = lines[-1][:300] if lines else ""
+            raise GitLabError(f"change-watch {args[0]} が終了コード {code} で終わりました: {detail}".rstrip(": "))
+        if not parse:
+            return None
+        out = (out or "").strip()
+        if not out:
+            return None
+        try:
+            return json.loads(out)
+        except ValueError:
+            raise GitLabError(f"change-watch {args[0]} の出力を解析できません") from None
+
+    def _source(self, repo, kind):
+        return self.sources[repo][kind]
+
+    def _project(self, repo):
+        return "/api/v4/projects/" + urllib.parse.quote(repo, safe="")
+
+    def _call(self, method, repo, path, body=None, query=None, kind="issues", record=False):
+        args = ["call", method, self._project(repo) + path, "--source", self._source(repo, kind)]
+        for key, value in (query or {}).items():
+            args += ["--query", f"{key}={value}"]
+        if record:
+            args.append("--record")
+        if body is None:
+            return self._run(*args)
+        # 本文（レビュー結果など）はコマンド行の長さの上限を超えうるので、ファイルで渡す。
+        handle, name = tempfile.mkstemp(prefix="factory-", suffix=".json")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                json.dump(body, stream, ensure_ascii=False)
+            return self._run(*args, "--json-file", name)
+        finally:
+            with suppress(OSError):
+                os.unlink(name)
+
+    def list_factory_issues(self, repo, label):
+        records = self._run("get", "--source", self._source(repo, "issues")) or []
+        issues = [issue for issue in records
+                  if issue.get("state") == "opened" and label in (issue.get("labels") or [])]
+        for issue in issues:
+            self.labels[(repo, issue["iid"])] = list(issue["labels"])
+        return [normalize_issue(issue) for issue in issues]
+
+    def set_progress_label(self, repo, number, progress):
+        if progress is not None and progress not in PROGRESS:
+            raise ValueError("不明な進捗ラベル")
+        current = self.labels.get((repo, number))
+        if current is not None:
+            wanted = [label for label in current if label not in PROGRESS or label == progress]
+            if progress is not None and progress not in wanted:
+                wanted.append(progress)
+            if wanted == current:
+                return
+        # 付け外しだけを送る。手元の姿が古くても、人が付けたほかのラベルを上書きしない。
+        body = {"remove_labels": ",".join(label for label in PROGRESS if label != progress)}
+        if progress is not None:
+            body["add_labels"] = progress
+        issue = self._call("PUT", repo, f"/issues/{number}", body=body, record=True)
+        if isinstance(issue, dict) and isinstance(issue.get("labels"), list):
+            self.labels[(repo, number)] = list(issue["labels"])
+
+    def comment_issue(self, repo, number, body):
+        self._call("POST", repo, f"/issues/{number}/notes", body={"body": body})
+
+    def comment_mr(self, repo, number, body):
+        self._call("POST", repo, f"/merge_requests/{number}/notes", body={"body": body}, kind="merge_requests")
+
+    def mr_comment_exists(self, repo, number, marker):
+        for page in range(1, 51):
+            notes = self._call("GET", repo, f"/merge_requests/{number}/notes",
+                               query={"per_page": 100, "page": page}, kind="merge_requests") or []
+            if any(marker in (note.get("body") or "") for note in notes):
+                return True
+            if len(notes) < 100:
+                return False
+        return False
+
+    def find_mr_by_head(self, repo, branch):
+        records = self._run("get", "--source", self._source(repo, "merge_requests")) or []
+        mr = next((mr for mr in records
+                   if mr.get("source_branch") == branch and mr.get("state") == "opened"), None)
+        return None if mr is None else normalize_mr(mr)
+
+    def _mr(self, repo, number, fresh):
+        mr = self._run("item", "--source", self._source(repo, "merge_requests"), str(number),
+                       "--max-age", "0" if fresh else str(self.ci_max_age))
+        if not isinstance(mr, dict):
+            raise GitLabError(f"MR !{number} を取得できません")
+        return mr
+
+    def mr_head_sha(self, repo, number, fresh=False):
+        return self._mr(repo, number, fresh)["sha"]
+
+    def mr_checks_state(self, repo, number, fresh=False):
+        return pipeline_state(self._mr(repo, number, fresh))
+
+    def mr_diff(self, repo, number):
+        return render_diff(self._call("GET", repo, f"/merge_requests/{number}/changes", kind="merge_requests"))
+
+    def create_draft_mr(self, repo, head, title, body, label):
+        if not title.startswith("Draft:"):
+            title = f"Draft: {title}"
+        mr = self._call("POST", repo, "/merge_requests", kind="merge_requests", record=True,
+                        body={"source_branch": head, "target_branch": self.default_branch(repo),
+                              "title": title, "description": body, "labels": label})
+        return mr["iid"]
+
+    def default_branch(self, repo):
+        if repo not in self.default_branches:
+            self.default_branches[repo] = self._call("GET", repo, "")["default_branch"]
+        return self.default_branches[repo]
 
 
 class JobOutcome(NamedTuple):
@@ -601,13 +796,14 @@ class Controller:
                     verdict = saved["verdict"]
                 else:
                     sha = run["input_revision"]
-                    head = self.gitlab.mr_head_sha(repo, mr)
+                    # 投稿の直前は、使い回した姿ではなくいまの MR で確かめる。
+                    head = self.gitlab.mr_head_sha(repo, mr, fresh=True)
                     if head != sha:
                         self._label(repo, issue, "factory:mr-open", run)
                         self._run_event("job_finished", run, exit_code=code, reason="stale_revision")
                         return True
-                    checks = self.gitlab.mr_checks_state(repo, mr)
-                    if self.gitlab.mr_head_sha(repo, mr) != sha:
+                    checks = self.gitlab.mr_checks_state(repo, mr, fresh=True)
+                    if self.gitlab.mr_head_sha(repo, mr, fresh=True) != sha:
                         self._label(repo, issue, "factory:mr-open", run)
                         self._run_event("job_finished", run, exit_code=code, reason="stale_revision")
                         return True
@@ -871,11 +1067,14 @@ def main(argv=None):
                 raise ConfigError(f"設定ファイルが既に存在します: {args.config}") from error
         else:
             config = Config.load(args.config)
-            token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
-            if not token:
-                raise ConfigError("環境変数 GITLAB_TOKEN または GL_TOKEN を設定してください")
             runner = Runner()
-            gitlab = GitLabClient(UrllibTransport(config.gitlab_url, token))
+            if config.change_watch is not None:
+                gitlab = ChangeWatchGitLabClient(runner, config.change_watch, config.label)
+            else:
+                token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
+                if not token:
+                    raise ConfigError("環境変数 GITLAB_TOKEN または GL_TOKEN を設定してください")
+                gitlab = GitLabClient(UrllibTransport(config.gitlab_url, token))
             controller = Controller(config, gitlab, GoalieClient(runner, config.goalie_py),
                                     GitClient(runner))
             if args.command == "status":
