@@ -1782,7 +1782,7 @@ def cmd_hook(a) -> int:
         with (work_path(d) / "hook.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps({"at": iso(ts), "tool": name, "decision": "deny" if why else "allow",
                                 "why": why or ""}, ensure_ascii=False) + "\n")
-    except OSError:
+    except (OSError, discovery.WorkDirMigrationError):
         pass
     if why:
         print(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": why}, ensure_ascii=False))

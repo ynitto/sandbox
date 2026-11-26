@@ -176,9 +176,8 @@ def main(argv=None):
         snapshot = json.dumps(baseline_snapshot(results), ensure_ascii=False, indent=2)
         args.save_baseline.write_text(snapshot + "\n", encoding="utf-8")
     return int(any(
-        result["status"] == "fail"
+        not cases or any(result["status"] == "fail" for result in cases.values())
         for cases in results.values()
-        for result in cases.values()
     ))
 
 

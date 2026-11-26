@@ -82,7 +82,8 @@ def hunks(diff):
     rows = []
     header = ""
     number = None
-    for line in diff.splitlines():
+    for raw_line in diff.split("\n"):
+        line = raw_line.removesuffix("\r")
         match = HUNK.match(line)
         if match:
             if rows:
