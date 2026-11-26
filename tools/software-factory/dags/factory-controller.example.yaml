@@ -1,3 +1,5 @@
+# Dagu の実行環境に GITLAB_TOKEN または GL_TOKEN を渡す。
+# 接続先は factory.json の gitlab_url または GITLAB_URL で指定する。
 # command と args のパスを実行環境に合わせる。
 # poll_interval_sec とスケジュールを合わせること。
 # 前のサイクルが終わる前に次の起動が重なっても、コントローラー側のロック（work_root の factory.lock）が二重実行を防ぐ。

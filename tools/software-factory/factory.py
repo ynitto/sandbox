@@ -11,15 +11,17 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from typing import NamedTuple
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 
 HERE = Path(__file__).resolve().parent
 PROGRESS = (
-    "factory:implementing", "factory:pr-open", "factory:in-review",
+    "factory:implementing", "factory:mr-open", "factory:in-review",
     "factory:reviewed", "factory:failed",
 )
 
@@ -28,7 +30,7 @@ class ConfigError(Exception):
     pass
 
 
-class GhError(Exception):
+class GitLabError(Exception):
     pass
 
 
@@ -51,12 +53,13 @@ class Config:
         repos = values.get("repositories")
         if not isinstance(repos, list) or not repos or any(
             not isinstance(repo, str)
-            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
-            or any(part in (".", "..") for part in repo.split("/"))
+            or "/" not in repo
+            or any(segment in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", segment)
+                   for segment in repo.split("/"))
             for repo in repos
         ):
-            raise ConfigError("repositories は owner/repo 形式の空でない配列が必要です")
-        names = [repo.split("/")[1].lower() for repo in repos]
+            raise ConfigError("repositories は group/project 形式の空でない配列が必要です")
+        names = [repo.rsplit("/", 1)[-1].lower() for repo in repos]
         if len(names) != len(set(names)):
             raise ConfigError("repositories のリポジトリ名が重複しています")
         for key in ("label", "work_root", "goalie_py", "journal"):
@@ -82,6 +85,20 @@ class Config:
             for key, path in work_dirs.items()
         ):
             raise ConfigError("work_dirs は対象リポジトリから作業フォルダへの対応が必要です")
+        gitlab_url = values.get("gitlab_url", os.environ.get("GITLAB_URL"))
+        if not isinstance(gitlab_url, str) or not gitlab_url.strip():
+            raise ConfigError(
+                "gitlab_url が未設定です。factory.json の gitlab_url か環境変数 GITLAB_URL を設定してください"
+            )
+        gitlab_url = gitlab_url.strip()
+        try:
+            parsed_url = urllib.parse.urlparse(gitlab_url)
+            valid_url = parsed_url.scheme in {"http", "https"} and bool(parsed_url.hostname)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ConfigError("gitlab_url にはホストを含む HTTP または HTTPS の URL を指定してください")
+        self.gitlab_url = gitlab_url
         self.repositories = repos
         self.label = values["label"]
         self.work_root = Path(values["work_root"])
@@ -108,111 +125,150 @@ class Config:
         return cls(values, hashlib.sha256(raw).hexdigest())
 
     def work_dir(self, repo: str) -> Path:
-        default = self.work_root / repo.split("/")[1]
+        default = self.work_root / repo.rsplit("/", 1)[-1]
         return Path(self.work_dirs.get(repo, default)).resolve()
 
 
 class Runner:
     def run(self, argv: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
+        env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0"}
+        # トークンはコントローラー自身の API 呼び出し専用で、Copilot アプリ側には渡さない。
+        env.pop("GITLAB_TOKEN", None)
+        env.pop("GL_TOKEN", None)
         result = subprocess.run(
             argv, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
-            env={**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0"},
+            env=env,
         )
         return result.returncode, result.stdout, result.stderr
 
 
-class GhClient:
-    def __init__(self, runner: Runner):
-        self.runner = runner
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
-    def _run(self, *args: str) -> str:
-        try:
-            code, stdout, _ = self.runner.run(["gh", *args], None)
-        except OSError as error:
-            raise GhError(f"gh {args[0]} {args[1]} を起動できません") from error
-        if code:
-            raise GhError(f"gh {args[0]} {args[1]} が終了コード {code} を返しました")
-        return stdout
 
-    def _json(self, *args: str):
+class UrllibTransport:
+    def __init__(self, gitlab_url, token):
+        self.base_url = gitlab_url.rstrip("/") + "/api/v4"
+        self.token = token
+        self.opener = urllib.request.build_opener(_NoRedirect())
+
+    def request(self, method, path, params=None, json_body=None):
+        url = self.base_url + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        headers = {"PRIVATE-TOKEN": self.token, "Accept": "application/json"}
+        data = None
+        if json_body is not None:
+            data = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         try:
-            return json.loads(self._run(*args))
-        except ValueError as error:
-            raise GhError(f"gh {args[0]} {args[1]} の JSON を解析できません") from error
+            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            with self.opener.open(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise GitLabError(f"GitLab API が HTTP {error.code} を返しました") from None
+        except (OSError, ValueError):
+            raise GitLabError("GitLab API への接続または応答の解析に失敗しました") from None
+
+
+class GitLabClient:
+    def __init__(self, transport):
+        self.transport = transport
+
+    def _project_path(self, repo):
+        return "/projects/" + urllib.parse.quote(repo, safe="")
+
+    def _get_all(self, path, params=None):
+        per_page = 100
+        items = []
+        for page in range(1, 51):
+            batch = self.transport.request(
+                "GET", path, params={**(params or {}), "per_page": per_page, "page": page},
+            )
+            items.extend(batch)
+            if len(batch) < per_page:
+                break
+        return items
 
     def list_factory_issues(self, repo, label):
-        return self._json("issue", "list", "--repo", repo, "--label", label, "--state",
-                          "open", "--json", "number,title,body,labels,updatedAt", "--limit", "100")
+        issues = self._get_all(self._project_path(repo) + "/issues",
+                               params={"labels": label, "state": "opened"})
+        return [
+            {"number": issue["iid"], "title": issue["title"], "body": issue["description"] or "",
+             "labels": [{"name": name} for name in issue["labels"]], "updatedAt": issue["updated_at"]}
+            for issue in issues
+        ]
 
     def set_progress_label(self, repo, number, progress):
         if progress is not None and progress not in PROGRESS:
             raise ValueError("不明な進捗ラベル")
-        current = self._json("issue", "view", str(number), "--repo", repo, "--json", "labels")
-        old = [name for name in label_names(current) if name in PROGRESS and name != progress]
-        args = ["issue", "edit", str(number), "--repo", repo]
-        if old:
-            args.extend(("--remove-label", ",".join(sorted(old))))
-        if progress and progress not in label_names(current):
-            args.extend(("--add-label", progress))
-        if len(args) > 5:
-            self._run(*args)
-
-    def _with_body(self, args, body):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "body.md"
-            path.write_text(body, encoding="utf-8")
-            return self._run(*args, "--body-file", str(path))
+        path = f"{self._project_path(repo)}/issues/{number}"
+        current = self.transport.request("GET", path)["labels"]
+        labels = [label for label in current if label not in PROGRESS or label == progress]
+        if progress is not None and progress not in labels:
+            labels.append(progress)
+        if labels != current:
+            self.transport.request("PUT", path, json_body={"labels": ",".join(labels)})
 
     def comment_issue(self, repo, number, body):
-        self._with_body(["issue", "comment", str(number), "--repo", repo], body)
+        self.transport.request("POST", f"{self._project_path(repo)}/issues/{number}/notes",
+                               json_body={"body": body})
 
-    def comment_pr(self, repo, number, body):
-        self._with_body(["pr", "comment", str(number), "--repo", repo], body)
+    def comment_mr(self, repo, number, body):
+        self.transport.request("POST", f"{self._project_path(repo)}/merge_requests/{number}/notes",
+                               json_body={"body": body})
 
-    def pr_comment_exists(self, repo, number, marker):
-        comments = self._json("pr", "view", str(number), "--repo", repo, "--json", "comments")
-        return any(marker in comment["body"] for comment in comments["comments"])
+    def mr_comment_exists(self, repo, number, marker):
+        notes = self._get_all(f"{self._project_path(repo)}/merge_requests/{number}/notes")
+        return any(marker in (note.get("body") or "") for note in notes)
 
-    def find_pr_by_head(self, repo, branch):
-        prs = self._json("pr", "list", "--repo", repo, "--head", branch,
-                         "--json", "number,url,headRefOid,state,isDraft")
-        return prs[0] if prs else None
+    def find_mr_by_head(self, repo, branch):
+        mrs = self._get_all(self._project_path(repo) + "/merge_requests",
+                            params={"source_branch": branch, "state": "opened"})
+        mr = next((mr for mr in mrs if mr["state"] == "opened"), None)
+        if mr is None:
+            return None
+        draft = mr.get("draft")
+        if draft is None:
+            draft = mr.get("work_in_progress")
+        return {"number": mr["iid"], "url": mr["web_url"], "headRefOid": mr["sha"],
+                "state": "OPEN", "isDraft": bool(draft)}
 
-    def pr_head_sha(self, repo, number):
-        return self._json("pr", "view", str(number), "--repo", repo,
-                          "--json", "headRefOid")["headRefOid"]
+    def mr_head_sha(self, repo, number):
+        return self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}")["sha"]
 
-    def pr_checks_state(self, repo, number):
-        checks = self._json("pr", "view", str(number), "--repo", repo,
-                            "--json", "statusCheckRollup")["statusCheckRollup"]
-        pending = not checks
-        for check in checks or []:
-            if check.get("__typename") == "CheckRun" or "status" in check:
-                if check.get("status") != "COMPLETED":
-                    pending = True
-                elif check.get("conclusion") in {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}:
-                    return "failure"
-            else:
-                state = check.get("state")
-                if state in {"FAILURE", "ERROR"}:
-                    return "failure"
-                if state != "SUCCESS":
-                    pending = True
-        return "pending" if pending else "success"
+    def mr_checks_state(self, repo, number):
+        mr = self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}")
+        status = (mr.get("head_pipeline") or {}).get("status")
+        # GitLab のマージ条件では skipped パイプラインはマージを妨げない。
+        if status in {"success", "skipped"}:
+            return "success"
+        if status in {"failed", "canceled"}:
+            return "failure"
+        return "pending"
 
-    def pr_diff(self, repo, number):
-        return self._run("pr", "diff", str(number), "--repo", repo)
+    def mr_diff(self, repo, number):
+        mr = self.transport.request("GET", f"{self._project_path(repo)}/merge_requests/{number}/changes")
+        if mr.get("overflow") or any(change.get("too_large") for change in mr["changes"]):
+            raise GitLabError("差分が大きすぎて取得できません")
+        return "".join(
+            f'diff --git a/{change["old_path"]} b/{change["new_path"]}\n'
+            + (change["diff"].rstrip("\n") + "\n" if change["diff"] else "")
+            for change in mr["changes"]
+        )
 
-    def create_draft_pr(self, repo, head, title, body, label):
-        url = self._with_body(["pr", "create", "--repo", repo, "--draft", "--head", head,
-                               "--title", title, "--label", label], body)
-        match = re.search(r"/pull/(\d+)/?\s*$", url)
-        if not match:
-            raise GhError("作成した PR の URL から番号を取得できません")
-        return int(match[1])
+    def create_draft_mr(self, repo, head, title, body, label):
+        if not title.startswith("Draft:"):
+            title = f"Draft: {title}"
+        mr = self.transport.request("POST", self._project_path(repo) + "/merge_requests",
+                                    json_body={"source_branch": head, "target_branch": self.default_branch(repo),
+                                               "title": title, "description": body, "labels": label})
+        return mr["iid"]
 
     def default_branch(self, repo):
-        return self._json("repo", "view", repo, "--json", "defaultBranchRef")["defaultBranchRef"]["name"]
+        return self.transport.request("GET", self._project_path(repo))["default_branch"]
 
 
 class JobOutcome(NamedTuple):
@@ -374,7 +430,7 @@ class Journal:
     def record(self, event, **fields):
         entry = dict(at=iso_time(self.clock()), repository=None, target_type=None, target=None,
                      transition="none", input_revision=None, run_id=None, job_name=None,
-                     event=event, exit_code=None, reason=None, pr=None)
+                     event=event, exit_code=None, reason=None, mr=None)
         entry.update(fields)
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -404,7 +460,7 @@ class Journal:
         for entry in reversed(self.events):
             if entry["repository"] != repo or entry.get("issue", entry["target"]) != issue:
                 continue
-            if entry["event"] in ("pr_created", "review_posted", "ci_failed", "ci_passed"):
+            if entry["event"] in ("mr_created", "review_posted", "ci_failed", "ci_passed"):
                 return entry["input_revision"]
             if (entry["event"] == "job_finished" and entry["transition"] == "review"
                     and entry["reason"] not in ("stale_revision", "not_picked", "goalie_usage")):
@@ -455,9 +511,9 @@ def poll_lock(path, clock):
 
 
 class Controller:
-    def __init__(self, config, gh, goalie, git, clock=time.time):
+    def __init__(self, config, gitlab, goalie, git, clock=time.time):
         self.config = config
-        self.gh = gh
+        self.gitlab = gitlab
         self.goalie = goalie
         self.git = git
         self.clock = clock
@@ -481,13 +537,13 @@ class Controller:
                     if self._recover(run):
                         recovered.add((run["repository"], run["issue"]))
                 for repo in self.config.repositories:
-                    for issue in self.gh.list_factory_issues(repo, self.config.label):
+                    for issue in self.gitlab.list_factory_issues(repo, self.config.label):
                         if (repo, issue["number"]) not in recovered:
                             self._advance(repo, issue)
                 code = 0
             except Exception as error:
                 # 外部コマンドの出力、プロンプト、差分などはジャーナルに含めない。
-                reason = str(error) if isinstance(error, (GhError, GitError, GoalieError)) else type(error).__name__
+                reason = str(error) if isinstance(error, (GitLabError, GitError, GoalieError)) else type(error).__name__
                 self.journal.record("error", exit_code=1, reason=reason)
                 raise
             finally:
@@ -496,7 +552,7 @@ class Controller:
     def _run_event(self, event, run, **extra):
         fields = {key: run[key] for key in (
             "repository", "target_type", "target", "issue", "transition", "input_revision",
-            "run_id", "job_name", "pr", "idempotency_key", "work_dir",
+            "run_id", "job_name", "mr", "idempotency_key", "work_dir",
         )}
         if "job_id" in run:
             fields["job_id"] = run["job_id"]
@@ -504,7 +560,7 @@ class Controller:
         self.journal.record(event, **fields)
 
     def _label(self, repo, issue, progress, run=None):
-        self.gh.set_progress_label(repo, issue, progress)
+        self.gitlab.set_progress_label(repo, issue, progress)
         if run is None:
             self.journal.record("label_changed", repository=repo, target_type="issue",
                                 target=issue, label=progress)
@@ -513,12 +569,12 @@ class Controller:
 
     def _fail(self, repo, issue, message, run):
         self._label(repo, issue, "factory:failed", run)
-        self.gh.comment_issue(repo, issue, message)
+        self.gitlab.comment_issue(repo, issue, message)
 
     def _recover(self, run):
         repo, issue = run["repository"], run["issue"]
         review = run["transition"] == "review"
-        pr = run["pr"]
+        mr = run["mr"]
         work_dir = Path(run["work_dir"])
         if "job_id" not in run:
             found = self.goalie.find_job_by_name(work_dir, run["job_name"])
@@ -545,33 +601,33 @@ class Controller:
                     verdict = saved["verdict"]
                 else:
                     sha = run["input_revision"]
-                    head = self.gh.pr_head_sha(repo, pr)
+                    head = self.gitlab.mr_head_sha(repo, mr)
                     if head != sha:
-                        self._label(repo, issue, "factory:pr-open", run)
+                        self._label(repo, issue, "factory:mr-open", run)
                         self._run_event("job_finished", run, exit_code=code, reason="stale_revision")
                         return True
-                    checks = self.gh.pr_checks_state(repo, pr)
-                    if self.gh.pr_head_sha(repo, pr) != sha:
-                        self._label(repo, issue, "factory:pr-open", run)
+                    checks = self.gitlab.mr_checks_state(repo, mr)
+                    if self.gitlab.mr_head_sha(repo, mr) != sha:
+                        self._label(repo, issue, "factory:mr-open", run)
                         self._run_event("job_finished", run, exit_code=code, reason="stale_revision")
                         return True
                     if checks == "pending":
                         return False
                     if checks == "failure":
-                        self._ci_failed(repo, issue, pr, sha)
+                        self._ci_failed(repo, issue, mr, sha)
                         self._run_event("job_finished", run, exit_code=code, reason="ci_failed")
                         return True
                     comment = format_review_comment(run["run_id"], sha, outcome.body)
                     marker = comment.split("\n", 1)[0]
-                    if not self.gh.pr_comment_exists(repo, pr, marker):
-                        self.gh.comment_pr(repo, pr, comment)
+                    if not self.gitlab.mr_comment_exists(repo, mr, marker):
+                        self.gitlab.comment_mr(repo, mr, comment)
                     verdict = parse_verdict(outcome.body)
                     self._run_event("review_posted", run, verdict=verdict)
                 self._label(repo, issue, "factory:failed" if verdict == "major" else "factory:reviewed", run)
             else:
                 reason = self._apply_implementation(run)
         elif kind == "not_picked":
-            self._label(repo, issue, "factory:pr-open" if review else None, run)
+            self._label(repo, issue, "factory:mr-open" if review else None, run)
         elif kind == "failed":
             summary = outcome.body.strip()[:1000]
             message = "ファクトリーのレビューに失敗しました。" if review else "ファクトリーの実装に失敗しました。"
@@ -588,40 +644,40 @@ class Controller:
 
     def _apply_implementation(self, run):
         repo, issue = run["repository"], run["issue"]
-        if not self._milestone(run, "pr_created"):
+        if not self._milestone(run, "mr_created"):
             work_dir = Path(run["work_dir"])
             self.git.fetch(work_dir)
             branch = issue_branch(issue)
             failure = None
             if not self.git.branch_exists(work_dir, branch):
                 failure = f"ブランチ `{branch}` が見つかりません。"
-            elif self.git.commits_ahead(work_dir, f"origin/{self.gh.default_branch(repo)}", branch) <= 0:
+            elif self.git.commits_ahead(work_dir, f"origin/{self.gitlab.default_branch(repo)}", branch) <= 0:
                 failure = f"ブランチ `{branch}` に既定ブランチより先のコミットがありません。"
             elif self.git.tracked_dirty(work_dir):
                 failure = "追跡対象のファイルに未コミットの変更があります。"
             if failure:
                 self._fail(repo, issue, f"実装成果の検証に失敗しました。{failure}", run)
                 return "invalid_implementation"
-            existing = self.gh.find_pr_by_head(repo, branch)
+            existing = self.gitlab.find_mr_by_head(repo, branch)
             if existing:
-                pr = existing["number"]
+                mr = existing["number"]
             else:
                 self.git.push(work_dir, branch)
-                pr = self.gh.create_draft_pr(
+                mr = self.gitlab.create_draft_mr(
                     repo, branch, f"Factory: #{issue}",
                     f"Closes #{issue}\n\n<!-- factory:issue={issue} -->\n", self.config.label,
                 )
-            sha = self.gh.pr_head_sha(repo, pr)
-            self._run_event("pr_created", run, input_revision=sha, pr=pr)
-        self._label(repo, issue, "factory:pr-open", run)
+            sha = self.gitlab.mr_head_sha(repo, mr)
+            self._run_event("mr_created", run, input_revision=sha, mr=mr)
+        self._label(repo, issue, "factory:mr-open", run)
         return "ok"
 
-    def _ci_failed(self, repo, issue, pr, sha):
-        key = [repo, pr, "ci", sha]
+    def _ci_failed(self, repo, issue, mr, sha):
+        key = [repo, mr, "ci", sha]
         if not self.journal.last_for_key(key, {"ci_failed"}):
-            self.gh.comment_pr(repo, pr, f"コミット `{sha}` の CI チェックに失敗しました。")
-            self.journal.record("ci_failed", repository=repo, target_type="pr", target=pr,
-                                issue=issue, transition="ci", input_revision=sha, pr=pr,
+            self.gitlab.comment_mr(repo, mr, f"コミット `{sha}` の CI チェックに失敗しました。")
+            self.journal.record("ci_failed", repository=repo, target_type="mr", target=mr,
+                                issue=issue, transition="ci", input_revision=sha, mr=mr,
                                 idempotency_key=key)
         self._label(repo, issue, "factory:failed")
 
@@ -654,34 +710,34 @@ class Controller:
             and not self._remaining_jobs(work_dir=work_dir)
         )
         if progress in (None, "factory:implementing"):
-            pr = self.gh.find_pr_by_head(repo, issue_branch(number))
-            if pr:
-                if not any(entry["event"] == "pr_created" and entry["repository"] == repo
+            mr = self.gitlab.find_mr_by_head(repo, issue_branch(number))
+            if mr:
+                if not any(entry["event"] == "mr_created" and entry["repository"] == repo
                            and entry.get("issue", entry["target"]) == number
                            for entry in self.journal.events):
-                    self.journal.record("pr_created", repository=repo, target_type="issue",
+                    self.journal.record("mr_created", repository=repo, target_type="issue",
                                         target=number, issue=number, transition="implement",
-                                        input_revision=pr["headRefOid"], pr=pr["number"])
-                self._label(repo, number, "factory:pr-open")
+                                        input_revision=mr["headRefOid"], mr=mr["number"])
+                self._label(repo, number, "factory:mr-open")
             elif can_submit:
                 self._start(repo, issue, "implement", issue["updatedAt"], work_dir)
             return
         if progress == "factory:in-review":
-            self._label(repo, number, "factory:pr-open")
+            self._label(repo, number, "factory:mr-open")
             return
 
-        pr = self.gh.find_pr_by_head(repo, issue_branch(number))
-        if not pr:
-            if progress == "factory:pr-open":
-                self.journal.record("pr_waiting", repository=repo, target_type="issue",
-                                    target=number, reason="pr_not_found")
+        mr = self.gitlab.find_mr_by_head(repo, issue_branch(number))
+        if not mr:
+            if progress == "factory:mr-open":
+                self.journal.record("mr_waiting", repository=repo, target_type="issue",
+                                    target=number, reason="mr_not_found")
             return
-        pr_number = pr["number"]
+        mr_number = mr["number"]
         if progress in ("factory:reviewed", "factory:failed"):
             previous = self.journal.last_sha(repo, number)
-            sha = pr["headRefOid"]
+            sha = mr["headRefOid"]
             if sha != previous and not self._remaining_jobs(repo, number):
-                self._label(repo, number, "factory:pr-open")
+                self._label(repo, number, "factory:mr-open")
             elif sha == previous and progress == "factory:failed":
                 latest = next((entry for entry in reversed(self.journal.events)
                                if entry["repository"] == repo and entry.get("issue") == number
@@ -691,35 +747,35 @@ class Controller:
                                         and entry["transition"] == "review"
                                         and entry["label"] == "factory:failed"))), None)
                 if (latest and latest["event"] == "ci_failed"
-                        and self.gh.pr_checks_state(repo, pr_number) == "success"
-                        and self.gh.pr_head_sha(repo, pr_number) == sha):
-                    self.journal.record("ci_passed", repository=repo, target_type="pr",
-                                        target=pr_number, issue=number, transition="ci",
-                                        input_revision=sha, pr=pr_number)
-                    self._label(repo, number, "factory:pr-open")
+                        and self.gitlab.mr_checks_state(repo, mr_number) == "success"
+                        and self.gitlab.mr_head_sha(repo, mr_number) == sha):
+                    self.journal.record("ci_passed", repository=repo, target_type="mr",
+                                        target=mr_number, issue=number, transition="ci",
+                                        input_revision=sha, mr=mr_number)
+                    self._label(repo, number, "factory:mr-open")
             return
 
-        sha = self.gh.pr_head_sha(repo, pr_number)
-        checks = self.gh.pr_checks_state(repo, pr_number)
-        if checks == "pending" or self.gh.pr_head_sha(repo, pr_number) != sha:
+        sha = self.gitlab.mr_head_sha(repo, mr_number)
+        checks = self.gitlab.mr_checks_state(repo, mr_number)
+        if checks == "pending" or self.gitlab.mr_head_sha(repo, mr_number) != sha:
             return
         if checks == "failure":
-            self._ci_failed(repo, number, pr_number, sha)
+            self._ci_failed(repo, number, mr_number, sha)
         elif not self.config.review_enabled:
-            self.journal.record("ci_passed", repository=repo, target_type="pr", target=pr_number,
-                                issue=number, transition="ci", input_revision=sha, pr=pr_number)
+            self.journal.record("ci_passed", repository=repo, target_type="mr", target=mr_number,
+                                issue=number, transition="ci", input_revision=sha, mr=mr_number)
             self._label(repo, number, "factory:reviewed")
         elif can_submit:
-            self._start(repo, issue, "review", sha, work_dir, pr_number)
+            self._start(repo, issue, "review", sha, work_dir, mr_number)
 
-    def _start(self, repo, issue, transition, revision, work_dir, pr=None):
+    def _start(self, repo, issue, transition, revision, work_dir, mr=None):
         number = issue["number"]
         review = transition == "review"
-        target = pr if review else number
+        target = mr if review else number
         key = [repo, target, transition, revision]
-        success = self.journal.last_for_key(key, {"review_posted" if review else "pr_created"})
+        success = self.journal.last_for_key(key, {"review_posted" if review else "mr_created"})
         if success:
-            progress = "factory:pr-open"
+            progress = "factory:mr-open"
             if review:
                 progress = "factory:failed" if success["verdict"] == "major" else "factory:reviewed"
             self._label(repo, number, progress)
@@ -730,13 +786,13 @@ class Controller:
         variables = {"REPO": repo}
         if review:
             diff = requests / f"{run_id}-diff.patch"
-            diff.write_text(self.gh.pr_diff(repo, pr), encoding="utf-8")
-            if self.gh.pr_head_sha(repo, pr) != revision:
+            diff.write_text(self.gitlab.mr_diff(repo, mr), encoding="utf-8")
+            if self.gitlab.mr_head_sha(repo, mr) != revision:
                 diff.unlink()
                 return
-            variables.update(PR_NUMBER=str(pr), HEAD_SHA=revision,
+            variables.update(MR_NUMBER=str(mr), HEAD_SHA=revision,
                              DIFF_FILE=diff.relative_to(work_dir).as_posix())
-            name = f"factory-review-{pr}"
+            name = f"factory-review-{mr}"
             progress = "factory:in-review"
         else:
             variables.update(ISSUE_NUMBER=str(number), ISSUE_TITLE=issue.get("title") or "",
@@ -747,9 +803,9 @@ class Controller:
         prompt = requests / f"{run_id}.md"
         prompt.write_text(re.sub(r"\{\{([A-Z_]+)\}\}", lambda match: variables[match[1]], template),
                           encoding="utf-8")
-        run = dict(repository=repo, target_type="pr" if review else "issue", target=target,
+        run = dict(repository=repo, target_type="mr" if review else "issue", target=target,
                    issue=number, transition=transition, input_revision=revision, run_id=run_id,
-                   job_name=name, pr=pr, idempotency_key=key, work_dir=str(work_dir))
+                   job_name=name, mr=mr, idempotency_key=key, work_dir=str(work_dir))
         self._label(repo, number, progress, run)
         self._run_event("run_started", run)
         submitted_at = self.clock()
@@ -759,7 +815,7 @@ class Controller:
             self._run_event("hold_set", run, exit_code=2, reason="goalie_usage",
                             config_fingerprint=self.config.fingerprint)
             self._run_event("job_finished", run, exit_code=2, reason="goalie_usage")
-            self.gh.comment_issue(repo, number, "goalie が終了コード 2 を返しました。設定が変わるまで新規依頼を保留します。")
+            self.gitlab.comment_issue(repo, number, "goalie が終了コード 2 を返しました。設定が変わるまで新規依頼を保留します。")
         else:
             self._run_event("job_submitted", run, job_id=job_id, submitted_at=submitted_at)
 
@@ -769,19 +825,19 @@ class Controller:
         print(f"保留: {'あり' if held else 'なし'}")
         for repo in self.config.repositories:
             print(repo)
-            for issue in self.gh.list_factory_issues(repo, self.config.label):
+            for issue in self.gitlab.list_factory_issues(repo, self.config.label):
                 if self.config.label not in label_names(issue):
                     continue
                 number = issue["number"]
                 print(f"  #{number} {issue['title']} [{', '.join(sorted(label_names(issue)))}]")
-                pr = self.gh.find_pr_by_head(repo, issue_branch(number))
-                if pr:
-                    pr_number = pr["number"]
-                    checks = self.gh.pr_checks_state(repo, pr_number)
-                    draft = "draft, " if pr["isDraft"] else ""
-                    print(f"    PR #{pr_number} ({draft}{pr['state']}) {pr['headRefOid']} / CI {checks}")
+                mr = self.gitlab.find_mr_by_head(repo, issue_branch(number))
+                if mr:
+                    mr_number = mr["number"]
+                    checks = self.gitlab.mr_checks_state(repo, mr_number)
+                    draft = "draft, " if mr["isDraft"] else ""
+                    print(f"    MR !{mr_number} ({draft}{mr['state']}) {mr['headRefOid']} / CI {checks}")
                 else:
-                    print("    PR なし")
+                    print("    MR なし")
         unresolved = self.journal.unresolved()
         print(f"未解決の実行: {len(unresolved)}")
         for run in unresolved:
@@ -815,8 +871,12 @@ def main(argv=None):
                 raise ConfigError(f"設定ファイルが既に存在します: {args.config}") from error
         else:
             config = Config.load(args.config)
+            token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
+            if not token:
+                raise ConfigError("環境変数 GITLAB_TOKEN または GL_TOKEN を設定してください")
             runner = Runner()
-            controller = Controller(config, GhClient(runner), GoalieClient(runner, config.goalie_py),
+            gitlab = GitLabClient(UrllibTransport(config.gitlab_url, token))
+            controller = Controller(config, gitlab, GoalieClient(runner, config.goalie_py),
                                     GitClient(runner))
             if args.command == "status":
                 controller.status()
@@ -825,7 +885,7 @@ def main(argv=None):
     except ConfigError as error:
         print(error, file=sys.stderr)
         return 2
-    except (GhError, GitError, GoalieError) as error:
+    except (GitLabError, GitError, GoalieError) as error:
         print(error, file=sys.stderr)
         return 1
     except Exception as error:

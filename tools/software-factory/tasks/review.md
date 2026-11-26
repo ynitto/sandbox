@@ -1,4 +1,4 @@
-# レビュー依頼 — {{REPO}} PR #{{PR_NUMBER}}
+# レビュー依頼 — {{REPO}} MR !{{MR_NUMBER}}
 
 対象リビジョンは `{{HEAD_SHA}}` です。
 

@@ -1,5 +1,6 @@
 {
-  "repositories": ["internal-org/internal-repo"],
+  "repositories": ["group/project"],
+  "gitlab_url": "https://gitlab.example.internal",
   "label": "factory",
   "poll_interval_sec": 300,
   "max_concurrent": 1,
