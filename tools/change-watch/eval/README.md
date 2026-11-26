@@ -15,7 +15,7 @@ python3 tools/change-watch/eval/run_eval.py --target iac
 python3 tools/change-watch/eval/run_eval.py --target honesty
 ```
 
-対象ごとの pass/fail 件数を表示し、失敗ケースには期待値と実際の値を表示します。失敗が1件でもあれば終了コードは 1、全ケースが成功すれば 0 です。
+対象ごとの pass/fail 件数を表示し、失敗ケースには期待値と実際の値を表示します。失敗ケースがあるか、実行した対象にケースが0件のものがあれば終了コードは 1 です。実行したすべての対象にケースがあり、全ケースが成功すれば 0 です。
 
 対象にケースが1件以上あり、全ケースが pass のときだけ、その対象を strict pass とします。実行した対象が1件以上あり、全対象が strict pass のときだけ全体を strict pass とし、末尾に `strict: 2/3 targets (fail)` のように strict pass の対象数、実行した対象数、全体の合否を表示します。
 

@@ -242,6 +242,12 @@ class EvalTest(unittest.TestCase):
         self.assertEqual(lines[lines.index("iac: 0 pass, 0 fail") + 1], "  strict: fail")
         self.assertEqual(lines[-1], "strict: 1/2 targets (fail)")
 
+    def test_main_returns_one_for_empty_target(self):
+        output = StringIO()
+        with patch.object(run_eval, "run_target", return_value={}), redirect_stdout(output):
+            self.assertEqual(run_eval.main(["--target", "iac"]), 1)
+        self.assertIn("strict: 0/1 targets (fail)", output.getvalue())
+
     def test_report_compares_values_at_same_status(self):
         for status in ("pass", "fail"):
             with self.subTest(status=status):

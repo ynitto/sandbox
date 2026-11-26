@@ -55,6 +55,23 @@ class JobDelegationTests(unittest.TestCase):
         self.assert_ok(self.call(GOALIE, "event", *args, "--text", "test"))
         self.assertEqual((current / report.name).read_text(encoding="utf-8"), body)
 
+    def test_hook_denies_tool_until_work_directory_is_renamed(self):
+        self.assert_ok(self.call(GOALIE, "init", "--dir", str(self.goal)))
+        current = self.goal / ".goalie"
+        current.rename(self.goal / ".dot")
+
+        result = subprocess.run(
+            [sys.executable, str(GOALIE), "hook"],
+            input=json.dumps({"cwd": str(self.goal), "toolName": "think"}),
+            capture_output=True, encoding="utf-8", timeout=15,
+        )
+
+        self.assert_ok(result)
+        decision = json.loads(result.stdout)
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn(".goalie に名前変更してください", decision["permissionDecisionReason"])
+        self.assertFalse(current.exists())
+
     def test_init_does_not_modify_directory_with_only_legacy_work(self):
         legacy = self.goal / ".dot"
         legacy.mkdir(parents=True)

@@ -153,6 +153,16 @@ class InspectTest(unittest.TestCase):
         result = iac.inspect([change("infra/cloudformation/iam.yaml", diff)], mock.Mock(side_effect=AssertionError))
         self.assertEqual([row["rule"] for row in result["findings"]], ["iam-wildcard"])
 
+    def test_unicode_line_separator_in_diff_content_preserves_line_numbers(self):
+        diff = (
+            "@@ -1,0 +10,2 @@\n"
+            '+description = "first\u2028+second"\n'
+            '+cidr_blocks = ["0.0.0.0/0"]\n'
+        )
+        result = iac.inspect([change("main.tf", diff)], None)
+        self.assertEqual([(row["line"], row["rule"]) for row in result["findings"]],
+                         [(11, "open-ingress")])
+
     def test_fingerprint_ignores_line_shifts_but_detects_changed_diff(self):
         def fingerprint(diff):
             return iac.inspect([change("main.tf", diff)], None)["fingerprint"]
