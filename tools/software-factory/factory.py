@@ -458,8 +458,12 @@ class ChangeWatchGitLabClient:
         return None if mr is None else normalize_mr(mr)
 
     def _mr(self, repo, number, fresh):
-        mr = self._run("item", "--source", self._source(repo, "merge_requests"), str(number),
-                       "--max-age", "0" if fresh else str(self.ci_max_age))
+        if fresh:
+            # 投稿直前の照合では、通信失敗時に古い姿を返す item を使わない。
+            mr = self._call("GET", repo, f"/merge_requests/{number}", kind="merge_requests")
+        else:
+            mr = self._run("item", "--source", self._source(repo, "merge_requests"), str(number),
+                           "--max-age", str(self.ci_max_age))
         if not isinstance(mr, dict):
             raise GitLabError(f"MR !{number} を取得できません")
         return mr

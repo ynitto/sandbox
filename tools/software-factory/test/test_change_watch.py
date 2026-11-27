@@ -271,6 +271,21 @@ class ChangeWatchConfigTests(unittest.TestCase):
             self.assertEqual(factory.Runner().run([sys.executable, "-c", code])[1].strip(), "")
             self.assertEqual(factory.Runner().run([sys.executable, "-c", code], keep_token=True)[1].strip(), "dummy")
 
+    def test_fresh_head_check_rejects_cached_sha_on_api_failure(self):
+        config = factory.Config(self.values())
+        runner = factory.Runner()
+        client = factory.ChangeWatchGitLabClient(runner, config.change_watch, "factory")
+
+        def run(argv, **kwargs):
+            if argv[len(client.base)] == "item":
+                return 0, '{"sha": "sha-one"}', "前に取り直した姿で答えます"
+            return 3, "", "HTTP 503"
+
+        with patch.object(runner, "run", side_effect=run):
+            self.assertEqual(client.mr_head_sha("group/project", 42), "sha-one")
+            with self.assertRaises(factory.GitLabError):
+                client.mr_head_sha("group/project", 42, fresh=True)
+
 
 if __name__ == "__main__":
     unittest.main()

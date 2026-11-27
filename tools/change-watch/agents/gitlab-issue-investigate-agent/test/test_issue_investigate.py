@@ -193,6 +193,15 @@ class InvestigateTest(unittest.TestCase):
         self.assertIn("原因不明", self.gitlab.posts[0])
         self.assertTrue(self.gitlab.posts[0].endswith(agent.MARKER))
 
+    def test_request_redacts_secret_before_json_escaping(self):
+        secret = 'example-"quoted"'
+        self.env["APP_SECRET"] = secret
+        self.record["description"] = f"before {secret} after"
+        self.assertEqual(self.invoke(dry_run=True), 0)
+        output = self.stdout.getvalue()
+        inputs, _ = json.JSONDecoder().raw_decode(output[output.index("{"):])
+        self.assertEqual(inputs["issue_body"], "before [非表示] after")
+
     def test_configuration_error_and_unclaimed(self):
         for code in (2, 3):
             with self.subTest(code=code):

@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from helpers import Env
+from changewatch import access, config
+from changewatch.fetch import Fetcher
+from changewatch.store import Store
 
 
 class AccessTest(unittest.TestCase):
@@ -245,6 +251,29 @@ class AccessTest(unittest.TestCase):
         code, out = self.env.run("call", "POST", "/_put", "--source", "items", "--json", '{"id": 3}', "--record")
         self.assertEqual(code, 0, out)
         self.assertIn("応答に key が無い", out)
+
+
+class ItemCacheTest(unittest.TestCase):
+    def test_commit_refresh_invalidates_cached_item(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "change-watch.json"
+            path.write_text(json.dumps({"version": 1, "state_dir": directory, "sources": {
+                "items": {"key": "id", "request": {"url": "http://example.test/all"},
+                          "item": {"url": "http://example.test/item/{{ key }}"}},
+            }}), encoding="utf-8")
+            cfg = config.load(path)
+            src = cfg.sources["items"]
+            store = Store(cfg.state_dir)
+            try:
+                fetcher = Fetcher(cfg, store)
+                before = {"id": 1, "status": "a"}
+                after = {"id": 1, "status": "b"}
+                with patch.object(fetcher, "get_json", side_effect=[before, after, after]):
+                    self.assertEqual(access.item(fetcher, src, "1", 300)[0], before)
+                    self.assertEqual(access.commit(fetcher, src, "flow", ["1"], True), (["1"], []))
+                    self.assertEqual(access.item(fetcher, src, "1", 300)[0], after)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

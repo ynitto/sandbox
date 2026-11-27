@@ -234,5 +234,6 @@ def commit(fetcher: Fetcher, src: SourceSpec, consumer: str, keys: list[str], re
                                "ON CONFLICT(source, rkey) DO UPDATE SET epoch=excluded.epoch, "
                                "data=excluded.data, seen_at=excluded.seen_at",
                                (src.name, k, epoch, pack(rec), now()))
+                    db.execute("DELETE FROM item_cache WHERE source=? AND rkey=?", (src.name, k))
         done.append(k)
     return done, unknown
