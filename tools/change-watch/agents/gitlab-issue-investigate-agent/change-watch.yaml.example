@@ -1,0 +1,24 @@
+# gitlab-issue-investigate-agent の取得設定。Dagu の consumer は issue-investigate。
+# 開いている Issue を取得し、Dagu が新規の変化を CLI に渡す。タイトルの条件は env で設定する。
+# connections.yaml の gitlab は url: ${GITLAB_URL}、token: ${GITLAB_TOKEN} を参照する。
+version: 1
+state_dir: ~/.local/state/change-watch/gitlab-issue-investigate-agent   # エージェントごとに分ける
+
+sources:
+  gitlab-issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, scope: all, order_by: updated_at, sort: asc }
+    key: iid                   # get --consumer が変化を見分ける key
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "*/5 * * * *"      # GitLab に問い合わせる予定（ワークフローが毎分起動しても、予定の時刻ごとに 1 回）
+    jitter_sec: 60
+    busy_wait_sec: 600
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+    # issue を 1 件取り直す要求（commit --refresh）。エージェントが処理の中で書いたコメントを、次の変化にしないため
+    item:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues/{{ key }}"

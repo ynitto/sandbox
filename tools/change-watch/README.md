@@ -26,7 +26,7 @@
 |---|---|
 | `changewatch/` | 本体: 取得・状態・`get` / `commit` / `call`・運用のコマンド |
 | `dags/*.example.yaml` | change-watch を使う Dagu のワークフローの例。コピーして名前とパスを直して使う（下の「Dagu のワークフロー」） |
-| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-decision-stagnation-agent](agents/gitlab-decision-stagnation-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-merge-followup-agent](agents/gitlab-merge-followup-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[gitlab-notify-agent](agents/gitlab-notify-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） |
+| `agents/<名前>/` | change-watch の上で動くエージェント（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-decision-stagnation-agent](agents/gitlab-decision-stagnation-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・[gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-issue-investigate-agent](agents/gitlab-issue-investigate-agent/README.md)・[gitlab-merge-followup-agent](agents/gitlab-merge-followup-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[gitlab-notify-agent](agents/gitlab-notify-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）。`install.py install --agent <名前>` で入れる（下の「エージェントを入れる」） |
 
 ### プラグイン
 
@@ -207,7 +207,7 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
 - 一覧の取得の間隔を長くしたまま、自分の書き込み（ラベルの付け替え・MR の作成など）をすぐ一覧に出したいなら `call --record` にする。
   次の取得までのあいだ、`get` が書き込む前の姿で答えない。次の取得が全体を取り直せば、その結果に替わる
 - エージェントの例（インストーラが置くもの）も、どれもこの形で書いてある（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-decision-stagnation-agent](agents/gitlab-decision-stagnation-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
-  [gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-merge-followup-agent](agents/gitlab-merge-followup-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[gitlab-notify-agent](agents/gitlab-notify-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
+  [gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-issue-investigate-agent](agents/gitlab-issue-investigate-agent/README.md)・[gitlab-merge-followup-agent](agents/gitlab-merge-followup-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[gitlab-notify-agent](agents/gitlab-notify-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
 
 ### 条件で分けるワークフローの例
 
