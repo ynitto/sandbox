@@ -1,0 +1,6 @@
+{
+  "verdict": "inconsistent",
+  "violations": [
+    "missing_required_call"
+  ]
+}

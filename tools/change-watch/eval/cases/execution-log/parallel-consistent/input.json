@@ -1,0 +1,51 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": [
+        {
+          "tool": "file.read",
+          "status": "ok",
+          "dispatch_group": "g1"
+        },
+        {
+          "tool": "command.run",
+          "status": "ok",
+          "dispatch_group": "g1"
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "calls": [
+        {
+          "tool": "file.write",
+          "status": "ok",
+          "dispatch_group": null
+        }
+      ]
+    }
+  ],
+  "reply": "調査と保存が完了しました。",
+  "required_calls": [
+    "file.read",
+    "command.run",
+    "file.write"
+  ],
+  "required_order": [
+    [
+      "file.read",
+      "file.write"
+    ],
+    [
+      "command.run",
+      "file.write"
+    ]
+  ],
+  "parallel_groups": [
+    [
+      "file.read",
+      "command.run"
+    ]
+  ]
+}

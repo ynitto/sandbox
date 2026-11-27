@@ -1,0 +1,6 @@
+{
+  "verdict": "inconsistent",
+  "violations": [
+    "comment_cites_unsuccessful_tool"
+  ]
+}
