@@ -70,10 +70,10 @@ class FakeGitLab:
         self.mrs[branch] = mr
         return mr
 
-    def mr_head_sha(self, repo, number):
+    def mr_head_sha(self, repo, number, fresh=False):
         return next(mr["headRefOid"] for mr in self.mrs.values() if mr["number"] == number)
 
-    def mr_checks_state(self, repo, number):
+    def mr_checks_state(self, repo, number, fresh=False):
         return self.checks
 
     def mr_diff(self, repo, number):
@@ -158,7 +158,8 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
+        # Windows の一時フォルダは短い名前（RUNNER~1）で渡ることがある。作業フォルダは resolve() 済みなので揃える。
+        self.root = Path(directory.name).resolve()
         self.values = json.loads((SOURCE.parent / "factory.example.json").read_text(encoding="utf-8"))
         self.values.update(work_root=str(self.root), journal=str(self.root / "journal.jsonl"),
                            job_timeout_sec=60, max_concurrent=2)

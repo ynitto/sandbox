@@ -190,7 +190,8 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
 | `get --source S` | 取得して（するかは取得元の予定・間隔で決める）、レコードを出す。取得が失敗しても前回までの取得結果で答える | JSON の配列 |
 | `get --source S --consumer C [--watch P]… [--initial baseline\|emit] [--one]` | C が前回 `commit` してから変わったレコードを出す。`commit` するまで同じものを出し続ける。`--watch` を書けば、その項目が変わったときだけ変化にする。出す順は `key` の順（数の `key` は小さい順）。初めて呼ばれたときは、`baseline`（既定）なら今ある姿を覚えるだけ、`emit` なら全部を出す | 変化の配列（`--one` なら 1 件のオブジェクトか、無ければ何も出さない） |
 | `commit --source S --consumer C KEY… [--refresh]` | KEY を処理し終えたと記録する。`--refresh` なら取得元の `item` で 1 件取り直した姿で記録する（処理の中で自分が書き込んだ分を、次の変化にしない）。取得元にも C の記録にも無い KEY は記録せず、警告を出す | — |
-| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]…` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で） | 応答の JSON（JSON でない応答は文字列） |
+| `item --source S KEY [--max-age SEC]` | 取得元の `item` でレコードを 1 件取り直す。`--max-age`（省略すると `item.max_age_sec`）の秒数以内に誰かが取り直していれば、問い合わせずにその姿で答える。問い合わせが失敗したら、前に取り直した姿で答える（無ければ終了コード 3） | レコードの JSON（無ければ `null`） |
+| `call METHOD URL --source S [--json J \| --json-file F] [--query K=V]… [--record]` | 取得元の接続（認証）と要求の間隔の制限で API を 1 回呼ぶ。`/` で始まる URL は接続の `url` に足す。GET 以外は自分では再試行しない（再試行はワークフローの `retry_policy` で）。`--record` なら、応答（書き込んだあとのレコード）をそのレコードのいまの姿として取得元に入れる | 応答の JSON（JSON でない応答は文字列） |
 
 変化は `{"key", "kind", "record", "before", "changes"}` の形。`kind` は `appeared`（新しく現れた）・`changed`（`--watch` の項目が変わった）・
 `removed`（一覧から消えた）、`record` は今のレコード（`removed` なら最後の姿）、`before` は前回 `commit` したときの姿（`changed` のときだけ）、
@@ -201,6 +202,10 @@ change-watch が受け持つのは、取得をまとめること（取得元の 
 - 失敗した処理も commit まで進める（分かれた先に `continue_on.failure`）。やり直しは Dagu の `retry_policy` に任せ、尽きたら Dagu の履歴に失敗として残る。
   commit しないでおくと、次の起動でも同じ変化が返り、毎分やり直し続ける
 - 処理の中で自分が書き込む（コメントを付けるなど）なら `commit --refresh` にする。書き込んだ後の姿を基準にするので、自分の書き込みを次の変化にしない
+- 一覧には無い項目（GitLab の MR の CI の結果など）を見るなら `item` で 1 件ずつ取り直す。同じレコードを何度も見に来るなら `--max-age` を付ける。
+  その秒数のあいだは、どのワークフローが聞いても問い合わせは 1 回になる
+- 一覧の取得の間隔を長くしたまま、自分の書き込み（ラベルの付け替え・MR の作成など）をすぐ一覧に出したいなら `call --record` にする。
+  次の取得までのあいだ、`get` が書き込む前の姿で答えない。次の取得が全体を取り直せば、その結果に替わる
 - エージェントの例（インストーラが置くもの）も、どれもこの形で書いてある（[gitlab-ci-triage-agent](agents/gitlab-ci-triage-agent/README.md)・[gitlab-decision-stagnation-agent](agents/gitlab-decision-stagnation-agent/README.md)・[gitlab-issue-agent](agents/gitlab-issue-agent/README.md)・
   [gitlab-issue-hub-agent](agents/gitlab-issue-hub-agent/README.md)・[gitlab-merge-followup-agent](agents/gitlab-merge-followup-agent/README.md)・[gitlab-mr-review-agent](agents/gitlab-mr-review-agent/README.md)・[gitlab-notify-agent](agents/gitlab-notify-agent/README.md)・[redmine-ticket-agent](agents/redmine-ticket-agent/README.md)）
 
@@ -306,7 +311,8 @@ API の取得元ならどちらかを書くか、ワークフローの `schedule
 | `request.timeout_sec` | 30 | 1 回の要求の制限時間 |
 | `records` | `$` | 応答の中のレコードの配列の場所（例 `data.items`）。オブジェクトなら 1 件として扱う |
 | `key` | — | レコードを一意に指す項目。増分取得の取得元と、`get --consumer` で変化を受け取る取得元では書く（全体の姿を組み立て、consumer ごとの変化を見分ける） |
-| `item.url` / `headers` / `query` / `records` | — | レコードを 1 件取り直す要求（`commit --refresh`）。`{{ key }}`・`{{ conn.* }}`・`{{ env.* }}` が使える。`headers` が無ければ取得元のもの |
+| `item.url` / `headers` / `query` / `records` | — | レコードを 1 件取り直す要求（`commit --refresh`・`item`）。`{{ key }}`・`{{ conn.* }}`・`{{ env.* }}` が使える。`headers` が無ければ取得元のもの |
+| `item.max_age_sec` | 0 | `item` で取り直した姿を、この秒数は問い合わせずに使い回す（`--max-age` で呼ぶ側が変えられる）。取り直した姿は取得元の一覧とは別に持ち、保持期間の `fetch_days` を過ぎたら消す |
 | `pagination` | なし | 下の表 |
 | `incremental` | なし | 下の表 |
 | `schedule` | なし | 問い合わせの予定（cron。この PC の時刻）。起動されても、直近の予定の時刻のあとに取得し終えていれば取得しない。無ければ起動されるたびに取得する（Dagu の起動間隔に任せる）。`fetch --force` で無視。上の「いつ取得するか」 |

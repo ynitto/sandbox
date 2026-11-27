@@ -134,13 +134,14 @@ class SourceSpec:
 
 @dataclass
 class ItemSpec:
-    """レコードを 1 件取り直す要求（取得元の item。commit --refresh で使う）。headers が無ければ取得元のものを使う。"""
+    """レコードを 1 件取り直す要求（取得元の item。commit --refresh と item で使う）。headers が無ければ取得元のものを使う。"""
     method: str
     url: str
     headers: dict | None
     query: dict
     records: str
     timeout_sec: float | None
+    max_age_sec: float = 0          # item で取り直した姿を、この秒数は問い合わせずに使い回す（0 なら毎回問い合わせる）
 
 
 @dataclass
@@ -312,7 +313,7 @@ def _item(d: Any, where: str) -> ItemSpec | None:
         return None
     _expect(isinstance(d, dict) and isinstance(d.get("url"), str),
             f"{where}.url: レコードを 1 件取り直す URL を書いてください（例 \"{{{{ conn.url }}}}/items/{{{{ key }}}}\"）")
-    _known(d, {"method", "url", "headers", "query", "records", "timeout_sec"}, where)
+    _known(d, {"method", "url", "headers", "query", "records", "timeout_sec", "max_age_sec"}, where)
     headers = d.get("headers")
     query = d.get("query") or {}
     _expect(headers is None or isinstance(headers, dict), f"{where}.headers: 辞書で書いてください")
@@ -324,7 +325,8 @@ def _item(d: Any, where: str) -> ItemSpec | None:
                 f"{where}: 使えるのは {' / '.join(n + '.*' if n != 'key' else n for n in names)} です: {ref}")
     t = d.get("timeout_sec")
     return ItemSpec(method=str(d.get("method", "GET")).upper(), url=d["url"], headers=headers, query=query,
-                     records=records, timeout_sec=None if t is None else _num(d, "timeout_sec", 30, where, 1))
+                     records=records, timeout_sec=None if t is None else _num(d, "timeout_sec", 30, where, 1),
+                     max_age_sec=_num(d, "max_age_sec", 0, where))
 
 
 def load(path: str | Path | None = None, connections: str | Path | None = None,

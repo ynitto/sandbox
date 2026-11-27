@@ -1,0 +1,54 @@
+# ソフトウェアファクトリーが GitLab を読むための change-watch の取得元の例。
+# factory.json の change_watch.config が指す設定ファイルに、この sources を足して使う。
+#
+# 同じ GitLab を見るほかの取得元（gitlab-issue-agent など）と同じ設定ファイル・同じ state_dir に置くと、
+# rate_limit.group の要求の間隔と失敗の待ちを分け合える。設定ファイルを分けるなら state_dir も分ける。
+#
+# group%2Fproject は対象プロジェクトのパスを URL エンコードしたものに直す（/ は %2F）。リポジトリが複数あるなら、
+# リポジトリごとに 2 つずつ取得元を書き、factory.json の change_watch.sources で対応させる。
+#
+# connections.yaml の gitlab は、たとえば次のように書く（トークンは環境変数 GITLAB_TOKEN から取る）:
+#
+#   gitlab:
+#     - label: default
+#       url: https://gitlab.example.internal
+#       token: ${GITLAB_TOKEN}
+version: 1
+state_dir: C:/Users/you/AppData/Local/change-watch/state
+
+sources:
+  factory-issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/group%2Fproject/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, labels: factory, scope: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "*/15 * * * *"   # 新しい factory の Issue に気づくまでの最長の時間。ファクトリー自身のラベルの付け替えは --record で即座に反映される
+    jitter_sec: 120
+    busy_wait_sec: 120
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+    item:
+      url: "{{ conn.url }}/api/v4/projects/group%2Fproject/issues/{{ key }}"
+
+  factory-mrs:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/group%2Fproject/merge_requests"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, labels: factory, scope: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "*/15 * * * *"   # マージ待ちの MR に人がコミットを足したことに気づくまでの最長の時間
+    jitter_sec: 120
+    busy_wait_sec: 120
+    failure_backoff_sec: 300
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+    # CI の結果は MR 1 件の詳細にしか無いので、CI を待っている MR だけを 1 件ずつ取り直す。
+    # 間隔は factory.json の change_watch.ci_max_age_sec（既定 240 秒）で決める。
+    item:
+      url: "{{ conn.url }}/api/v4/projects/group%2Fproject/merge_requests/{{ key }}"

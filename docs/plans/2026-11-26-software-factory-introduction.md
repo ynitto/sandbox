@@ -71,6 +71,8 @@ sandbox（GitHub）の PR #1123（goalie 統合）はマージ済みで、`tools
    ```
 
 7. 実装済みの `tools/software-factory/` を配置し、`factory.py` と同じディレクトリに下記の `factory.json` を置く。Dagu はインストール済みを前提とし、利用中の Dagu が参照する DAG の置き場へ `tools/software-factory/dags/factory-poll.example.yaml` をコピーする。Python と `factory.py` のパスを直し、`poll_interval_sec` が 300 秒なら `*/5 * * * *` にする。手動確認が終わるまではスケジュールを停止しておく。
+
+   同じ PC で change-watch を使って GitLab を見ているなら、`factory.json` に `change_watch` を書いて問い合わせをまとめる（[README](../../tools/software-factory/README.md) の「GitLab への問い合わせを change-watch にまとめる」）。このとき接続先とトークンは change-watch の接続設定が持ち、`gitlab_url` は要らない。
 8. `C:/work/factory/smoke.md` に「ファイルを変更せず、疎通確認として OK と報告してください」と UTF-8 で保存する。アプリで自動実行が動く状態で手動 job を投入する。続いて、`factory` 対象の Issue がない状態で手動 poll と状態表示を確認する。
 
    ```powershell
