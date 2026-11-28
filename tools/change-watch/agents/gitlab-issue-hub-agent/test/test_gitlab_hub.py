@@ -138,6 +138,21 @@ class BundleTests(unittest.TestCase):
         self.assertFalse(out.exists())
         self.assertEqual(self.state.read_bytes(), before)
 
+    def test_flush_preserves_previous_output_if_state_save_fails(self):
+        self.assertEqual(self.add("pending"), (0, "", ""))
+        before = self.state.read_bytes()
+        out = self.state.with_name("note.json")
+        previous = b'{"body": "retry this comment"}\r\n'
+        out.write_bytes(previous)
+
+        with patch.object(gh, "_save_bundles", side_effect=OSError("state save failed")):
+            code, stdout, err = self.bundle("bundle-flush", "--flush-all", "--out", str(out))
+
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertIn("state save failed", err)
+        self.assertEqual(self.state.read_bytes(), before)
+        self.assertEqual(out.read_bytes(), previous)
+
     def test_corrupt_bundle_is_discarded_individually(self):
         self.assertEqual(self.add("kept"), (0, "", ""))
         valid = self.pending()
@@ -367,6 +382,14 @@ class IssueApiTest(unittest.TestCase):
 
 
 class NoteTest(unittest.TestCase):
+    def test_check_old_note_keeps_comment_without_known_system_flag(self):
+        args = ("check-old-note", "--kind=appeared", "--author=hub-bot", "--writer=hub-bot",
+                "--created-at=2020-01-01T00:00:00Z")
+        for system in ((), ("--system=${CHANGE.record.system}",)):
+            with self.subTest(system=system):
+                self.assertEqual(run_main(*args, *system), (0, "keep\n", ""))
+        self.assertEqual(run_main(*args, "--system=false"), (0, "delete\n", ""))
+
     def test_note_is_the_text_as_is(self):
         code, out, _ = run_main("note", "--text=夜間バッチが終わりました\n2 件\n")
         self.assertEqual(code, 0)
