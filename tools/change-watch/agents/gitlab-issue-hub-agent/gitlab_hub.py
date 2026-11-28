@@ -470,12 +470,12 @@ def _load_bundles(path: str) -> dict:
     return valid
 
 
-def _write_bundle_file(path: str, payload: str) -> None:
+def _write_bundle_file(path: str, payload: bytes) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=directory, delete=False) as f:
             temporary = f.name
             f.write(payload)
         os.replace(temporary, path)
@@ -486,7 +486,7 @@ def _write_bundle_file(path: str, payload: str) -> None:
 
 
 def _save_bundles(path: str, bundles: dict) -> None:
-    _write_bundle_file(path, json.dumps({"version": 1, "bundles": bundles}))
+    _write_bundle_file(path, json.dumps({"version": 1, "bundles": bundles}).encode("utf-8"))
 
 
 def _bundle_expired(bundle: dict, minutes: int, now: datetime.datetime) -> bool:
@@ -513,9 +513,15 @@ def _update_bundles(path: str, bundles: dict, ready: dict, out: str | None) -> i
     if out and os.path.normcase(os.path.realpath(out)) == os.path.normcase(os.path.realpath(path)):
         print("--out と --state-file には別のファイルを指定してください", file=sys.stderr)
         return USAGE
+    previous_output = None
     if payload and out:
         try:
-            _write_bundle_file(out, payload)
+            try:
+                with open(out, "rb") as f:
+                    previous_output = f.read()
+            except FileNotFoundError:
+                pass
+            _write_bundle_file(out, payload.encode("utf-8"))
         except OSError as e:
             print(f"--out のファイルに書けません: {e}", file=sys.stderr)
             return USAGE
@@ -524,9 +530,12 @@ def _update_bundles(path: str, bundles: dict, ready: dict, out: str | None) -> i
     except OSError:
         if payload and out:
             try:
-                os.unlink(out)
-            except OSError:
-                pass
+                if previous_output is None:
+                    os.unlink(out)
+                else:
+                    _write_bundle_file(out, previous_output)
+            except OSError as e:
+                print(f"--out のファイルを元に戻せません: {e}", file=sys.stderr)
         raise
     if payload:
         print(out or payload)
@@ -702,7 +711,8 @@ def cmd_check_old_note(a) -> int:
     if a.kind is not None:                  # 項目ごとに渡す（本文をコマンド行に載せない）
         if a.kind.strip() not in _KINDS:
             return OK                       # 受け取った変化が無ければ何も出さない
-        change = {"kind": a.kind.strip(), "record": {"system": (a.system or "").strip() == "true",
+        system = {"true": True, "false": False}.get((a.system or "").strip())
+        change = {"kind": a.kind.strip(), "record": {"system": system,
                                                      "author": {"username": (a.writer or "").strip()},
                                                      "created_at": a.created_at}}
         print(old_note(change, author, days))
