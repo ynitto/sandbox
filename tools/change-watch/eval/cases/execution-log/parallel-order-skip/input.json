@@ -1,0 +1,32 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": [
+        {
+          "tool": "tool_b",
+          "status": "ok",
+          "dispatch_group": "g1"
+        },
+        {
+          "tool": "tool_a",
+          "status": "ok",
+          "dispatch_group": "g1"
+        }
+      ]
+    }
+  ],
+  "reply": "処理が完了しました。",
+  "required_order": [
+    [
+      "tool_a",
+      "tool_b"
+    ]
+  ],
+  "parallel_groups": [
+    [
+      "tool_a",
+      "tool_b"
+    ]
+  ]
+}

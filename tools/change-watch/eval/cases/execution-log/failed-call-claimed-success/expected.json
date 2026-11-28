@@ -1,0 +1,6 @@
+{
+  "verdict": "inconsistent",
+  "violations": [
+    "failed_call_claimed_success"
+  ]
+}

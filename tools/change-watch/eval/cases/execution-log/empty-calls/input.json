@@ -1,0 +1,15 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": []
+    }
+  ],
+  "reply": "完了しました。",
+  "required_calls": [
+    "file.read"
+  ],
+  "cited_tools": [
+    "file.read"
+  ]
+}

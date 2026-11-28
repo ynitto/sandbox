@@ -1,0 +1,31 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": [
+        {
+          "tool": "file.read",
+          "status": "ok",
+          "dispatch_group": "g1"
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "calls": [
+        {
+          "tool": "command.run",
+          "status": "ok",
+          "dispatch_group": "g1"
+        }
+      ]
+    }
+  ],
+  "reply": "調査が完了しました。",
+  "parallel_groups": [
+    [
+      "file.read",
+      "command.run"
+    ]
+  ]
+}

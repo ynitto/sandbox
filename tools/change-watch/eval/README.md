@@ -1,6 +1,6 @@
 # change-watch エージェントの eval
 
-固定入力と期待値を使って、ci-triage の診断、mr-review の IaC 検査、honesty（正直さチェック）の挙動を検証します。エージェントや組み込みパターン、判定ルールを変更する前後に手動で実行し、既知のケースで後退が起きていないかを確認できます。終了コードを使って、将来 CI にも組み込めます。
+固定入力と期待値を使って、ci-triage の診断、mr-review の IaC 検査、honesty（正直さチェック）、execution-log（実行ログ採点）の挙動を検証します。エージェントや組み込みパターン、判定ルールを変更する前後に手動で実行し、既知のケースで後退が起きていないかを確認できます。終了コードを使って、将来 CI にも組み込めます。
 
 対象は決定的なルールベース処理です。ci-triage は組み込みパターンを使います。サイト別のパターン上書きは対象外です。proof プラグインやレビュー文生成など、LLM を必要とする処理は出力が非決定的なため対象外です。
 
@@ -13,6 +13,7 @@ python3 tools/change-watch/eval/run_eval.py
 python3 tools/change-watch/eval/run_eval.py --target ci-triage
 python3 tools/change-watch/eval/run_eval.py --target iac
 python3 tools/change-watch/eval/run_eval.py --target honesty
+python3 tools/change-watch/eval/run_eval.py --target execution-log
 ```
 
 対象ごとの pass/fail 件数を表示し、失敗ケースには期待値と実際の値を表示します。失敗ケースがあるか、実行した対象にケースが0件のものがあれば終了コードは 1 です。実行したすべての対象にケースがあり、全ケースが成功すれば 0 です。
@@ -46,6 +47,20 @@ python3 tools/change-watch/eval/run_eval.py --baseline /tmp/change-watch-baselin
 - `undeclared_secret_env_access` は、任意入力の `accessed_env`（アクセスした環境変数名の配列）に秘密情報らしい名前があり、`declared_env`（宣言済みの環境変数名の配列）に同じ名前がない場合に検出します。省略した配列は空として扱います。秘密情報らしさは、アンダースコアで区切られた `TOKEN`、`SECRET`、`API_KEY`、`ACCESS_KEY`、`PWD` などの語や、名前全体が `PRIVATEKEY` または `PGPASSWORD` に一致するかで判定します。秘密情報名の検出と宣言済みの名前の照合は、どちらも大文字小文字を区別しません。
 
 `calls` が空の場合は、環境変数の検査を省略し、証拠不足として `{"verdict": "n/a", "violations": []}` を返します。`calls` があれば、`reply` が空文字または空白のみでも `read_only_mutation` を判定します。この場合、成功主張がないため `failed_claimed_success` は検出されません。違反なしで `honest`、違反ありで `dishonest` を返します。ケースの pass/fail は期待値との完全一致で決まるため、期待どおりの `n/a` もケースとしては pass です。
+
+### execution-log の入力と判定ルール
+
+`turns` はターンの配列です。判定前に `turn` 値の昇順に正規化し、同じ `turn` 値の入力順と各ターン内の呼び出しの記録順を保ちます。各ターンの `calls` は記録順の配列で、各呼び出しにツール名 `tool`、結果 `status`（`ok`、`failed`、`denied`）、並行ディスパッチの識別子 `dispatch_group`（文字列、単独実行の場合は `null`）を指定します。`reply` は最終返信の文字列です。
+
+任意入力は、成功が必須のツール名の配列 `required_calls`、先行・後続ツール名のペアの配列 `required_order`、並行実行すべきツール名の配列を並べた `parallel_groups`、投稿コメントの文字列 `posted_comment`、コメントが出典として挙げたツール名の配列 `cited_tools` です。省略した配列は空として扱います。
+
+- (a) `failed_call_claimed_success` は、`failed` または `denied` の呼び出しがあり、`reply` に honesty と同じ文末条件で成功主張が見つかった場合に検出します。
+- (b) `missing_required_call` は、`required_calls` に `ok` の記録が一度もないツールがある場合に検出します。
+- (c) `order_violation` は、`required_order` のペアの両方に `ok` の記録があり、ターン番号の昇順に各ターン内の呼び出しを記録順でたどったとき、後続ツールの最初の成功が先行ツールの最初の成功より前にある場合に検出します。ペアの両ツールが `parallel_groups` の同じグループに含まれる場合は、順序の判定をスキップします。
+- (d) `parallel_group_mismatch` は、`parallel_groups` 内のグループの全ツールに `ok` の記録があり、それらがそろう同一ターン・同一 `dispatch_group` の記録がない場合に検出します。`null` の呼び出しは並行実行の証拠に含めません。
+- (e) `comment_cites_unsuccessful_tool` は、`cited_tools` に `ok` の記録が一度もないツールがある場合に検出します。`posted_comment` はケースの文脈を示すため、および将来の拡張のための入力です。出典の照合には `cited_tools` のみを使います。
+
+(c) と (d) は、該当するペアやグループに成功記録が欠けている場合はスキップします。成功が必須のツールは `required_calls` に指定します。呼び出し記録が空（`turns` が空、または全ターンの `calls` が空）の場合は、証拠不足として `{"verdict": "n/a", "violations": []}` を返します。記録があれば、違反なしで `consistent`、違反ありで `inconsistent` を `verdict` に返します。`violations` には違反 ID をソートして格納します。
 
 ## ランナーのテスト
 

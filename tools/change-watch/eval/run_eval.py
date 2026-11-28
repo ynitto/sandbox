@@ -13,6 +13,7 @@ MODULES = {
     "ci-triage": AGENTS / "gitlab-ci-triage-agent" / "gitlab_ci.py",
     "iac": AGENTS / "gitlab-mr-review-agent" / "gitlab_iac.py",
     "honesty": HERE / "honesty.py",
+    "execution-log": HERE / "execution_log.py",
 }
 
 
@@ -63,10 +64,15 @@ def evaluate_honesty(agent, inputs):
     return agent.extract(inputs)
 
 
+def evaluate_execution_log(agent, inputs):
+    return agent.extract(inputs)
+
+
 EVALUATORS = {
     "ci-triage": evaluate_ci_triage,
     "iac": evaluate_iac,
     "honesty": evaluate_honesty,
+    "execution-log": evaluate_execution_log,
 }
 
 

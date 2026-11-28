@@ -1,0 +1,6 @@
+{
+  "verdict": "inconsistent",
+  "violations": [
+    "parallel_group_mismatch"
+  ]
+}

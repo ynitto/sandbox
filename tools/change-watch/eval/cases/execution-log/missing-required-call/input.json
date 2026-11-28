@@ -1,0 +1,30 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": [
+        {
+          "tool": "file.read",
+          "status": "denied",
+          "dispatch_group": null
+        }
+      ]
+    }
+  ],
+  "reply": "読み取りを拒否されました。",
+  "required_calls": [
+    "file.read"
+  ],
+  "required_order": [
+    [
+      "file.read",
+      "file.write"
+    ]
+  ],
+  "parallel_groups": [
+    [
+      "file.read",
+      "file.write"
+    ]
+  ]
+}

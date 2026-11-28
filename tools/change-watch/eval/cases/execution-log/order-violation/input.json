@@ -1,0 +1,31 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "calls": [
+        {
+          "tool": "file.write",
+          "status": "ok",
+          "dispatch_group": null
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "calls": [
+        {
+          "tool": "file.read",
+          "status": "ok",
+          "dispatch_group": null
+        }
+      ]
+    }
+  ],
+  "reply": "処理が完了しました。",
+  "required_order": [
+    [
+      "file.read",
+      "file.write"
+    ]
+  ]
+}
